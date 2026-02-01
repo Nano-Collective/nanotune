@@ -1,0 +1,63 @@
+{
+	"name": "@nanocollective/nanotune",
+	"version": "0.0.0",
+	"type": "module",
+	"description": "A simple, interactive CLI for fine-tuning small language models on Apple Silicon. No YAML configs, no complex flags - just an interactive CLI that guides you through the process. ⚒️",
+	"bin": {
+		"nanotune": "./dist/cli.js"
+	},
+	"scripts": {
+		"build": "tsc",
+		"dev": "tsx src/cli.tsx",
+		"start": "node dist/cli.js",
+		"test:lint": "biome check .",
+		"test:types": "tsc --noEmit",
+		"test:ava": "ava",
+		"test:knip": "knip",
+		"test:all": "pnpm test:lint && pnpm test:types && pnpm test:knip && pnpm test:ava",
+		"test:security": "semgrep scan --config auto --error",
+		"test:audit": "pnpm audit --audit-level=high",
+		"format": "biome check --write ."
+	},
+	"ava": {
+		"extensions": {
+			"ts": "module"
+		},
+		"nodeArguments": [
+			"--import=tsx"
+		],
+		"workerThreads": false,
+		"files": [
+			"src/**/*.spec.ts"
+		]
+	},
+	"keywords": [
+		"fine-tuning",
+		"llm",
+		"mlx",
+		"apple-silicon",
+		"cli"
+	],
+	"author": "Nano Collective",
+	"license": "MIT",
+	"engines": {
+		"node": ">=18.0.0"
+	},
+	"dependencies": {
+		"@inkjs/ui": "^2.0.0",
+		"commander": "^14.0.3",
+		"execa": "^9.6.1",
+		"ink": "^6.6.0",
+		"react": "^19.2.4",
+		"zod": "^4.3.6"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.3.13",
+		"@types/node": "^25.1.0",
+		"@types/react": "^19.2.10",
+		"ava": "^6.4.1",
+		"knip": "^5.82.1",
+		"tsx": "^4.21.0",
+		"typescript": "^5.9.3"
+	}
+}

@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.nanotune/
+*.log
+.DS_Store
+AGENTS.md
+GEMINI.md
+CLAUDE.md
+agents/
+.vscode/

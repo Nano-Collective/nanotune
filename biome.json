@@ -1,0 +1,97 @@
+{
+	"$schema": "https://biomejs.dev/schemas/2.3.13/schema.json",
+	"vcs": {
+		"enabled": true,
+		"clientKind": "git",
+		"useIgnoreFile": true
+	},
+	"files": {
+		"includes": [
+			"**",
+			"!dist",
+			"!pnpm-lock.yaml",
+			"!package-lock.json",
+			"!yarn.lock",
+			"!coverage",
+			"!agents",
+			"!node_modules",
+			"!plugins",
+			"!**/*.spec.ts",
+			"!**/*.spec.tsx",
+			"!.husky",
+			"!.nanocoder",
+      "!.nanotune"
+		]
+	},
+	"formatter": {
+		"enabled": true,
+		"indentStyle": "tab",
+		"indentWidth": 2,
+		"lineEnding": "lf",
+		"lineWidth": 80
+	},
+	"assist": {
+		"actions": {
+			"source": {
+				"organizeImports": {
+					"level": "on",
+					"options": {}
+				}
+			}
+		}
+	},
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"recommended": false,
+			"style": {
+				"noDefaultExport": "off",
+				"useBlockStatements": "off",
+				"noNonNullAssertion": "warn",
+				"noParameterAssign": "off",
+				"useConst": "off",
+				"useImportType": "off",
+				"useTemplate": "off"
+			},
+			"complexity": {
+				"noForEach": "off",
+				"useLiteralKeys": "off",
+				"useArrowFunction": "off",
+				"noBannedTypes": "off"
+			},
+			"suspicious": {
+				"noExplicitAny": "warn",
+				"noArrayIndexKey": "off",
+				"noGlobalIsNan": "off",
+				"noRedeclare": "off",
+				"noUnsafeDeclarationMerging": "off",
+				"noShadowRestrictedNames": "off",
+				"noAssignInExpressions": "off",
+				"noControlCharactersInRegex": "off",
+				"noConsole": { "level": "off", "options": { "allow": ["log"] } }
+			},
+			"correctness": {
+				"useExhaustiveDependencies": "error",
+				"noUnusedVariables": "error",
+				"noUnusedImports": "error",
+				"noUndeclaredVariables": "off"
+			}
+		}
+	},
+	"javascript": {
+		"formatter": {
+			"semicolons": "always",
+			"quoteStyle": "single",
+			"jsxQuoteStyle": "double",
+			"quoteProperties": "asNeeded",
+			"bracketSpacing": false,
+			"arrowParentheses": "asNeeded",
+			"trailingCommas": "all"
+		}
+	},
+	"json": {
+		"formatter": {
+			"trailingCommas": "none"
+		}
+	}
+}
