@@ -13,6 +13,7 @@
 		"test:lint": "biome check .",
 		"test:types": "tsc --noEmit",
 		"test:ava": "ava",
+		"test:ava:coverage": "c8 ava",
 		"test:knip": "knip",
 		"test:all": "pnpm test:lint && pnpm test:types && pnpm test:knip && pnpm test:ava",
 		"test:security": "semgrep scan --config auto --error",
@@ -30,6 +31,20 @@
 		"files": [
 			"src/**/*.spec.ts"
 		]
+	},
+	"c8": {
+		"exclude": [
+			"source/app/App.tsx"
+		],
+		"reporter": [
+			"text",
+			"json-summary",
+			"lcov"
+		],
+		"lines": 80,
+		"functions": 0,
+		"branches": 0,
+		"statements": 0
 	},
 	"keywords": [
 		"fine-tuning",
@@ -58,6 +73,7 @@
 		"ava": "^6.4.1",
 		"knip": "^5.82.1",
 		"tsx": "^4.21.0",
-		"typescript": "^5.9.3"
+		"typescript": "^5.9.3",
+		"c8": "^10.1.3"
 	}
 }

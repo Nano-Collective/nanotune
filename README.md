@@ -2,6 +2,18 @@
 
 A simple, interactive CLI for fine-tuning small language models on Apple Silicon. No YAML configs, no complex flags - just an interactive CLI that guides you through the process.
 
+![Example](./.github/assets/example.gif)
+
+---
+![Build Status](https://github.com/Nano-Collective/nanotune/raw/main/badges/build.svg)
+![Coverage](https://github.com/Nano-Collective/nanotune/raw/main/badges/coverage.svg)
+![Version](https://github.com/Nano-Collective/nanotune/raw/main/badges/npm-version.svg)
+![NPM Downloads](https://github.com/Nano-Collective/nanotune/raw/main/badges/npm-downloads-monthly.svg)
+![NPM License](https://github.com/Nano-Collective/nanotune/raw/main/badges/npm-license.svg)
+![Repo Size](https://github.com/Nano-Collective/nanotune/raw/main/badges/repo-size.svg)
+![Stars](https://github.com/Nano-Collective/nanotune/raw/main/badges/stars.svg)
+![Forks](https://github.com/Nano-Collective/nanotune/raw/main/badges/forks.svg)
+
 ## Features
 
 - Interactive TUI built with React Ink
