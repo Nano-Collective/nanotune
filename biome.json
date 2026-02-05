@@ -20,7 +20,7 @@
 			"!**/*.spec.tsx",
 			"!.husky",
 			"!.nanocoder",
-      "!.nanotune"
+			"!.nanotune"
 		]
 	},
 	"formatter": {

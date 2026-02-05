@@ -1,12 +1,11 @@
 {
-  "$schema": "https://unpkg.com/knip@latest/schema.json",
-  "entry": ["src/cli.tsx"],
-  "project": ["src/**/*.{ts,tsx}"],
-  "ignore": ["src/**/*.spec.ts"],
-  "ignoreExportsUsedInFile": true,
-  "rules": {
-    "binaries": "off",
-    "exports": "off",
-    "types": "off"
-  }
+	"$schema": "https://unpkg.com/knip@latest/schema.json",
+	"project": ["src/**/*.{ts,tsx}"],
+	"ignore": ["src/**/*.spec.ts"],
+	"ignoreExportsUsedInFile": true,
+	"rules": {
+		"binaries": "off",
+		"exports": "off",
+		"types": "off"
+	}
 }

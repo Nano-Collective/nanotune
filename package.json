@@ -15,7 +15,7 @@
 		"test:ava": "ava",
 		"test:ava:coverage": "c8 ava",
 		"test:knip": "knip",
-		"test:all": "pnpm test:lint && pnpm test:types && pnpm test:knip && pnpm test:ava",
+		"test:all": "pnpm test:lint && pnpm test:types && pnpm test:knip && pnpm test:security && pnpm test:audit && pnpm test:ava",
 		"test:security": "semgrep scan --config auto --error",
 		"test:audit": "pnpm audit --audit-level=high",
 		"format": "biome check --write ."
