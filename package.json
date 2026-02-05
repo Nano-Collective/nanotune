@@ -1,6 +1,6 @@
 {
 	"name": "@nanocollective/nanotune",
-	"version": "0.0.0",
+	"version": "1.0.0",
 	"type": "module",
 	"description": "A simple, interactive CLI for fine-tuning small language models on Apple Silicon. No YAML configs, no complex flags - just an interactive CLI that guides you through the process. ⚒️",
 	"bin": {
