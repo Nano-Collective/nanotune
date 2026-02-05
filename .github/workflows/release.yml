@@ -69,10 +69,7 @@ jobs:
 
       - name: Install Semgrep
         run: |
-          curl -L https://github.com/returntocorp/semgrep/releases/latest/download/semgrep-linux-x86_64.tgz -o semgrep.tgz
-          tar -xzf semgrep.tgz
-          sudo mv semgrep-core /usr/local/bin/semgrep
-          rm -rf semgrep.tgz
+          pip install semgrep
 
       - name: Build project
         run: pnpm build
