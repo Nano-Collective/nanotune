@@ -23,7 +23,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '20'
 
       - name: Check version difference
         id: version-check
@@ -38,10 +38,10 @@ jobs:
 
           # Compare versions
           if [ "$PACKAGE_VERSION" != "$NPM_VERSION" ]; then
-            echo "New version detected: $PACKAGE_VERSION (current NPM: $NPM_VERSION)"
+            echo "✅ New version detected: $PACKAGE_VERSION (current NPM: $NPM_VERSION)"
             echo "should-publish=true" >> $GITHUB_OUTPUT
           else
-            echo "No version change detected: $PACKAGE_VERSION"
+            echo "ℹ️ No version change detected: $PACKAGE_VERSION"
             echo "should-publish=false" >> $GITHUB_OUTPUT
           fi
 
@@ -56,16 +56,23 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 10
+          version: latest
 
-      - name: Install dependencies
+      - name: Install dependencies (including VS Code extension)
         run: pnpm install --frozen-lockfile
+
+      - name: Install Semgrep
+        run: |
+          curl -L https://github.com/returntocorp/semgrep/releases/latest/download/semgrep-linux-x86_64.tgz -o semgrep.tgz
+          tar -xzf semgrep.tgz
+          sudo mv semgrep-core /usr/local/bin/semgrep
+          rm -rf semgrep.tgz
 
       - name: Build project
         run: pnpm build
@@ -76,10 +83,10 @@ jobs:
       - name: Verify build output
         run: |
           if [ ! -f "dist/cli.js" ]; then
-            echo "Build failed: dist/cli.js not found"
+            echo "❌ Build failed: dist/cli.js not found"
             exit 1
           fi
-          echo "Build successful: dist/cli.js exists"
+          echo "✅ Build successful: dist/cli.js exists"
 
       - name: Publish to NPM
         run: npm publish --access public
@@ -122,7 +129,7 @@ jobs:
           curl -H "Content-Type: application/json" \
             -d '{
               "embeds": [{
-                "title": "New Release: Nanotune v${{ needs.check-version.outputs.package-version }}",
+                "title": "🎉 New Release: Nanotune v${{ needs.check-version.outputs.package-version }}",
                 "description": "A new version of Nanotune has been released!\n\n[View the full changelog on GitHub](https://github.com/${{ github.repository }}/releases/tag/v${{ needs.check-version.outputs.package-version }})",
                 "color": 5763719,
                 "fields": [
@@ -155,11 +162,11 @@ jobs:
         run: |
           if [ "${{ needs.check-version.outputs.should-publish }}" == "true" ]; then
             if [ "${{ needs.publish.result }}" == "success" ]; then
-              echo "Successfully published @nanocollective/nanotune v${{ needs.check-version.outputs.package-version }} to NPM and created GitHub release!"
+              echo "🎉 Successfully published @nanocollective/nanotune v${{ needs.check-version.outputs.package-version }} to NPM and created GitHub release!"
             else
-              echo "Failed to publish @nanocollective/nanotune v${{ needs.check-version.outputs.package-version }}"
+              echo "❌ Failed to publish @nanocollective/nanotune v${{ needs.check-version.outputs.package-version }}"
               exit 1
             fi
           else
-            echo "No new version to publish (current: ${{ needs.check-version.outputs.package-version }})"
+            echo "ℹ️ No new version to publish (current: ${{ needs.check-version.outputs.package-version }})"
           fi
