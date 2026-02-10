@@ -273,35 +273,144 @@ export async function* exportModel(
 	yield {step: 'Export complete!', progress: 100};
 }
 
+export interface InferenceOptions {
+	/** Maximum tokens to generate */
+	maxTokens?: number;
+	/** Number of CPU threads to use (default: auto) */
+	threads?: number;
+	/** Number of GPU layers to offload (default: auto/max) */
+	gpuLayers?: number;
+	/** Context size in tokens (default: 4096) */
+	ctxSize?: number;
+	/** Batch size for prompt processing (default: 2048) */
+	batchSize?: number;
+	/** Temperature for sampling (default: 0.8) */
+	temperature?: number;
+	/** Top-p sampling (default: 0.9) */
+	topP?: number;
+	/** Seed for reproducibility (default: random) */
+	seed?: number;
+	/** Disable GPU/METAL and use CPU only */
+	cpuOnly?: boolean;
+}
+
+export interface InferenceResult {
+	/** Generated text output */
+	text: string;
+	/** Time to first token in milliseconds */
+	ttftMs?: number;
+	/** Total generation time in milliseconds */
+	generationTimeMs?: number;
+	/** Tokens per second */
+	tokensPerSecond?: number;
+	/** Total tokens generated */
+	tokensGenerated?: number;
+}
+
 export async function runGGUFInference(
 	modelPath: string,
 	prompt: string,
-	maxTokens = 100,
-): Promise<string> {
+	options: InferenceOptions = {},
+): Promise<InferenceResult> {
+	const {
+		maxTokens = 100,
+		threads,
+		gpuLayers,
+		ctxSize = 4096,
+		batchSize = 2048,
+		temperature = 0.8,
+		topP = 0.9,
+		seed,
+		cpuOnly = false,
+	} = options;
+
 	// Use llama-completion for non-interactive single-shot inference
 	const completionBin = join(LLAMA_CPP_BIN_DIR, 'llama-completion');
 
-	const result = await execa(
-		completionBin,
-		[
-			'-m',
-			modelPath,
-			'-p',
-			prompt,
-			'-n',
-			String(maxTokens),
-			'--no-display-prompt',
-		],
-		{
-			input: '', // Close stdin immediately
-			stderr: 'ignore', // Suppress Metal/GPU logs
-		},
-	);
+	const args: string[] = [
+		'-m',
+		modelPath,
+		'-p',
+		prompt,
+		'-n',
+		String(maxTokens),
+		'--no-display-prompt',
+		'-c',
+		String(ctxSize),
+		'-b',
+		String(batchSize),
+		'--temp',
+		String(temperature),
+		'--top-p',
+		String(topP),
+	];
+
+	// Add optional flags
+	if (threads !== undefined) {
+		args.push('-t', String(threads));
+	}
+	if (gpuLayers !== undefined) {
+		args.push('-ngl', String(gpuLayers));
+	}
+	if (seed !== undefined) {
+		args.push('--seed', String(seed));
+	}
+	if (cpuOnly) {
+		args.push('-ngl', '0'); // No GPU layers = CPU only
+	}
+
+	const startTime = Date.now();
+	const result = await execa(completionBin, args, {
+		input: '', // Close stdin immediately
+		stderr: 'pipe', // Capture stderr for timing info
+	});
+	const endTime = Date.now();
 
 	// Clean up output - remove "EOF by user" and extra prompts
 	let output = result.stdout.trim();
 	output = output.replace(/\n?>\s*\n?EOF by user\s*$/i, '').trim();
 	output = output.replace(/\n?>\s*$/i, '').trim();
 
-	return output;
+	// Parse timing info from stderr if available
+	// llama.cpp outputs timing info like:
+	// "llama_perf_sampler_print:    sampling time = ..."
+	// "llama_perf_context_print: ..."
+	const stderr = result.stderr || '';
+
+	// Try to extract tokens per second
+	const tpsMatch = stderr.match(/(\d+\.?\d*)\s*tok\/s/);
+	const tokensPerSecond = tpsMatch ? Number.parseFloat(tpsMatch[1]) : undefined;
+
+	// Try to extract token count
+	const tokensMatch = stderr.match(/(\d+)\s+tokens\s+generated/i);
+	const tokensGenerated = tokensMatch
+		? Number.parseInt(tokensMatch[1], 10)
+		: undefined;
+
+	// Estimate TTFT and generation time
+	const totalTimeMs = endTime - startTime;
+	const ttftMs = tokensGenerated
+		? Math.round(totalTimeMs * 0.1) // Rough estimate: 10% for TTFT
+		: undefined;
+	const generationTimeMs = tokensGenerated
+		? totalTimeMs - (ttftMs || 0)
+		: totalTimeMs;
+
+	return {
+		text: output,
+		ttftMs,
+		generationTimeMs,
+		tokensPerSecond,
+		tokensGenerated,
+	};
+}
+
+/** @deprecated Use runGGUFInference with InferenceOptions instead */
+export async function runGGUFInferenceLegacy(
+	modelPath: string,
+	prompt: string,
+	maxTokens = 100,
+): Promise<string> {
+	const result = await runGGUFInference(modelPath, prompt, {maxTokens});
+	return result.text;
 }

@@ -1,3 +1,31 @@
+# 1.1.0
+
+## Enhanced Benchmarking
+
+Added `--preset` flag for quick hardware profile selection:
+- `low` - Low-end hardware (4 threads, CPU only, 2048 ctx)
+- `medium` - Mid-range hardware (8 threads, 20 GPU layers, 4096 ctx)
+- `high` - High-end hardware (auto threads, max GPU layers, 8192 ctx)
+- `ultra` - Maximum performance (auto threads, max GPU layers, 16384 ctx)
+
+### New CLI Flags
+- `--threads <n>` - Number of CPU threads
+- `--gpu-layers <n>` - GPU layers to offload
+- `--ctx-size <n>` - Context size in tokens
+- `--batch-size <n>` - Batch size for processing
+- `--cpu-only` - Disable GPU, use CPU only
+- `--max-tokens <n>` - Max tokens to generate
+- `--temperature <n>` - Sampling temperature
+- `--seed <n>` - Random seed for reproducibility
+
+### Detailed Timing
+Each query now reports:
+- Total latency
+- Time to first token (TTFT)
+- Generation time
+- Tokens generated
+- Tokens per second
+
 # 1.0.0
 
 Initial release of Nanotune - a simple, interactive CLI for fine-tuning small language models on Apple Silicon.

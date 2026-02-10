@@ -10,12 +10,18 @@ import {
 	getModelsDir,
 	loadConfig,
 } from '../lib/config.js';
-import {runGGUFInference} from '../lib/llama-cpp.js';
-import type {
-	BenchmarkResult,
-	BenchmarkTest,
-	BenchmarkTestResult,
-	MatchMode,
+import {
+	type InferenceOptions,
+	type InferenceResult,
+	runGGUFInference,
+} from '../lib/llama-cpp.js';
+import {
+	BENCHMARK_PRESETS,
+	type BenchmarkPreset,
+	type BenchmarkResult,
+	type BenchmarkTest,
+	type BenchmarkTestResult,
+	type MatchMode,
 } from '../types/index.js';
 
 interface Props {
@@ -23,6 +29,15 @@ interface Props {
 		model?: string;
 		dataset?: string;
 		timeout?: string;
+		preset?: string;
+		threads?: string;
+		gpuLayers?: string;
+		ctxSize?: string;
+		batchSize?: string;
+		cpuOnly?: boolean;
+		maxTokens?: string;
+		temperature?: string;
+		seed?: string;
 	};
 }
 
@@ -193,7 +208,19 @@ function generateMarkdownReport(
 		lines.push('');
 		lines.push(`**Category:** ${testResult.category}`);
 		if (testResult.latencyMs) {
-			lines.push(`**Latency:** ${testResult.latencyMs}ms`);
+			lines.push(`**Total Latency:** ${testResult.latencyMs}ms`);
+		}
+		if (testResult.ttftMs) {
+			lines.push(`**Time to First Token:** ${testResult.ttftMs}ms`);
+		}
+		if (testResult.generationTimeMs) {
+			lines.push(`**Generation Time:** ${testResult.generationTimeMs}ms`);
+		}
+		if (testResult.tokensGenerated) {
+			lines.push(`**Tokens Generated:** ${testResult.tokensGenerated}`);
+		}
+		if (testResult.tokensPerSecond) {
+			lines.push(`**Tokens/Second:** ${testResult.tokensPerSecond.toFixed(2)}`);
 		}
 		lines.push('');
 		lines.push('**Expected (any of):**');
@@ -321,6 +348,65 @@ export function BenchmarkCommand({options}: Props) {
 				return;
 			}
 
+			// Build inference options from CLI flags or preset
+			let inferenceOptions: InferenceOptions;
+
+			if (options.preset) {
+				// Validate preset
+				const validPresets: BenchmarkPreset[] = [
+					'low',
+					'medium',
+					'high',
+					'ultra',
+				];
+				if (!validPresets.includes(options.preset as BenchmarkPreset)) {
+					setError(
+						`Invalid preset: ${options.preset}. Valid presets: ${validPresets.join(', ')}`,
+					);
+					setStatus('error');
+					return;
+				}
+
+				// Apply preset configuration
+				const preset = BENCHMARK_PRESETS[options.preset as BenchmarkPreset];
+				inferenceOptions = {
+					maxTokens: preset.maxTokens,
+					threads: preset.threads,
+					gpuLayers: preset.gpuLayers,
+					ctxSize: preset.ctxSize,
+					batchSize: preset.batchSize,
+					cpuOnly: preset.gpuLayers === 0,
+					temperature: options.temperature
+						? Number.parseFloat(options.temperature)
+						: 0.8,
+					seed: options.seed ? Number.parseInt(options.seed, 10) : undefined,
+				};
+			} else {
+				// Build from individual CLI flags
+				inferenceOptions = {
+					maxTokens: options.maxTokens
+						? Number.parseInt(options.maxTokens, 10)
+						: 50,
+					threads: options.threads
+						? Number.parseInt(options.threads, 10)
+						: undefined,
+					gpuLayers: options.gpuLayers
+						? Number.parseInt(options.gpuLayers, 10)
+						: undefined,
+					ctxSize: options.ctxSize
+						? Number.parseInt(options.ctxSize, 10)
+						: 4096,
+					batchSize: options.batchSize
+						? Number.parseInt(options.batchSize, 10)
+						: 2048,
+					cpuOnly: options.cpuOnly,
+					temperature: options.temperature
+						? Number.parseFloat(options.temperature)
+						: 0.8,
+					seed: options.seed ? Number.parseInt(options.seed, 10) : undefined,
+				};
+			}
+
 			// Run benchmarks
 			setStatus('running');
 			const timeout = options.timeout
@@ -346,19 +432,28 @@ export function BenchmarkCommand({options}: Props) {
 				let response = '';
 				let passed = false;
 				let latencyMs: number | undefined;
+				let ttftMs: number | undefined;
+				let generationTimeMs: number | undefined;
+				let tokensGenerated: number | undefined;
+				let tokensPerSecond: number | undefined;
 
 				try {
 					// Build prompt with system message
 					const fullPrompt = `${config.systemPrompt}\n\nUser: ${test.prompt}\n\nAssistant:`;
 
-					response = await Promise.race([
-						runGGUFInference(modelPath, fullPrompt, 50),
-						new Promise<string>((_, reject) =>
+					const inferenceResult = await Promise.race<InferenceResult | never>([
+						runGGUFInference(modelPath, fullPrompt, inferenceOptions),
+						new Promise<never>((_, reject) =>
 							setTimeout(() => reject(new Error('Timeout')), timeout),
 						),
 					]);
 
 					latencyMs = Date.now() - startTime;
+					response = inferenceResult.text;
+					ttftMs = inferenceResult.ttftMs;
+					generationTimeMs = inferenceResult.generationTimeMs;
+					tokensGenerated = inferenceResult.tokensGenerated;
+					tokensPerSecond = inferenceResult.tokensPerSecond;
 
 					// Check if response matches any acceptable answer
 					const matchResult = checkPass(
@@ -400,6 +495,10 @@ export function BenchmarkCommand({options}: Props) {
 					passed,
 					category: test.category,
 					latencyMs,
+					ttftMs,
+					generationTimeMs,
+					tokensGenerated,
+					tokensPerSecond,
 				});
 
 				setCategories({...categoryResults});
@@ -457,7 +556,20 @@ export function BenchmarkCommand({options}: Props) {
 			setError(err instanceof Error ? err.message : 'Benchmark failed');
 			setStatus('error');
 		}
-	}, [options.model, options.dataset, options.timeout]);
+	}, [
+		options.model,
+		options.dataset,
+		options.timeout,
+		options.preset,
+		options.threads,
+		options.gpuLayers,
+		options.ctxSize,
+		options.batchSize,
+		options.cpuOnly,
+		options.maxTokens,
+		options.temperature,
+		options.seed,
+	]);
 
 	useEffect(() => {
 		run();

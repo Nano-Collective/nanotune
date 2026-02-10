@@ -61,7 +61,16 @@ export interface BenchmarkTestResult {
 	actual: string;
 	passed: boolean;
 	category: string;
+	/** Total time for this query in milliseconds */
 	latencyMs?: number;
+	/** Time to first token in milliseconds */
+	ttftMs?: number;
+	/** Generation time in milliseconds (excluding TTFT) */
+	generationTimeMs?: number;
+	/** Tokens generated */
+	tokensGenerated?: number;
+	/** Tokens per second */
+	tokensPerSecond?: number;
 }
 
 export interface BenchmarkResult {
@@ -94,3 +103,64 @@ export interface DependencyStatus {
 }
 
 export type QuantizationType = 'f16' | 'q8_0' | 'q4_k_m' | 'q4_k_s';
+
+/** Benchmark hardware presets for common device profiles */
+export type BenchmarkPreset = 'low' | 'medium' | 'high' | 'ultra';
+
+/** Configuration for a benchmark preset */
+export interface PresetConfig {
+	/** Preset name */
+	name: string;
+	/** Description of the hardware profile */
+	description: string;
+	/** CPU threads to use (undefined = auto) */
+	threads?: number;
+	/** GPU layers to offload (undefined = auto/max, 0 = CPU only) */
+	gpuLayers?: number;
+	/** Context size in tokens */
+	ctxSize: number;
+	/** Batch size for prompt processing */
+	batchSize: number;
+	/** Maximum tokens to generate */
+	maxTokens: number;
+}
+
+/** Preset configurations for different hardware profiles */
+export const BENCHMARK_PRESETS: Record<BenchmarkPreset, PresetConfig> = {
+	low: {
+		name: 'Low-End',
+		description: 'Low-end hardware (older laptops, minimal GPU)',
+		threads: 4,
+		gpuLayers: 0, // CPU only
+		ctxSize: 2048,
+		batchSize: 512,
+		maxTokens: 50,
+	},
+	medium: {
+		name: 'Medium',
+		description: 'Mid-range hardware (modern laptops, integrated GPU)',
+		threads: 8,
+		gpuLayers: 20, // Partial GPU offload
+		ctxSize: 4096,
+		batchSize: 1024,
+		maxTokens: 100,
+	},
+	high: {
+		name: 'High-End',
+		description: 'High-end hardware (Apple Silicon M1/M2/M3, discrete GPU)',
+		threads: undefined, // Auto
+		gpuLayers: undefined, // Max/all layers
+		ctxSize: 8192,
+		batchSize: 2048,
+		maxTokens: 150,
+	},
+	ultra: {
+		name: 'Ultra',
+		description: 'Maximum performance (latest Apple Silicon, max resources)',
+		threads: undefined, // Auto
+		gpuLayers: undefined, // Max/all layers
+		ctxSize: 16384,
+		batchSize: 4096,
+		maxTokens: 200,
+	},
+};

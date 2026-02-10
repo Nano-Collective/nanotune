@@ -91,6 +91,27 @@ program
 	.option('-m, --model <path>', 'Path to model file')
 	.option('-d, --dataset <path>', 'Path to benchmark dataset')
 	.option('-t, --timeout <ms>', 'Timeout per test in milliseconds')
+	.option(
+		'--preset <name>',
+		'Hardware preset: low, medium, high, or ultra (overrides individual flags)',
+	)
+	.option('--threads <n>', 'Number of CPU threads to use (default: auto)')
+	.option(
+		'--gpu-layers <n>',
+		'Number of GPU layers to offload (default: auto/max)',
+	)
+	.option('--ctx-size <n>', 'Context size in tokens (default: 4096)')
+	.option(
+		'--batch-size <n>',
+		'Batch size for prompt processing (default: 2048)',
+	)
+	.option('--cpu-only', 'Disable GPU and use CPU only')
+	.option(
+		'--max-tokens <n>',
+		'Maximum tokens to generate per test (default: 50)',
+	)
+	.option('--temperature <n>', 'Sampling temperature (default: 0.8)')
+	.option('--seed <n>', 'Random seed for reproducibility')
 	.action(async options => {
 		const {BenchmarkCommand} = await import('./commands/benchmark.js');
 		render(<BenchmarkCommand options={options} />);
