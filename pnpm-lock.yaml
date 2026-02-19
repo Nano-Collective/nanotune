@@ -19,7 +19,7 @@ importers:
         version: 2.0.30(zod@4.3.6)
       '@inkjs/ui':
         specifier: ^2.0.0
-        version: 2.0.0(ink@6.6.0(@types/react@19.2.10)(react@19.2.4))
+        version: 2.0.0(ink@6.6.0(@types/react@19.2.14)(react@19.2.4))
       ai:
         specifier: ^6.0.91
         version: 6.0.91(zod@4.3.6)
@@ -31,7 +31,7 @@ importers:
         version: 9.6.1
       ink:
         specifier: ^6.6.0
-        version: 6.6.0(@types/react@19.2.10)(react@19.2.4)
+        version: 6.6.0(@types/react@19.2.14)(react@19.2.4)
       react:
         specifier: ^19.2.4
         version: 19.2.4
@@ -47,7 +47,7 @@ importers:
         version: 25.1.0
       '@types/react':
         specifier: ^19.2.10
-        version: 19.2.10
+        version: 19.2.14
       ava:
         specifier: ^6.4.1
         version: 6.4.1
@@ -517,8 +517,8 @@ packages:
   '@types/node@25.1.0':
     resolution: {integrity: sha512-t7frlewr6+cbx+9Ohpl0NOTKXZNV9xHRmNOvql47BFJKcEG1CxtxlPEEe+gR9uhVWM4DwhnvTF110mIL4yP9RA==}
 
-  '@types/react@19.2.10':
-    resolution: {integrity: sha512-WPigyYuGhgZ/cTPRXB2EwUw+XvsRA3GqHlsP4qteqrnnjDrApbS7MxcGr/hke5iUoeB7E/gQtrs9I37zAJ0Vjw==}
+  '@types/react@19.2.14':
+    resolution: {integrity: sha512-ilcTH/UniCkMdtexkoCN0bI7pMcJDvmQFPvuPvmEaYA/NSfFTAgdUSLAoVjaRJm7+6PvcM+q1zYOwS4wTYMF9w==}
 
   '@vercel/nft@0.29.4':
     resolution: {integrity: sha512-6lLqMNX3TuycBPABycx7A9F1bHQR7kiQln6abjFbPrf5C/05qHM9M5E4PeTE59c7z8g6vHnx1Ioihb2AQl7BTA==}
@@ -880,6 +880,7 @@ packages:
 
   glob@10.5.0:
     resolution: {integrity: sha512-DfXN8DfhJ7NH3Oe7cFmu3NCu1wKbkReJ8TorzSAFbSKrlNaQSKfIzqYqVY8zlbs2NLBbWpRiU52GX2PbaBVNkg==}
+    deprecated: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
     hasBin: true
 
   globby@14.1.0:
@@ -1325,6 +1326,7 @@ packages:
   tar@7.5.7:
     resolution: {integrity: sha512-fov56fJiRuThVFXD6o6/Q354S7pnWMJIVlDBYijsTNx6jKSE4pvrDTs6lUnmGvNyfJwFQQwWy3owKz1ucIhveQ==}
     engines: {node: '>=18'}
+    deprecated: Old versions of tar are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
 
   temp-dir@3.0.0:
     resolution: {integrity: sha512-nHc6S/bwIilKHNRgK/3jlhDoIHcp45YgyiwcAk46Tr0LfEqGBVpmiAyuiuxeVE44m3mXnEeVhaipLOEWmH+Njw==}
@@ -1632,13 +1634,13 @@ snapshots:
   '@esbuild/win32-x64@0.27.2':
     optional: true
 
-  '@inkjs/ui@2.0.0(ink@6.6.0(@types/react@19.2.10)(react@19.2.4))':
+  '@inkjs/ui@2.0.0(ink@6.6.0(@types/react@19.2.14)(react@19.2.4))':
     dependencies:
       chalk: 5.6.2
       cli-spinners: 3.4.0
       deepmerge: 4.3.1
       figures: 6.1.0
-      ink: 6.6.0(@types/react@19.2.10)(react@19.2.4)
+      ink: 6.6.0(@types/react@19.2.14)(react@19.2.4)
 
   '@isaacs/cliui@8.0.2':
     dependencies:
@@ -1790,7 +1792,7 @@ snapshots:
     dependencies:
       undici-types: 7.16.0
 
-  '@types/react@19.2.10':
+  '@types/react@19.2.14':
     dependencies:
       csstype: 3.2.3
 
@@ -2216,7 +2218,7 @@ snapshots:
 
   indent-string@5.0.0: {}
 
-  ink@6.6.0(@types/react@19.2.10)(react@19.2.4):
+  ink@6.6.0(@types/react@19.2.14)(react@19.2.4):
     dependencies:
       '@alcalzone/ansi-tokenize': 0.2.4
       ansi-escapes: 7.2.0
@@ -2243,7 +2245,7 @@ snapshots:
       ws: 8.19.0
       yoga-layout: 3.2.1
     optionalDependencies:
-      '@types/react': 19.2.10
+      '@types/react': 19.2.14
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
