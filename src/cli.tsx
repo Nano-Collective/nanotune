@@ -117,6 +117,27 @@ program
 		render(<BenchmarkCommand options={options} />);
 	});
 
+// Judge commands
+const judgeCommand = program
+	.command('judge')
+	.description('Configure and test the LLM judge');
+
+judgeCommand
+	.command('configure')
+	.description('Set up the LLM provider for judge evaluations')
+	.action(async () => {
+		const {JudgeConfigureCommand} = await import('./commands/judge.js');
+		render(<JudgeConfigureCommand />);
+	});
+
+judgeCommand
+	.command('test')
+	.description('Test the configured LLM judge with a sample evaluation')
+	.action(async () => {
+		const {JudgeTestCommand} = await import('./commands/judge.js');
+		render(<JudgeTestCommand />);
+	});
+
 // Status command
 program
 	.command('status')

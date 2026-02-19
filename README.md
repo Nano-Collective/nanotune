@@ -20,6 +20,7 @@ A simple, interactive CLI for fine-tuning small language models on Apple Silicon
 - LoRA fine-tuning via MLX
 - GGUF export via llama.cpp (pre-built binaries, no compilation needed)
 - Flexible benchmark testing with detailed reports
+- LLM-as-a-judge evaluation for open-ended responses
 - Support for any HuggingFace model
 - Configurable evaluation modes for different use cases
 
@@ -62,6 +63,9 @@ nanotune export
 
 # 5. Benchmark your model
 nanotune benchmark
+
+# Optional: configure an LLM judge for open-ended evaluation
+nanotune judge configure
 ```
 
 ## Commands
@@ -170,6 +174,20 @@ Each query reports:
 - **Tokens Generated** - Total tokens produced
 - **Tokens/Second** - Generation throughput
 
+### `nanotune judge configure`
+
+Interactively set up an LLM provider to use as a judge for evaluating open-ended responses during benchmarking. You'll be prompted to:
+
+1. Select a provider (Ollama, llama.cpp, LM Studio, OpenRouter, OpenAI, Anthropic, Google Gemini, Mistral, and more)
+2. Enter connection details (base URL, API key, model name)
+3. Test the connection
+
+The configuration is saved to `.nanotune/judge.json`. API keys support environment variable substitution (`${ENV_VAR}`) to avoid storing secrets in config files.
+
+### `nanotune judge test`
+
+Run a sample evaluation against the configured judge to verify it's working correctly. Sends a known prompt/response pair and displays the judge's scores, criteria breakdown, and reasoning.
+
 ### `nanotune status`
 
 Show current project status including training data count, training status, exports, and benchmark results.
@@ -225,6 +243,14 @@ Create a `tests.json` file in `.nanotune/benchmarks/`:
     "acceptable": ["Yes", "No"],
     "category": "classification",
     "match": "exact"
+  },
+  {
+    "id": 4,
+    "prompt": "Explain how to reset your password",
+    "category": "support",
+    "match": "llm-judge",
+    "criteria": ["helpful", "accurate", "concise"],
+    "passThreshold": 7
   }
 ]
 ```
@@ -239,6 +265,7 @@ Each test can specify a `match` mode to control how responses are evaluated:
 | `startsWith` | Response must start with acceptable answer | Code output, short answers |
 | `contains` | Response must contain acceptable answer anywhere | Q&A, explanations, chatbots |
 | `exact` | Must match exactly (case-insensitive by default) | Classification, yes/no, labels |
+| `llm-judge` | LLM evaluates response quality on configurable criteria | Open-ended, creative, conversational |
 
 ### Match Options
 
@@ -275,6 +302,71 @@ Passes if `1945` appears anywhere in the response.
 }
 ```
 Passes only if response exactly matches one of the options.
+
+**Open-ended / Conversational** (use `llm-judge`):
+```json
+{
+  "prompt": "Explain how to reset your password",
+  "category": "support",
+  "match": "llm-judge",
+  "criteria": ["helpful", "accurate", "concise"],
+  "passThreshold": 7
+}
+```
+An LLM judge scores the response on each criterion (0-10). Passes if the overall score meets the threshold. The `acceptable` field is optional — if provided, it's included as reference answers to help calibrate the judge.
+
+### LLM Judge
+
+For responses that can't be evaluated with string matching (open-ended questions, creative output, conversational responses), you can use an LLM as a judge.
+
+**Setup:**
+```bash
+nanotune judge configure
+```
+
+This walks you through selecting a provider and model. Supports cloud providers (OpenRouter, OpenAI, Anthropic, Google Gemini, Mistral, etc.) and local providers (Ollama, llama.cpp server, LM Studio).
+
+**Configuration** is saved to `.nanotune/judge.json`:
+```json
+{
+  "name": "OpenRouter",
+  "baseUrl": "https://openrouter.ai/api/v1",
+  "apiKey": "${OPENROUTER_API_KEY}",
+  "model": "anthropic/claude-haiku"
+}
+```
+
+API keys support environment variable substitution with `${ENV_VAR}` syntax to keep secrets out of config files. Default values are also supported: `${ENV_VAR:-fallback}`.
+
+**Built-in criteria** that can be referenced by name:
+
+| Criterion | Description |
+|-----------|-------------|
+| `helpful` | Response addresses the user's needs and provides useful information |
+| `accurate` | Response is factually correct and free of errors |
+| `concise` | Response is appropriately brief without unnecessary verbosity |
+| `safe` | Response avoids harmful, toxic, or inappropriate content |
+| `relevant` | Response stays on topic and directly addresses the prompt |
+
+You can also use custom criteria names — they'll be passed directly to the judge as-is.
+
+**Test format:**
+```json
+{
+  "id": 1,
+  "prompt": "Write a haiku about coding",
+  "category": "creative",
+  "match": "llm-judge",
+  "criteria": ["relevant", "concise"],
+  "passThreshold": 6
+}
+```
+
+- `criteria` — which criteria to score on (defaults to `["helpful", "accurate", "concise"]`)
+- `passThreshold` — minimum overall score to pass (defaults to `7`)
+- `acceptable` — optional reference answers to calibrate the judge
+
+**Benchmark reports** for llm-judge tests include the judge's score, per-criteria breakdown, and reasoning alongside the standard timing metrics.
 
 ### Benchmark Reports
 

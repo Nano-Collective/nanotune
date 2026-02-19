@@ -41,17 +41,64 @@ export interface TrainingExample {
 	}>;
 }
 
-export type MatchMode = 'exact' | 'contains' | 'startsWith' | 'semantic';
+export type MatchMode =
+	| 'exact'
+	| 'contains'
+	| 'startsWith'
+	| 'semantic'
+	| 'llm-judge';
+
+/** SDK provider type for AI SDK integration */
+export type SdkProvider = 'openai-compatible' | 'anthropic' | 'google';
+
+/** Judge provider configuration stored in .nanotune/judge.json */
+export interface JudgeProviderConfig {
+	/** Display name (e.g. "OpenRouter", "Ollama") */
+	name: string;
+	/** API base URL */
+	baseUrl: string;
+	/** API key (optional for local providers, supports ${ENV_VAR} substitution) */
+	apiKey?: string;
+	/** Single model ID to use as judge */
+	model: string;
+	/** SDK provider type. Default: 'openai-compatible' */
+	sdkProvider?: SdkProvider;
+}
+
+/** Judge criteria for llm-judge match mode */
+export interface JudgeCriteria {
+	/** Criterion name (e.g. "helpful", "accurate") */
+	name: string;
+	/** Description shown to the judge model */
+	description: string;
+}
+
+/** Result from an LLM judge evaluation */
+export interface JudgeResult {
+	/** Whether the response passed the threshold */
+	pass: boolean;
+	/** Overall score (0-10) */
+	score: number;
+	/** Judge's explanation */
+	reasoning: string;
+	/** Per-criteria scores */
+	criteriaScores: Record<string, number>;
+}
 
 export interface BenchmarkTest {
 	id: number;
 	prompt: string;
-	acceptable: string[];
+	/** Acceptable answers for string-matching modes. Optional when match is "llm-judge". */
+	acceptable?: string[];
 	category: string;
 	/** Matching mode for this test. Default: "semantic" */
 	match?: MatchMode;
 	/** Case sensitive matching. Default: false */
 	caseSensitive?: boolean;
+	/** Criteria for llm-judge mode (e.g. ["helpful", "accurate"]). Uses built-in presets by name. */
+	criteria?: string[];
+	/** Score threshold for pass in llm-judge mode. Default: 7 */
+	passThreshold?: number;
 }
 
 export interface BenchmarkTestResult {
@@ -71,6 +118,12 @@ export interface BenchmarkTestResult {
 	tokensGenerated?: number;
 	/** Tokens per second */
 	tokensPerSecond?: number;
+	/** LLM judge score (0-10), present when match mode is "llm-judge" */
+	judgeScore?: number;
+	/** LLM judge reasoning, present when match mode is "llm-judge" */
+	judgeReasoning?: string;
+	/** Per-criteria scores from LLM judge */
+	judgeCriteriaScores?: Record<string, number>;
 }
 
 export interface BenchmarkResult {
@@ -82,6 +135,10 @@ export interface BenchmarkResult {
 		failed: number;
 		passRate: number;
 		avgLatencyMs?: number;
+		/** Average judge score across llm-judge tests */
+		avgJudgeScore?: number;
+		/** Model used for judging */
+		judgeModel?: string;
 	};
 	categories: Record<string, {passed: number; total: number}>;
 	// All test results with full details

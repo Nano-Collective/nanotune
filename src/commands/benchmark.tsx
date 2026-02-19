@@ -11,6 +11,12 @@ import {
 	loadConfig,
 } from '../lib/config.js';
 import {
+	callJudge,
+	isJudgeConfigured,
+	loadJudgeConfig,
+	resolveCriteria,
+} from '../lib/judge.js';
+import {
 	type InferenceOptions,
 	type InferenceResult,
 	runGGUFInference,
@@ -21,6 +27,7 @@ import {
 	type BenchmarkResult,
 	type BenchmarkTest,
 	type BenchmarkTestResult,
+	type JudgeProviderConfig,
 	type MatchMode,
 } from '../types/index.js';
 
@@ -177,6 +184,12 @@ function generateMarkdownReport(
 	if (result.summary.avgLatencyMs) {
 		lines.push(`- **Avg Latency:** ${result.summary.avgLatencyMs}ms`);
 	}
+	if (result.summary.avgJudgeScore !== undefined) {
+		lines.push(`- **Avg Judge Score:** ${result.summary.avgJudgeScore}/10`);
+	}
+	if (result.summary.judgeModel) {
+		lines.push(`- **Judge Model:** ${result.summary.judgeModel}`);
+	}
 	lines.push('');
 
 	// Category breakdown
@@ -223,15 +236,34 @@ function generateMarkdownReport(
 			lines.push(`**Tokens/Second:** ${testResult.tokensPerSecond.toFixed(2)}`);
 		}
 		lines.push('');
-		lines.push('**Expected (any of):**');
-		for (const expected of testResult.expected) {
-			lines.push(`- \`${expected}\``);
+		if (testResult.expected.length > 0) {
+			lines.push('**Expected (any of):**');
+			for (const expected of testResult.expected) {
+				lines.push(`- \`${expected}\``);
+			}
+			lines.push('');
 		}
-		lines.push('');
 		lines.push('**Model Response:**');
 		lines.push('```');
 		lines.push(testResult.actual);
 		lines.push('```');
+		if (testResult.judgeScore !== undefined) {
+			lines.push('');
+			lines.push(`**Judge Score:** ${testResult.judgeScore}/10`);
+			if (testResult.judgeCriteriaScores) {
+				lines.push('');
+				lines.push('**Criteria Scores:**');
+				for (const [criterion, score] of Object.entries(
+					testResult.judgeCriteriaScores,
+				)) {
+					lines.push(`- ${criterion}: ${score}/10`);
+				}
+			}
+			if (testResult.judgeReasoning) {
+				lines.push('');
+				lines.push(`**Judge Reasoning:** ${testResult.judgeReasoning}`);
+			}
+		}
 		lines.push('');
 		lines.push('---');
 		lines.push('');
@@ -407,6 +439,21 @@ export function BenchmarkCommand({options}: Props) {
 				};
 			}
 
+			// Check if any tests use llm-judge and load judge config if needed
+			const hasJudgeTests = tests.some(t => t.match === 'llm-judge');
+			let judgeConfig: JudgeProviderConfig | null = null;
+
+			if (hasJudgeTests) {
+				if (!isJudgeConfigured()) {
+					setError(
+						'Some tests use "llm-judge" match mode but no judge is configured. Run `nanotune judge configure` first.',
+					);
+					setStatus('error');
+					return;
+				}
+				judgeConfig = loadJudgeConfig();
+			}
+
 			// Run benchmarks
 			setStatus('running');
 			const timeout = options.timeout
@@ -437,6 +484,10 @@ export function BenchmarkCommand({options}: Props) {
 				let tokensGenerated: number | undefined;
 				let tokensPerSecond: number | undefined;
 
+				let judgeScore: number | undefined;
+				let judgeReasoning: string | undefined;
+				let judgeCriteriaScores: Record<string, number> | undefined;
+
 				try {
 					// Build prompt with system message
 					const fullPrompt = `${config.systemPrompt}\n\nUser: ${test.prompt}\n\nAssistant:`;
@@ -455,14 +506,32 @@ export function BenchmarkCommand({options}: Props) {
 					tokensGenerated = inferenceResult.tokensGenerated;
 					tokensPerSecond = inferenceResult.tokensPerSecond;
 
-					// Check if response matches any acceptable answer
-					const matchResult = checkPass(
-						test.acceptable,
-						response.trim(),
-						test.match || 'semantic',
-						test.caseSensitive ?? false,
-					);
-					passed = matchResult.passed;
+					if (test.match === 'llm-judge' && judgeConfig) {
+						// Use LLM judge for evaluation
+						const criteria = resolveCriteria(test.criteria);
+						const threshold = test.passThreshold ?? 7;
+						const judgeResult = await callJudge(
+							test.prompt,
+							response.trim(),
+							criteria,
+							judgeConfig,
+							threshold,
+							test.acceptable,
+						);
+						passed = judgeResult.pass;
+						judgeScore = judgeResult.score;
+						judgeReasoning = judgeResult.reasoning;
+						judgeCriteriaScores = judgeResult.criteriaScores;
+					} else {
+						// Use string matching
+						const matchResult = checkPass(
+							test.acceptable || [],
+							response.trim(),
+							test.match || 'semantic',
+							test.caseSensitive ?? false,
+						);
+						passed = matchResult.passed;
+					}
 
 					if (passed) {
 						categoryResults[test.category].passed++;
@@ -470,7 +539,7 @@ export function BenchmarkCommand({options}: Props) {
 						failures.push({
 							id: test.id,
 							prompt: test.prompt,
-							expected: test.acceptable,
+							expected: test.acceptable || [],
 							actual: response.trim(),
 						});
 					}
@@ -481,7 +550,7 @@ export function BenchmarkCommand({options}: Props) {
 					failures.push({
 						id: test.id,
 						prompt: test.prompt,
-						expected: test.acceptable,
+						expected: test.acceptable || [],
 						actual: response,
 					});
 				}
@@ -490,7 +559,7 @@ export function BenchmarkCommand({options}: Props) {
 				allResults.push({
 					id: test.id,
 					prompt: test.prompt,
-					expected: test.acceptable,
+					expected: test.acceptable || [],
 					actual: response.trim(),
 					passed,
 					category: test.category,
@@ -499,6 +568,9 @@ export function BenchmarkCommand({options}: Props) {
 					generationTimeMs,
 					tokensGenerated,
 					tokensPerSecond,
+					judgeScore,
+					judgeReasoning,
+					judgeCriteriaScores,
 				});
 
 				setCategories({...categoryResults});
@@ -522,6 +594,17 @@ export function BenchmarkCommand({options}: Props) {
 						)
 					: undefined;
 
+			// Calculate average judge score (for llm-judge tests only)
+			const judgeResults = allResults.filter(r => r.judgeScore !== undefined);
+			const avgJudgeScore =
+				judgeResults.length > 0
+					? Math.round(
+							(judgeResults.reduce((sum, r) => sum + (r.judgeScore ?? 0), 0) /
+								judgeResults.length) *
+								10,
+						) / 10
+					: undefined;
+
 			const finalResult: BenchmarkResult = {
 				model: modelPath,
 				timestamp: new Date().toISOString(),
@@ -531,6 +614,8 @@ export function BenchmarkCommand({options}: Props) {
 					failed: totalTests - totalPassed,
 					passRate: totalPassed / totalTests,
 					avgLatencyMs,
+					avgJudgeScore,
+					judgeModel: judgeConfig?.model,
 				},
 				categories: categoryResults,
 				results: allResults,
@@ -642,6 +727,20 @@ export function BenchmarkCommand({options}: Props) {
 							{Math.round(results.summary.passRate * 100)}%)
 						</Text>
 					</Text>
+					{results.summary.avgJudgeScore !== undefined && (
+						<Text>
+							Judge Score:{' '}
+							<Text
+								color={results.summary.avgJudgeScore >= 7 ? 'green' : 'yellow'}
+								bold
+							>
+								{results.summary.avgJudgeScore}/10
+							</Text>
+							{results.summary.judgeModel && (
+								<Text dimColor> ({results.summary.judgeModel})</Text>
+							)}
+						</Text>
+					)}
 
 					<Text> </Text>
 					<Text bold>By Category:</Text>
