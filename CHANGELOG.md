@@ -1,3 +1,17 @@
+# 1.1.1
+
+## Security Updates
+
+- Fixed high severity vulnerabilities in transitive dependencies (`minimatch`, `tar`) via pnpm overrides
+
+## Documentation
+
+- Added basic documentation in `./docs` ahead of new documentation website
+  - Getting started guide
+  - Command reference
+  - Training data formats
+  - Benchmarking guide
+
 # 1.1.0
 
 ## Enhanced Benchmarking
