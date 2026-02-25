@@ -1,6 +1,6 @@
 import {existsSync, mkdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {type Config, ConfigSchema} from '../types/index.js';
+import {type ChatMessage, type Config, ConfigSchema} from '../types/index.js';
 
 const CONFIG_DIR = '.nanotune';
 const CONFIG_FILE = 'config.json';
@@ -67,16 +67,23 @@ export function initializeProjectDirs(): void {
 	}
 }
 
+export function resolveContextMessage(config: Config): ChatMessage {
+	if (config.contextMessage) {
+		return config.contextMessage;
+	}
+	return {role: 'system', content: config.systemPrompt ?? ''};
+}
+
 export function createDefaultConfig(
 	name: string,
 	baseModel: string,
-	systemPrompt: string,
+	contextMessage: ChatMessage,
 ): Config {
 	return {
 		name,
 		version: '1.0.0',
 		baseModel,
-		systemPrompt,
+		contextMessage,
 		training: {
 			iterations: 150,
 			learningRate: 5e-5,

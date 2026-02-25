@@ -1,3 +1,20 @@
+# 1.2.0
+
+## Message-Structure-Agnostic Training
+
+Nanotune is no longer locked into the `system/user/assistant` message structure. The hardcoded `systemPrompt` config field has been replaced with a flexible `contextMessage` that accepts any role (`system`, `developer`, or custom roles).
+
+### What Changed
+- **`nanotune init`** now asks for a context message role (defaulting to `system`) and content, instead of just a system prompt
+- **Config format** uses `contextMessage: { role, content }` instead of `systemPrompt`
+- **Validation** is relaxed: training examples require at least 2 messages with any role names, instead of exactly 3 with hardcoded roles
+- **Backward compatible**: existing projects using `systemPrompt` in config.json continue to work without changes
+
+### Why
+Models like FunctionGemma use a `developer` role instead of `system`. This change lets you fine-tune for any chat message structure.
+
+---
+
 # 1.1.1
 
 ## Security Updates

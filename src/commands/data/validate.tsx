@@ -1,7 +1,11 @@
 import {StatusMessage} from '@inkjs/ui';
 import {Box, Text, useApp, useInput} from 'ink';
 import {Header, StatusBadge} from '../../components/index.js';
-import {configExists, loadConfig} from '../../lib/config.js';
+import {
+	configExists,
+	loadConfig,
+	resolveContextMessage,
+} from '../../lib/config.js';
 import {countExamples, validateTrainingData} from '../../lib/data.js';
 
 export function DataValidateCommand() {
@@ -26,7 +30,7 @@ export function DataValidateCommand() {
 
 	const config = loadConfig();
 	const count = countExamples();
-	const result = validateTrainingData(config.systemPrompt);
+	const result = validateTrainingData(resolveContextMessage(config));
 
 	return (
 		<Box flexDirection="column" padding={1}>
@@ -88,12 +92,12 @@ export function DataValidateCommand() {
 				<Box>
 					<StatusBadge
 						status={
-							!result.warnings.some(w => w.includes('system prompts'))
+							!result.warnings.some(w => w.includes('context messages'))
 								? 'success'
 								: 'warning'
 						}
 					/>
-					<Text> System prompt consistency</Text>
+					<Text> Context message consistency</Text>
 				</Box>
 				<Box>
 					<StatusBadge

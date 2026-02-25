@@ -55,7 +55,7 @@ This checks for:
 - Valid JSON structure
 - Required fields present
 - No duplicate examples
-- System prompt consistency
+- Context message consistency
 - Minimum example count
 
 ## Tips
@@ -66,7 +66,7 @@ For 0.5B–1.5B models, 100–500 quality examples typically work well.
 
 ### Quality
 
-- Keep system prompts consistent across examples
+- Keep context messages consistent across examples
 - Make sure outputs match what you want the model to produce
 - Include variations of similar prompts
 

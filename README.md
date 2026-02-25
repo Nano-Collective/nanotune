@@ -75,7 +75,8 @@ nanotune judge configure
 Initialize a new fine-tuning project. You'll be prompted to enter:
 - Project name
 - Base model (any HuggingFace model ID)
-- System prompt
+- Context message role (e.g. `system`, `developer`)
+- Context message content
 
 Creates a `.nanotune/` directory with configuration and data folders.
 
@@ -102,7 +103,7 @@ Validate your training data for:
 - Valid JSON structure
 - Required fields present
 - No duplicate examples
-- System prompt consistency
+- Context message consistency
 - Minimum example count
 
 ### `nanotune train`
@@ -199,6 +200,8 @@ Show current project status including training data count, training status, expo
 ```jsonl
 {"messages":[{"role":"system","content":"You are helpful."},{"role":"user","content":"Hello"},{"role":"assistant","content":"Hi!"}]}
 ```
+
+The first message role is flexible — it can be `system`, `developer`, or any role your model expects. Nanotune stores this as the "context message" and applies it consistently across all training examples.
 
 ### CSV
 
@@ -388,7 +391,10 @@ The project configuration is stored in `.nanotune/config.json`:
   "name": "my-project",
   "version": "1.0.0",
   "baseModel": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
-  "systemPrompt": "You are a helpful assistant.",
+  "contextMessage": {
+    "role": "system",
+    "content": "You are a helpful assistant."
+  },
   "training": {
     "iterations": 150,
     "learningRate": 5e-5,
@@ -403,6 +409,8 @@ The project configuration is stored in `.nanotune/config.json`:
   }
 }
 ```
+
+The `contextMessage` field specifies the role and content of the first message in every training example. This supports any role your model expects (e.g. `system`, `developer`). For backward compatibility, existing configs using `systemPrompt` (a plain string) will continue to work — it's treated as a `system`-role context message.
 
 ## Recommended Models
 
@@ -420,7 +428,7 @@ These models have been tested and work well with Nanotune:
 ### Training Data
 
 - **Quantity**: 100-500 examples for 0.5B-1.5B models
-- **Quality**: Ensure consistency in system prompts
+- **Quality**: Ensure consistency in context messages
 - **Variety**: Cover edge cases and variations
 
 ### Hyperparameters

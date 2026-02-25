@@ -9,7 +9,14 @@ import {
 	saveConfig,
 } from '../lib/config.js';
 
-type Step = 'name' | 'model' | 'prompt' | 'confirm' | 'done' | 'error';
+type Step =
+	| 'name'
+	| 'model'
+	| 'contextRole'
+	| 'prompt'
+	| 'confirm'
+	| 'done'
+	| 'error';
 
 export function InitCommand() {
 	const {exit} = useApp();
@@ -21,7 +28,8 @@ export function InitCommand() {
 	});
 	const [name, setName] = useState(process.cwd().split('/').pop() || 'project');
 	const [model, setModel] = useState('');
-	const [systemPrompt, setSystemPrompt] = useState('');
+	const [contextRole, setContextRole] = useState('system');
+	const [contextContent, setContextContent] = useState('');
 	const [errorMessage, setErrorMessage] = useState(
 		'A Nanotune project already exists in this directory.',
 	);
@@ -42,13 +50,19 @@ export function InitCommand() {
 	const handleModelSubmit = (value: string) => {
 		if (value.trim()) {
 			setModel(value.trim());
-			setStep('prompt');
+			setStep('contextRole');
 		}
+	};
+
+	const handleContextRoleSubmit = (value: string) => {
+		const role = value.trim() || 'system';
+		setContextRole(role);
+		setStep('prompt');
 	};
 
 	const handlePromptSubmit = (value: string) => {
 		if (value.trim()) {
-			setSystemPrompt(value.trim());
+			setContextContent(value.trim());
 			setStep('confirm');
 		}
 	};
@@ -58,7 +72,10 @@ export function InitCommand() {
 			if (input.toLowerCase() === 'y') {
 				try {
 					initializeProjectDirs();
-					const config = createDefaultConfig(name, model, systemPrompt);
+					const config = createDefaultConfig(name, model, {
+						role: contextRole,
+						content: contextContent,
+					});
 					saveConfig(config);
 					setStep('done');
 					setTimeout(() => exit(), 100);
@@ -80,6 +97,8 @@ export function InitCommand() {
 			</Box>
 		);
 	}
+
+	const roleLabel = contextRole.charAt(0).toUpperCase() + contextRole.slice(1);
 
 	return (
 		<Box flexDirection="column" padding={1}>
@@ -114,16 +133,32 @@ export function InitCommand() {
 				</Box>
 			)}
 
+			{step === 'contextRole' && (
+				<Box flexDirection="column">
+					<Text>Context message role:</Text>
+					<TextInput
+						defaultValue="system"
+						onSubmit={handleContextRoleSubmit}
+						placeholder="system"
+					/>
+					<Box marginTop={1}>
+						<Text dimColor italic>
+							Examples: system, developer
+						</Text>
+					</Box>
+				</Box>
+			)}
+
 			{step === 'prompt' && (
 				<Box flexDirection="column">
-					<Text>System prompt:</Text>
+					<Text>{roleLabel} message:</Text>
 					<TextInput
 						onSubmit={handlePromptSubmit}
 						placeholder="You are a helpful assistant..."
 					/>
 					<Box marginTop={1}>
 						<Text dimColor italic>
-							This prompt will be used for all training examples
+							This message will be used for all training examples
 						</Text>
 					</Box>
 				</Box>
@@ -140,8 +175,8 @@ export function InitCommand() {
 						Model: <Text color="cyan">{model}</Text>
 					</Text>
 					<Text>
-						System Prompt:{' '}
-						<Text color="cyan">{systemPrompt.slice(0, 50)}...</Text>
+						Context ({contextRole}):{' '}
+						<Text color="cyan">{contextContent.slice(0, 50)}...</Text>
 					</Text>
 					<Text> </Text>
 					<Text>

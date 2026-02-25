@@ -3,7 +3,11 @@ import {Spinner, StatusMessage} from '@inkjs/ui';
 import {Box, Text, useApp, useInput} from 'ink';
 import {useEffect, useState} from 'react';
 import {Header} from '../../components/index.js';
-import {configExists, loadConfig} from '../../lib/config.js';
+import {
+	configExists,
+	loadConfig,
+	resolveContextMessage,
+} from '../../lib/config.js';
 import {
 	type ImportResult,
 	importData,
@@ -61,7 +65,7 @@ export function DataImportCommand({file}: Props) {
 
 			const config = loadConfig();
 			const filePath = resolve(process.cwd(), file);
-			const importResult = importData(filePath, config.systemPrompt);
+			const importResult = importData(filePath, resolveContextMessage(config));
 
 			setResult(importResult);
 			setStatus('done');

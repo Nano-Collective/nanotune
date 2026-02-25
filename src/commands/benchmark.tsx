@@ -9,6 +9,7 @@ import {
 	getBenchmarksDir,
 	getModelsDir,
 	loadConfig,
+	resolveContextMessage,
 } from '../lib/config.js';
 import {
 	callJudge,
@@ -164,7 +165,7 @@ function checkPass(
 
 function generateMarkdownReport(
 	result: BenchmarkResult,
-	systemPrompt: string,
+	contextMessage: {role: string; content: string},
 ): string {
 	const lines: string[] = [];
 
@@ -203,11 +204,11 @@ function generateMarkdownReport(
 	}
 	lines.push('');
 
-	// System prompt used
-	lines.push('## System Prompt');
+	// Context message used
+	lines.push(`## Context Message (${contextMessage.role})`);
 	lines.push('');
 	lines.push('```');
-	lines.push(systemPrompt);
+	lines.push(contextMessage.content);
 	lines.push('```');
 	lines.push('');
 
@@ -489,8 +490,8 @@ export function BenchmarkCommand({options}: Props) {
 				let judgeCriteriaScores: Record<string, number> | undefined;
 
 				try {
-					// Build prompt with system message
-					const fullPrompt = `${config.systemPrompt}\n\nUser: ${test.prompt}\n\nAssistant:`;
+					// Build prompt with context message
+					const fullPrompt = `${resolveContextMessage(config).content}\n\nUser: ${test.prompt}\n\nAssistant:`;
 
 					const inferenceResult = await Promise.race<InferenceResult | never>([
 						runGGUFInference(modelPath, fullPrompt, inferenceOptions),
@@ -632,7 +633,10 @@ export function BenchmarkCommand({options}: Props) {
 			// Save human-readable markdown report
 			const reportFilename = resultFilename.replace('.json', '.md');
 			const reportPath = join(benchmarksDir, reportFilename);
-			const report = generateMarkdownReport(finalResult, config.systemPrompt);
+			const report = generateMarkdownReport(
+				finalResult,
+				resolveContextMessage(config),
+			);
 			writeFileSync(reportPath, report);
 
 			setResults(finalResult);

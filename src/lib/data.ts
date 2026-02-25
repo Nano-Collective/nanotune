@@ -6,7 +6,7 @@ import {
 	writeFileSync,
 } from 'node:fs';
 import {join} from 'node:path';
-import type {TrainingExample} from '../types/index.js';
+import type {ChatMessage, TrainingExample} from '../types/index.js';
 import {getDataDir} from './config.js';
 
 function ensureDataDir(): void {
@@ -56,7 +56,7 @@ export function loadTrainingData(isEval = false): TrainingExample[] {
 
 export function appendToTrainingData(
 	example: {
-		systemPrompt: string;
+		contextMessage: ChatMessage;
 		userInput: string;
 		assistantOutput: string;
 	},
@@ -66,7 +66,10 @@ export function appendToTrainingData(
 	const path = isEval ? getEvalDataPath() : getTrainDataPath();
 	const trainingExample: TrainingExample = {
 		messages: [
-			{role: 'system', content: example.systemPrompt},
+			{
+				role: example.contextMessage.role,
+				content: example.contextMessage.content,
+			},
 			{role: 'user', content: example.userInput},
 			{role: 'assistant', content: example.assistantOutput},
 		],
@@ -96,7 +99,7 @@ export function deleteExample(index: number, isEval = false): void {
 export function updateExample(
 	index: number,
 	example: {
-		systemPrompt: string;
+		contextMessage: ChatMessage;
 		userInput: string;
 		assistantOutput: string;
 	},
@@ -106,7 +109,10 @@ export function updateExample(
 	if (index >= 0 && index < examples.length) {
 		examples[index] = {
 			messages: [
-				{role: 'system', content: example.systemPrompt},
+				{
+					role: example.contextMessage.role,
+					content: example.contextMessage.content,
+				},
 				{role: 'user', content: example.userInput},
 				{role: 'assistant', content: example.assistantOutput},
 			],
@@ -121,7 +127,9 @@ export interface ValidationResult {
 	warnings: string[];
 }
 
-export function validateTrainingData(systemPrompt: string): ValidationResult {
+export function validateTrainingData(
+	contextMessage: ChatMessage,
+): ValidationResult {
 	const errors: string[] = [];
 	const warnings: string[] = [];
 	const examples = loadTrainingData();
@@ -152,44 +160,36 @@ export function validateTrainingData(systemPrompt: string): ValidationResult {
 			continue;
 		}
 
-		if (ex.messages.length !== 3) {
+		if (ex.messages.length < 2) {
 			errors.push(
-				`Example ${i + 1}: Expected 3 messages (system, user, assistant), got ${ex.messages.length}`,
+				`Example ${i + 1}: Expected at least 2 messages, got ${ex.messages.length}`,
 			);
 			continue;
 		}
 
-		const [system, user, assistant] = ex.messages;
-
-		// Check roles
-		if (system.role !== 'system') {
-			errors.push(`Example ${i + 1}: First message should be system role`);
-		}
-		if (user.role !== 'user') {
-			errors.push(`Example ${i + 1}: Second message should be user role`);
-		}
-		if (assistant.role !== 'assistant') {
-			errors.push(`Example ${i + 1}: Third message should be assistant role`);
+		// Check all messages have role and content
+		for (let j = 0; j < ex.messages.length; j++) {
+			const msg = ex.messages[j];
+			if (!msg.role) {
+				errors.push(`Example ${i + 1}, message ${j + 1}: Missing role`);
+			}
+			if (!msg.content?.trim()) {
+				errors.push(`Example ${i + 1}, message ${j + 1}: Empty content`);
+			}
 		}
 
-		// Check content
-		if (!system.content?.trim()) {
-			errors.push(`Example ${i + 1}: Empty system prompt`);
-		}
-		if (!user.content?.trim()) {
-			errors.push(`Example ${i + 1}: Empty user input`);
-		}
-		if (!assistant.content?.trim()) {
-			errors.push(`Example ${i + 1}: Empty assistant output`);
-		}
-
-		// Check system prompt consistency
-		if (system.content !== systemPrompt) {
+		// Check context message consistency (first message)
+		const firstMsg = ex.messages[0];
+		if (
+			firstMsg.role !== contextMessage.role ||
+			firstMsg.content !== contextMessage.content
+		) {
 			inconsistentPromptCount++;
 		}
 
-		// Check duplicates
-		const inputKey = user.content?.trim().toLowerCase();
+		// Check duplicates based on user-role messages
+		const userMsg = ex.messages.find(m => m.role === 'user');
+		const inputKey = userMsg?.content?.trim().toLowerCase();
 		if (inputKey && seenInputs.has(inputKey)) {
 			duplicateCount++;
 		} else if (inputKey) {
@@ -199,7 +199,7 @@ export function validateTrainingData(systemPrompt: string): ValidationResult {
 
 	if (inconsistentPromptCount > 0) {
 		warnings.push(
-			`${inconsistentPromptCount} examples have system prompts that don't match config`,
+			`${inconsistentPromptCount} examples have context messages that don't match config`,
 		);
 	}
 
@@ -222,7 +222,7 @@ export interface ImportResult {
 
 export function importFromCSV(
 	filePath: string,
-	systemPrompt: string,
+	contextMessage: ChatMessage,
 ): ImportResult {
 	const errors: string[] = [];
 	let imported = 0;
@@ -255,7 +255,7 @@ export function importFromCSV(
 		}
 
 		appendToTrainingData({
-			systemPrompt,
+			contextMessage,
 			userInput: input.trim(),
 			assistantOutput: output.trim(),
 		});
@@ -267,7 +267,7 @@ export function importFromCSV(
 
 export function importFromJSONL(
 	filePath: string,
-	systemPrompt: string,
+	contextMessage: ChatMessage,
 ): ImportResult {
 	const errors: string[] = [];
 	let imported = 0;
@@ -282,15 +282,17 @@ export function importFromJSONL(
 
 			// Check if it's already in the right format
 			if (data.messages && Array.isArray(data.messages)) {
-				// Validate and optionally update system prompt
 				if (data.messages.length >= 2) {
-					const hasSystem = data.messages[0]?.role === 'system';
-					const userMsg = hasSystem ? data.messages[1] : data.messages[0];
-					const assistantMsg = hasSystem ? data.messages[2] : data.messages[1];
+					const userMsg = data.messages.find(
+						(m: ChatMessage) => m.role === 'user',
+					);
+					const assistantMsg = data.messages.find(
+						(m: ChatMessage) => m.role === 'assistant',
+					);
 
 					if (userMsg?.content && assistantMsg?.content) {
 						appendToTrainingData({
-							systemPrompt,
+							contextMessage,
 							userInput: userMsg.content,
 							assistantOutput: assistantMsg.content,
 						});
@@ -303,7 +305,7 @@ export function importFromJSONL(
 			// Check for simple input/output format
 			if (data.input && data.output) {
 				appendToTrainingData({
-					systemPrompt,
+					contextMessage,
 					userInput: data.input,
 					assistantOutput: data.output,
 				});
@@ -324,7 +326,7 @@ export function importFromJSONL(
 
 export function importFromJSON(
 	filePath: string,
-	systemPrompt: string,
+	contextMessage: ChatMessage,
 ): ImportResult {
 	const errors: string[] = [];
 	let imported = 0;
@@ -341,13 +343,14 @@ export function importFromJSON(
 		const item = data[i];
 
 		if (item.messages && Array.isArray(item.messages)) {
-			const hasSystem = item.messages[0]?.role === 'system';
-			const userMsg = hasSystem ? item.messages[1] : item.messages[0];
-			const assistantMsg = hasSystem ? item.messages[2] : item.messages[1];
+			const userMsg = item.messages.find((m: ChatMessage) => m.role === 'user');
+			const assistantMsg = item.messages.find(
+				(m: ChatMessage) => m.role === 'assistant',
+			);
 
 			if (userMsg?.content && assistantMsg?.content) {
 				appendToTrainingData({
-					systemPrompt,
+					contextMessage,
 					userInput: userMsg.content,
 					assistantOutput: assistantMsg.content,
 				});
@@ -358,7 +361,7 @@ export function importFromJSON(
 
 		if (item.input && item.output) {
 			appendToTrainingData({
-				systemPrompt,
+				contextMessage,
 				userInput: item.input,
 				assistantOutput: item.output,
 			});
@@ -375,7 +378,7 @@ export function importFromJSON(
 
 export function importData(
 	filePath: string,
-	systemPrompt: string,
+	contextMessage: ChatMessage,
 ): ImportResult {
 	if (!existsSync(filePath)) {
 		return {imported: 0, skipped: 0, errors: ['File not found']};
@@ -385,11 +388,11 @@ export function importData(
 
 	switch (ext) {
 		case 'csv':
-			return importFromCSV(filePath, systemPrompt);
+			return importFromCSV(filePath, contextMessage);
 		case 'jsonl':
-			return importFromJSONL(filePath, systemPrompt);
+			return importFromJSONL(filePath, contextMessage);
 		case 'json':
-			return importFromJSON(filePath, systemPrompt);
+			return importFromJSON(filePath, contextMessage);
 		default:
 			return {
 				imported: 0,

@@ -1,5 +1,15 @@
 import {z} from 'zod';
 
+export interface ChatMessage {
+	role: string;
+	content: string;
+}
+
+export const ChatMessageSchema = z.object({
+	role: z.string(),
+	content: z.string(),
+});
+
 export const TrainingConfigSchema = z.object({
 	iterations: z.number().default(150),
 	learningRate: z.number().default(5e-5),
@@ -14,14 +24,19 @@ export const ExportConfigSchema = z.object({
 	outputName: z.string(),
 });
 
-export const ConfigSchema = z.object({
-	name: z.string(),
-	version: z.string().default('1.0.0'),
-	baseModel: z.string(),
-	systemPrompt: z.string(),
-	training: TrainingConfigSchema,
-	export: ExportConfigSchema,
-});
+export const ConfigSchema = z
+	.object({
+		name: z.string(),
+		version: z.string().default('1.0.0'),
+		baseModel: z.string(),
+		systemPrompt: z.string().optional(),
+		contextMessage: ChatMessageSchema.optional(),
+		training: TrainingConfigSchema,
+		export: ExportConfigSchema,
+	})
+	.refine(data => data.contextMessage || data.systemPrompt, {
+		message: 'Either contextMessage or systemPrompt must be provided',
+	});
 
 export type Config = z.infer<typeof ConfigSchema>;
 export type TrainingConfig = z.infer<typeof TrainingConfigSchema>;
@@ -35,10 +50,7 @@ export interface TrainingProgress {
 }
 
 export interface TrainingExample {
-	messages: Array<{
-		role: 'system' | 'user' | 'assistant';
-		content: string;
-	}>;
+	messages: ChatMessage[];
 }
 
 export type MatchMode =

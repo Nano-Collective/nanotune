@@ -40,7 +40,7 @@ npx @nanocollective/nanotune init
 nanotune init
 ```
 
-You'll be prompted for a project name, base model, and system prompt. This creates a `.nanotune/` directory with your configuration.
+You'll be prompted for a project name, base model, context message role, and context message content. This creates a `.nanotune/` directory with your configuration.
 
 ### 2. Add Training Data
 

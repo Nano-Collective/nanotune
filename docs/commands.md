@@ -10,7 +10,8 @@ Initialize a new fine-tuning project. You'll be prompted for:
 
 - Project name
 - Base model (any HuggingFace model ID)
-- System prompt
+- Context message role (e.g. `system`, `developer`)
+- Context message content
 
 Creates a `.nanotune/` directory with configuration and data folders.
 
@@ -43,7 +44,7 @@ Validate your training data for:
 - Valid JSON structure
 - Required fields present
 - No duplicate examples
-- System prompt consistency
+- Context message consistency
 - Minimum example count
 
 ## Training

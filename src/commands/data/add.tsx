@@ -2,7 +2,11 @@ import {StatusMessage, TextInput} from '@inkjs/ui';
 import {Box, Text, useApp, useInput} from 'ink';
 import {useState} from 'react';
 import {Header} from '../../components/index.js';
-import {configExists, loadConfig} from '../../lib/config.js';
+import {
+	configExists,
+	loadConfig,
+	resolveContextMessage,
+} from '../../lib/config.js';
 import {appendToTrainingData, countExamples} from '../../lib/data.js';
 
 type Field = 'input' | 'output';
@@ -48,7 +52,7 @@ export function DataAddCommand() {
 		try {
 			const config = loadConfig();
 			appendToTrainingData({
-				systemPrompt: config.systemPrompt,
+				contextMessage: resolveContextMessage(config),
 				userInput: input.trim(),
 				assistantOutput: value.trim(),
 			});
