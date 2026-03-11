@@ -1,3 +1,11 @@
+# 1.2.1
+
+## Bug Fix
+
+- **Benchmark command** now works with minimal config files from external tools. Previously, `nanotune benchmark` required a full project config (with `name`, `baseModel`, `training`, `export` fields). Now it gracefully falls back to an empty context message when the config doesn't match the full schema, enabling benchmark-only workflows.
+
+---
+
 # 1.2.0
 
 ## Message-Structure-Agnostic Training

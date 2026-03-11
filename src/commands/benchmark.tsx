@@ -313,7 +313,17 @@ export function BenchmarkCommand({options}: Props) {
 				return;
 			}
 
-			const config = loadConfig();
+			// Try full config; fall back to raw config for benchmark-only setups
+			let contextMsg: {role: string; content: string} = {
+				role: 'system',
+				content: '',
+			};
+			try {
+				const config = loadConfig();
+				contextMsg = resolveContextMessage(config);
+			} catch {
+				// Minimal config (e.g., external benchmark runner) — no context message needed
+			}
 			const modelsDir = getModelsDir();
 			const benchmarksDir = getBenchmarksDir();
 
@@ -491,7 +501,7 @@ export function BenchmarkCommand({options}: Props) {
 
 				try {
 					// Build prompt with context message
-					const fullPrompt = `${resolveContextMessage(config).content}\n\nUser: ${test.prompt}\n\nAssistant:`;
+					const fullPrompt = `${contextMsg.content}\n\nUser: ${test.prompt}\n\nAssistant:`;
 
 					const inferenceResult = await Promise.race<InferenceResult | never>([
 						runGGUFInference(modelPath, fullPrompt, inferenceOptions),
@@ -635,7 +645,7 @@ export function BenchmarkCommand({options}: Props) {
 			const reportPath = join(benchmarksDir, reportFilename);
 			const report = generateMarkdownReport(
 				finalResult,
-				resolveContextMessage(config),
+				contextMsg,
 			);
 			writeFileSync(reportPath, report);
 
