@@ -64,7 +64,7 @@ jobs:
         with:
           version: latest
 
-      - name: Install dependencies (including VS Code extension)
+      - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Install Semgrep
