@@ -643,10 +643,7 @@ export function BenchmarkCommand({options}: Props) {
 			// Save human-readable markdown report
 			const reportFilename = resultFilename.replace('.json', '.md');
 			const reportPath = join(benchmarksDir, reportFilename);
-			const report = generateMarkdownReport(
-				finalResult,
-				contextMsg,
-			);
+			const report = generateMarkdownReport(finalResult, contextMsg);
 			writeFileSync(reportPath, report);
 
 			setResults(finalResult);
