@@ -10,6 +10,7 @@ import {
 } from '../../lib/config.js';
 import {
 	type ImportResult,
+	countTurns,
 	importData,
 	loadTrainingData,
 } from '../../lib/data.js';
@@ -34,7 +35,9 @@ export function DataImportCommand({file}: Props) {
 			const previewItems = existingData.slice(0, 3).map(ex => {
 				const user = ex.messages.find(m => m.role === 'user');
 				const assistant = ex.messages.find(m => m.role === 'assistant');
-				return `${user?.content?.slice(0, 30) || '?'} -> ${assistant?.content?.slice(0, 30) || '?'}`;
+				const turns = countTurns(ex);
+				const turnsLabel = turns > 1 ? ` (${turns} turns)` : '';
+				return `${user?.content?.slice(0, 30) || '?'} -> ${assistant?.content?.slice(0, 30) || '?'}${turnsLabel}`;
 			});
 			setPreview(previewItems);
 		} catch {

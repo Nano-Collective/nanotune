@@ -5,6 +5,11 @@ import {Box, Text, useApp, useInput} from 'ink';
 import {useCallback, useEffect, useState} from 'react';
 import {Header, Progress, StatusBadge} from '../components/index.js';
 import {
+	buildFullPrompt,
+	formatConversationForJudge,
+	getTestDisplayPrompt,
+} from '../lib/benchmark-utils.js';
+import {
 	configExists,
 	getBenchmarksDir,
 	getModelsDir,
@@ -218,8 +223,20 @@ function generateMarkdownReport(
 
 	for (const testResult of result.results) {
 		const status = testResult.passed ? '✅' : '❌';
-		lines.push(`### ${status} Test #${testResult.id}: ${testResult.prompt}`);
+		const label = testResult.messages
+			? `[${testResult.messages.length}-msg conversation]`
+			: testResult.prompt;
+		lines.push(`### ${status} Test #${testResult.id}: ${label}`);
 		lines.push('');
+		if (testResult.messages) {
+			lines.push('**Conversation:**');
+			lines.push('');
+			for (const msg of testResult.messages) {
+				const role = msg.role.charAt(0).toUpperCase() + msg.role.slice(1);
+				lines.push(`> **${role}:** ${msg.content}`);
+			}
+			lines.push('');
+		}
 		lines.push(`**Category:** ${testResult.category}`);
 		if (testResult.latencyMs) {
 			lines.push(`**Total Latency:** ${testResult.latencyMs}ms`);
@@ -279,7 +296,10 @@ function generateMarkdownReport(
 		for (const f of result.failures) {
 			const expected = f.expected.join(' \\| ');
 			const actual = f.actual.replace(/\n/g, ' ').slice(0, 50);
-			lines.push(`| ${f.id} | ${f.prompt} | ${expected} | ${actual} |`);
+			const prompt = f.messages
+				? `[${f.messages.length}-msg conversation]`
+				: f.prompt;
+			lines.push(`| ${f.id} | ${prompt} | ${expected} | ${actual} |`);
 		}
 		lines.push('');
 	}
@@ -391,6 +411,15 @@ export function BenchmarkCommand({options}: Props) {
 				return;
 			}
 
+			// Validate tests: each must have either prompt or messages
+			for (const test of tests) {
+				if (!test.prompt && (!test.messages || test.messages.length === 0)) {
+					setError(`Test #${test.id} must have either "prompt" or "messages".`);
+					setStatus('error');
+					return;
+				}
+			}
+
 			// Build inference options from CLI flags or preset
 			let inferenceOptions: InferenceOptions;
 
@@ -477,7 +506,7 @@ export function BenchmarkCommand({options}: Props) {
 
 			for (let i = 0; i < tests.length; i++) {
 				const test = tests[i];
-				setCurrentTest(test.prompt);
+				setCurrentTest(getTestDisplayPrompt(test));
 				setProgress(((i + 1) / tests.length) * 100);
 
 				// Initialize category
@@ -501,7 +530,7 @@ export function BenchmarkCommand({options}: Props) {
 
 				try {
 					// Build prompt with context message
-					const fullPrompt = `${contextMsg.content}\n\nUser: ${test.prompt}\n\nAssistant:`;
+					const fullPrompt = buildFullPrompt(test, contextMsg);
 
 					const inferenceResult = await Promise.race<InferenceResult | never>([
 						runGGUFInference(modelPath, fullPrompt, inferenceOptions),
@@ -521,8 +550,12 @@ export function BenchmarkCommand({options}: Props) {
 						// Use LLM judge for evaluation
 						const criteria = resolveCriteria(test.criteria);
 						const threshold = test.passThreshold ?? 7;
+						// For multi-turn tests, include conversation context in the judge prompt
+						const judgePrompt = test.messages
+							? formatConversationForJudge(test.messages, contextMsg)
+							: (test.prompt as string);
 						const judgeResult = await callJudge(
-							test.prompt,
+							judgePrompt,
 							response.trim(),
 							criteria,
 							judgeConfig,
@@ -549,7 +582,8 @@ export function BenchmarkCommand({options}: Props) {
 					} else {
 						failures.push({
 							id: test.id,
-							prompt: test.prompt,
+							prompt: getTestDisplayPrompt(test),
+							messages: test.messages,
 							expected: test.acceptable || [],
 							actual: response.trim(),
 						});
@@ -560,7 +594,8 @@ export function BenchmarkCommand({options}: Props) {
 						err instanceof Error ? `Error: ${err.message}` : 'Unknown error';
 					failures.push({
 						id: test.id,
-						prompt: test.prompt,
+						prompt: getTestDisplayPrompt(test),
+						messages: test.messages,
 						expected: test.acceptable || [],
 						actual: response,
 					});
@@ -569,7 +604,8 @@ export function BenchmarkCommand({options}: Props) {
 				// Store full result for detailed report
 				allResults.push({
 					id: test.id,
-					prompt: test.prompt,
+					prompt: getTestDisplayPrompt(test),
+					messages: test.messages,
 					expected: test.acceptable || [],
 					actual: response.trim(),
 					passed,

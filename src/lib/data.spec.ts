@@ -4,7 +4,9 @@ import test from "ava";
 import type { TrainingExample } from "../types/index.js";
 import {
   appendToTrainingData,
+  appendTrainingExample,
   countExamples,
+  countTurns,
   deleteExample,
   importFromCSV,
   importFromJSON,
@@ -12,6 +14,7 @@ import {
   importData,
   loadTrainingData,
   updateExample,
+  updateTrainingExample,
   validateTrainingData,
 } from "./data.js";
 
@@ -342,4 +345,171 @@ test.serial("countExamples returns 0 when file does not exist", (t) => {
 test.serial("loadTrainingData returns empty array when file does not exist", (t) => {
   rmSync(join(DATA_DIR, "train.jsonl"), { force: true });
   t.deepEqual(loadTrainingData(), []);
+});
+
+// ── Multi-turn support ────────────────────────────────────────────────
+
+test.serial("appendTrainingExample writes multi-turn examples", (t) => {
+  const multiTurn: TrainingExample = {
+    messages: [
+      { role: "system", content: "You are helpful." },
+      { role: "user", content: "Hello" },
+      { role: "assistant", content: "Hi!" },
+      { role: "user", content: "How are you?" },
+      { role: "assistant", content: "I'm doing well, thanks!" },
+    ],
+  };
+  appendTrainingExample(multiTurn);
+
+  const data = loadTrainingData();
+  t.is(data.length, 1);
+  t.is(data[0].messages.length, 5);
+  t.is(data[0].messages[3].role, "user");
+  t.is(data[0].messages[3].content, "How are you?");
+  t.is(data[0].messages[4].role, "assistant");
+  t.is(data[0].messages[4].content, "I'm doing well, thanks!");
+});
+
+test.serial("updateTrainingExample replaces with multi-turn example", (t) => {
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "old", assistantOutput: "old-out" });
+
+  const multiTurn: TrainingExample = {
+    messages: [
+      { role: "system", content: "You are helpful." },
+      { role: "user", content: "Turn 1" },
+      { role: "assistant", content: "Response 1" },
+      { role: "user", content: "Turn 2" },
+      { role: "assistant", content: "Response 2" },
+    ],
+  };
+  updateTrainingExample(0, multiTurn);
+
+  const data = loadTrainingData();
+  t.is(data.length, 1);
+  t.is(data[0].messages.length, 5);
+  t.is(data[0].messages[3].content, "Turn 2");
+});
+
+test.serial("countTurns counts user messages as turns", (t) => {
+  t.is(countTurns({ messages: [
+    { role: "system", content: "ctx" },
+    { role: "user", content: "q1" },
+    { role: "assistant", content: "a1" },
+  ] }), 1);
+
+  t.is(countTurns({ messages: [
+    { role: "system", content: "ctx" },
+    { role: "user", content: "q1" },
+    { role: "assistant", content: "a1" },
+    { role: "user", content: "q2" },
+    { role: "assistant", content: "a2" },
+  ] }), 2);
+
+  t.is(countTurns({ messages: [
+    { role: "system", content: "ctx" },
+    { role: "user", content: "q1" },
+    { role: "assistant", content: "a1" },
+    { role: "user", content: "q2" },
+    { role: "assistant", content: "a2" },
+    { role: "user", content: "q3" },
+    { role: "assistant", content: "a3" },
+  ] }), 3);
+});
+
+test.serial("importFromJSONL preserves multi-turn messages", (t) => {
+  const jsonlPath = join(TEST_DIR, "multi.jsonl");
+  const multiTurn = {
+    messages: [
+      { role: "system", content: "original system" },
+      { role: "user", content: "turn 1" },
+      { role: "assistant", content: "response 1" },
+      { role: "user", content: "turn 2" },
+      { role: "assistant", content: "response 2" },
+    ],
+  };
+  writeFileSync(jsonlPath, JSON.stringify(multiTurn) + "\n");
+
+  const result = importFromJSONL(jsonlPath, DEV_CTX);
+  t.is(result.imported, 1);
+
+  const data = loadTrainingData();
+  t.is(data[0].messages.length, 5);
+  // Multi-turn preserves original messages, including original context
+  t.is(data[0].messages[0].role, "system");
+  t.is(data[0].messages[0].content, "original system");
+  t.is(data[0].messages[3].content, "turn 2");
+  t.is(data[0].messages[4].content, "response 2");
+});
+
+test.serial("importFromJSON preserves multi-turn messages", (t) => {
+  const jsonPath = join(TEST_DIR, "multi.json");
+  const multiTurn = [
+    {
+      messages: [
+        { role: "system", content: "original system" },
+        { role: "user", content: "turn 1" },
+        { role: "assistant", content: "response 1" },
+        { role: "user", content: "turn 2" },
+        { role: "assistant", content: "response 2" },
+      ],
+    },
+  ];
+  writeFileSync(jsonPath, JSON.stringify(multiTurn));
+
+  const result = importFromJSON(jsonPath, DEV_CTX);
+  t.is(result.imported, 1);
+
+  const data = loadTrainingData();
+  t.is(data[0].messages.length, 5);
+  t.is(data[0].messages[0].role, "system");
+  t.is(data[0].messages[0].content, "original system");
+  t.is(data[0].messages[3].content, "turn 2");
+});
+
+test.serial("validateTrainingData warns on consecutive same-role messages", (t) => {
+  const broken: TrainingExample = {
+    messages: [
+      { role: "system", content: "You are helpful." },
+      { role: "user", content: "Hello" },
+      { role: "user", content: "Are you there?" },
+      { role: "assistant", content: "Hi!" },
+    ],
+  };
+  writeFileSync(join(DATA_DIR, "train.jsonl"), JSON.stringify(broken) + "\n");
+
+  const result = validateTrainingData(SYSTEM_CTX);
+  t.true(result.valid); // broken alternation is a warning, not an error
+  t.true(result.warnings.some((w) => w.includes("Consecutive")));
+});
+
+test.serial("validateTrainingData passes multi-turn with correct alternation", (t) => {
+  const good: TrainingExample = {
+    messages: [
+      { role: "system", content: "You are helpful." },
+      { role: "user", content: "Hello" },
+      { role: "assistant", content: "Hi!" },
+      { role: "user", content: "How are you?" },
+      { role: "assistant", content: "Good!" },
+    ],
+  };
+  writeFileSync(join(DATA_DIR, "train.jsonl"), JSON.stringify(good) + "\n");
+
+  const result = validateTrainingData(SYSTEM_CTX);
+  t.true(result.valid);
+  t.false(result.warnings.some((w) => w.includes("Consecutive")));
+});
+
+test.serial("appendToTrainingData backward compat still creates 3-message examples", (t) => {
+  appendToTrainingData({
+    contextMessage: SYSTEM_CTX,
+    userInput: "Hello",
+    assistantOutput: "Hi!",
+  });
+
+  const data = loadTrainingData();
+  t.is(data.length, 1);
+  t.is(data[0].messages.length, 3);
+  t.is(data[0].messages[0].role, "system");
+  t.is(data[0].messages[1].role, "user");
+  t.is(data[0].messages[2].role, "assistant");
 });

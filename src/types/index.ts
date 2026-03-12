@@ -99,7 +99,10 @@ export interface JudgeResult {
 
 export interface BenchmarkTest {
 	id: number;
-	prompt: string;
+	/** Single-turn prompt. Either prompt or messages must be provided. */
+	prompt?: string;
+	/** Multi-turn conversation messages. Either prompt or messages must be provided. */
+	messages?: ChatMessage[];
 	/** Acceptable answers for string-matching modes. Optional when match is "llm-judge". */
 	acceptable?: string[];
 	category: string;
@@ -116,6 +119,8 @@ export interface BenchmarkTest {
 export interface BenchmarkTestResult {
 	id: number;
 	prompt: string;
+	/** Multi-turn conversation messages, present for multi-turn tests */
+	messages?: ChatMessage[];
 	expected: string[];
 	actual: string;
 	passed: boolean;
@@ -159,6 +164,7 @@ export interface BenchmarkResult {
 	failures: Array<{
 		id: number;
 		prompt: string;
+		messages?: ChatMessage[];
 		expected: string[];
 		actual: string;
 	}>;

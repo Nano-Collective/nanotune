@@ -54,6 +54,16 @@ export function loadTrainingData(isEval = false): TrainingExample[] {
 		.map(line => JSON.parse(line) as TrainingExample);
 }
 
+export function appendTrainingExample(
+	example: TrainingExample,
+	isEval = false,
+): void {
+	ensureDataDir();
+	const path = isEval ? getEvalDataPath() : getTrainDataPath();
+	const line = `${JSON.stringify(example)}\n`;
+	appendFileSync(path, line);
+}
+
 export function appendToTrainingData(
 	example: {
 		contextMessage: ChatMessage;
@@ -62,8 +72,6 @@ export function appendToTrainingData(
 	},
 	isEval = false,
 ): void {
-	ensureDataDir();
-	const path = isEval ? getEvalDataPath() : getTrainDataPath();
 	const trainingExample: TrainingExample = {
 		messages: [
 			{
@@ -74,8 +82,7 @@ export function appendToTrainingData(
 			{role: 'assistant', content: example.assistantOutput},
 		],
 	};
-	const line = `${JSON.stringify(trainingExample)}\n`;
-	appendFileSync(path, line);
+	appendTrainingExample(trainingExample, isEval);
 }
 
 export function saveTrainingData(
@@ -96,6 +103,18 @@ export function deleteExample(index: number, isEval = false): void {
 	}
 }
 
+export function updateTrainingExample(
+	index: number,
+	example: TrainingExample,
+	isEval = false,
+): void {
+	const examples = loadTrainingData(isEval);
+	if (index >= 0 && index < examples.length) {
+		examples[index] = example;
+		saveTrainingData(examples, isEval);
+	}
+}
+
 export function updateExample(
 	index: number,
 	example: {
@@ -105,20 +124,31 @@ export function updateExample(
 	},
 	isEval = false,
 ): void {
-	const examples = loadTrainingData(isEval);
-	if (index >= 0 && index < examples.length) {
-		examples[index] = {
-			messages: [
-				{
-					role: example.contextMessage.role,
-					content: example.contextMessage.content,
-				},
-				{role: 'user', content: example.userInput},
-				{role: 'assistant', content: example.assistantOutput},
-			],
-		};
-		saveTrainingData(examples, isEval);
+	const trainingExample: TrainingExample = {
+		messages: [
+			{
+				role: example.contextMessage.role,
+				content: example.contextMessage.content,
+			},
+			{role: 'user', content: example.userInput},
+			{role: 'assistant', content: example.assistantOutput},
+		],
+	};
+	updateTrainingExample(index, trainingExample, isEval);
+}
+
+/**
+ * Count the number of user/assistant turns in an example.
+ * A turn is one user+assistant exchange pair.
+ */
+export function countTurns(example: TrainingExample): number {
+	let turns = 0;
+	for (const msg of example.messages) {
+		if (msg.role === 'user') {
+			turns++;
+		}
 	}
+	return turns;
 }
 
 export interface ValidationResult {
@@ -175,6 +205,16 @@ export function validateTrainingData(
 			}
 			if (!msg.content?.trim()) {
 				errors.push(`Example ${i + 1}, message ${j + 1}: Empty content`);
+			}
+		}
+
+		// Check for consecutive same-role messages (broken alternation)
+		for (let j = 1; j < ex.messages.length; j++) {
+			if (ex.messages[j].role === ex.messages[j - 1].role) {
+				warnings.push(
+					`Example ${i + 1}: Consecutive "${ex.messages[j].role}" messages at positions ${j} and ${j + 1}`,
+				);
+				break;
 			}
 		}
 
@@ -291,11 +331,19 @@ export function importFromJSONL(
 					);
 
 					if (userMsg?.content && assistantMsg?.content) {
-						appendToTrainingData({
-							contextMessage,
-							userInput: userMsg.content,
-							assistantOutput: assistantMsg.content,
-						});
+						// Multi-turn: preserve full messages array as-is
+						if (data.messages.length > 3) {
+							appendTrainingExample(
+								{messages: data.messages},
+								false,
+							);
+						} else {
+							appendToTrainingData({
+								contextMessage,
+								userInput: userMsg.content,
+								assistantOutput: assistantMsg.content,
+							});
+						}
 						imported++;
 						continue;
 					}
@@ -349,11 +397,19 @@ export function importFromJSON(
 			);
 
 			if (userMsg?.content && assistantMsg?.content) {
-				appendToTrainingData({
-					contextMessage,
-					userInput: userMsg.content,
-					assistantOutput: assistantMsg.content,
-				});
+				// Multi-turn: preserve full messages array as-is
+				if (item.messages.length > 3) {
+					appendTrainingExample(
+						{messages: item.messages},
+						false,
+					);
+				} else {
+					appendToTrainingData({
+						contextMessage,
+						userInput: userMsg.content,
+						assistantOutput: assistantMsg.content,
+					});
+				}
 				imported++;
 				continue;
 			}

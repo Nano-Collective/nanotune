@@ -28,10 +28,39 @@ Create a `tests.json` file in `.nanotune/benchmarks/`:
 Each test needs:
 
 - `id` — Unique identifier
-- `prompt` — The input to send to the model
+- `prompt` — The input to send to the model (single-turn), **or** `messages` for multi-turn
 - `acceptable` — One or more acceptable responses
 - `category` — For grouping in reports (optional)
 - `match` — How to compare responses
+
+## Multi-Turn Tests
+
+Use `messages` instead of `prompt` to test multi-turn conversations. The model is evaluated on its response to the final user message, given the prior conversation history.
+
+```json
+[
+  {
+    "id": 1,
+    "prompt": "list all files",
+    "acceptable": ["ls", "ls -la"],
+    "category": "basic",
+    "match": "semantic"
+  },
+  {
+    "id": 2,
+    "messages": [
+      {"role": "user", "content": "My name is Alice"},
+      {"role": "assistant", "content": "Hello Alice!"},
+      {"role": "user", "content": "What's my name?"}
+    ],
+    "acceptable": ["Alice"],
+    "category": "memory",
+    "match": "contains"
+  }
+]
+```
+
+Each test must have either `prompt` or `messages`, not both. The `messages` array should end with a `user` message — the model generates the next assistant response. All match modes (semantic, contains, exact, llm-judge) work with multi-turn tests.
 
 ## Match Modes
 

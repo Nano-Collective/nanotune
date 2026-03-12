@@ -1,6 +1,6 @@
 # Training Data
 
-Nanotune supports multiple formats for training data. You can add examples interactively or import them from files.
+Nanotune supports multiple formats for training data. You can add examples interactively or import them from files. Examples can be single-turn (one user/assistant exchange) or multi-turn conversations with multiple exchanges.
 
 ## Supported Formats
 
@@ -13,9 +13,17 @@ One JSON object per line using the chat messages format:
 {"messages":[{"role":"system","content":"You are helpful."},{"role":"user","content":"Goodbye"},{"role":"assistant","content":"Bye!"}]}
 ```
 
+Multi-turn conversations are supported — just include multiple user/assistant exchanges in the messages array:
+
+```jsonl
+{"messages":[{"role":"system","content":"You are helpful."},{"role":"user","content":"What is Python?"},{"role":"assistant","content":"A programming language."},{"role":"user","content":"Show me hello world"},{"role":"assistant","content":"print('Hello, world!')"}]}
+```
+
+When importing multi-turn JSONL (more than 3 messages), the full conversation is preserved as-is. Single-turn examples (3 messages or fewer) have their context message replaced with your project's configured context message.
+
 ### CSV
 
-Simple two-column format with input and output:
+Simple two-column format with input and output (single-turn only):
 
 ```csv
 input,output
@@ -25,14 +33,40 @@ input,output
 
 ### JSON
 
-Array of objects with input/output pairs:
+Array of objects with input/output pairs or messages format:
 
 ```json
 [
   {"input": "list all files", "output": "ls -la"},
-  {"input": "show disk usage", "output": "df -h"}
+  {
+    "messages": [
+      {"role": "system", "content": "You are helpful."},
+      {"role": "user", "content": "What is Python?"},
+      {"role": "assistant", "content": "A programming language."},
+      {"role": "user", "content": "Show me hello world"},
+      {"role": "assistant", "content": "print('Hello, world!')"}
+    ]
+  }
 ]
 ```
+
+Multi-turn JSON examples (more than 3 messages) are preserved as-is, just like JSONL.
+
+## Adding Data Interactively
+
+```bash
+nanotune data add
+```
+
+The interactive flow supports building multi-turn conversations:
+
+1. Enter a user input and expected output
+2. After each turn, you're prompted: **Add another turn? (y/n)**
+3. Press **y** to add more turns to the same conversation
+4. Press **n** to save the example and start a new one
+5. Press **Esc** to auto-save any accumulated turns and exit
+
+Accumulated turns are shown above the input fields as you build the conversation.
 
 ## Importing Data
 
@@ -40,7 +74,15 @@ Array of objects with input/output pairs:
 nanotune data import examples.jsonl
 ```
 
-The importer auto-detects format based on file extension and content.
+The importer auto-detects format based on file extension and content. Multi-turn examples in JSONL and JSON files are preserved with all their turns intact.
+
+## Viewing Data
+
+```bash
+nanotune data list
+```
+
+The data list shows a **Turns** column indicating how many user/assistant exchanges each example contains. Press **Enter** on any row to expand/collapse the full conversation.
 
 ## Validating Data
 
@@ -57,6 +99,7 @@ This checks for:
 - No duplicate examples
 - Context message consistency
 - Minimum example count
+- Consecutive same-role messages (broken turn alternation)
 
 ## Tips
 
@@ -69,6 +112,15 @@ For 0.5B–1.5B models, 100–500 quality examples typically work well.
 - Keep context messages consistent across examples
 - Make sure outputs match what you want the model to produce
 - Include variations of similar prompts
+- For multi-turn examples, ensure roles alternate correctly (user, assistant, user, assistant...)
+
+### Multi-Turn Conversations
+
+Multi-turn examples teach the model to maintain context across a conversation. Use them when:
+
+- The model needs to handle follow-up questions
+- Responses depend on earlier context in the conversation
+- You're building a chat application with back-and-forth dialogue
 
 ### Variety
 

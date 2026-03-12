@@ -23,7 +23,7 @@ Show current project status including training data count, training progress, ex
 
 ### `nanotune data add`
 
-Interactively add training examples one at a time. Each example consists of a user input and expected output.
+Interactively add training examples. Each example starts with a user input and expected output. After entering a turn, you can add more turns to build multi-turn conversations or save and start a new example.
 
 ### `nanotune data import <file>`
 
@@ -35,7 +35,7 @@ Import training data from a file. Supported formats:
 
 ### `nanotune data list`
 
-View and manage your training data with pagination, search, and delete.
+View and manage your training data with pagination and delete. Shows a Turns column for multi-turn awareness. Press Enter to expand/collapse the full conversation for a selected example.
 
 ### `nanotune data validate`
 
@@ -46,6 +46,7 @@ Validate your training data for:
 - No duplicate examples
 - Context message consistency
 - Minimum example count
+- Consecutive same-role messages (broken turn alternation)
 
 ## Training
 
