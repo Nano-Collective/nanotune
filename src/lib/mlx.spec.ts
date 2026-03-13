@@ -1,4 +1,5 @@
 import test from "ava";
+import { parseDownloadProgress } from "./mlx.js";
 
 test("MLX output parsing regex works correctly", (t) => {
   // Test the regex pattern used to parse MLX training output
@@ -71,4 +72,56 @@ test("MLXTrainingOptions structure is correct", (t) => {
   t.is(options.iterations, 150);
   t.is(options.learningRate, 5e-5);
   t.is(options.batchSize, 4);
+});
+
+// parseDownloadProgress tests
+
+test("parseDownloadProgress parses single file tqdm output", (t) => {
+  const line =
+    "model.safetensors: 45%|██▍   |1.2G/2.7G [00:30<00:37, 40.5MB/s]";
+  const result = parseDownloadProgress(line);
+  t.not(result, null);
+  t.is(result!.type, "download");
+  t.is(result!.fileName, "model.safetensors");
+  t.is(result!.percent, 45);
+  t.is(result!.sizeInfo, "1.2G/2.7G");
+});
+
+test("parseDownloadProgress parses multi-file fetch output", (t) => {
+  const line = "Fetching 12 files: 75%|██████▊  |9/12";
+  const result = parseDownloadProgress(line);
+  t.not(result, null);
+  t.is(result!.type, "download");
+  t.is(result!.percent, 75);
+  t.is(result!.fileName, undefined);
+});
+
+test("parseDownloadProgress parses generic tqdm fallback", (t) => {
+  const line = "  33%|███▎      | 1/3 [00:02<00:04]";
+  const result = parseDownloadProgress(line);
+  t.not(result, null);
+  t.is(result!.type, "download");
+  t.is(result!.percent, 33);
+});
+
+test("parseDownloadProgress returns null for non-download output", (t) => {
+  const line = "Loading model configuration...";
+  const result = parseDownloadProgress(line);
+  t.is(result, null);
+});
+
+test("parseDownloadProgress returns null for training output", (t) => {
+  const line = "Iter 10: Train loss 1.234, Val loss 1.456";
+  const result = parseDownloadProgress(line);
+  t.is(result, null);
+});
+
+test("parseDownloadProgress handles 100% completion", (t) => {
+  const line =
+    "model.safetensors: 100%|██████████|2.7G/2.7G [01:07<00:00, 40.5MB/s]";
+  const result = parseDownloadProgress(line);
+  t.not(result, null);
+  t.is(result!.percent, 100);
+  t.is(result!.fileName, "model.safetensors");
+  t.is(result!.sizeInfo, "2.7G/2.7G");
 });

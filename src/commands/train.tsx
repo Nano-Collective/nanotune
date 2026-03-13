@@ -11,6 +11,7 @@ import {
 import {countExamples, ensureValidationSet} from '../lib/data.js';
 import {
 	checkMLXInstalled,
+	ensureModelDownloaded,
 	installMLX,
 	type MLXTrainingOptions,
 	runTraining,
@@ -30,6 +31,7 @@ type Status =
 	| 'checking'
 	| 'installing'
 	| 'validating'
+	| 'downloading'
 	| 'training'
 	| 'done'
 	| 'error';
@@ -41,9 +43,12 @@ export function TrainCommand({options}: Props) {
 	const [lossHistory, setLossHistory] = useState<number[]>([]);
 	const [error, setError] = useState<string | null>(null);
 	const [eta, setEta] = useState<string | null>(null);
+	const [downloadPercent, setDownloadPercent] = useState<number | null>(null);
+	const [downloadDetail, setDownloadDetail] = useState<string | null>(null);
+	const [elapsed, setElapsed] = useState<string | null>(null);
 
 	useInput((input, key) => {
-		if (key.escape && status !== 'training') {
+		if (key.escape && status !== 'training' && status !== 'downloading') {
 			exit();
 		}
 		if ((status === 'done' || status === 'error') && (key.return || input)) {
@@ -99,6 +104,30 @@ export function TrainCommand({options}: Props) {
 				return;
 			}
 
+			// Download model if not cached
+			setStatus('downloading');
+			const downloadStart = Date.now();
+			const elapsedTimer = setInterval(() => {
+				const sec = Math.floor((Date.now() - downloadStart) / 1000);
+				const m = Math.floor(sec / 60);
+				const s = sec % 60;
+				setElapsed(m > 0 ? `${m}m ${s}s` : `${s}s`);
+			}, 1000);
+
+			try {
+				for await (const event of ensureModelDownloaded(config.baseModel)) {
+					if (event.percent != null) {
+						setDownloadPercent(event.percent);
+					}
+					if (event.sizeInfo) {
+						setDownloadDetail(event.sizeInfo);
+					}
+				}
+			} finally {
+				clearInterval(elapsedTimer);
+				setElapsed(null);
+			}
+
 			// Start training
 			setStatus('training');
 			const startTime = Date.now();
@@ -121,11 +150,12 @@ export function TrainCommand({options}: Props) {
 				setLossHistory(prev => [...prev, update.trainLoss]);
 
 				// Calculate ETA
-				const elapsed = Date.now() - startTime;
+				const elapsedMs = Date.now() - startTime;
 				const iterationsComplete = update.iteration;
-				const iterationsRemaining = update.totalIterations - iterationsComplete;
+				const iterationsRemaining =
+					update.totalIterations - iterationsComplete;
 				if (iterationsComplete > 0) {
-					const msPerIteration = elapsed / iterationsComplete;
+					const msPerIteration = elapsedMs / iterationsComplete;
 					const msRemaining = msPerIteration * iterationsRemaining;
 					const secondsRemaining = Math.round(msRemaining / 1000);
 					const minutes = Math.floor(secondsRemaining / 60);
@@ -186,6 +216,21 @@ export function TrainCommand({options}: Props) {
 
 			{status === 'validating' && (
 				<Spinner label="Validating training data..." />
+			)}
+
+			{status === 'downloading' && (
+				<Box flexDirection="column">
+					<Spinner label="Downloading model..." />
+					{downloadPercent != null && downloadPercent > 0 && (
+						<Box marginTop={1}>
+							<Progress percent={downloadPercent} label="Download" />
+						</Box>
+					)}
+					{downloadDetail && <Text dimColor>{downloadDetail}</Text>}
+					{elapsed && (
+						<Text dimColor>Elapsed: {elapsed}</Text>
+					)}
+				</Box>
 			)}
 
 			{status === 'training' && progress && (

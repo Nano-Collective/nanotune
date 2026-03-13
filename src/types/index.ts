@@ -49,6 +49,13 @@ export interface TrainingProgress {
 	valLoss?: number;
 }
 
+export interface DownloadProgress {
+	type: 'download';
+	fileName?: string;
+	percent?: number;
+	sizeInfo?: string;
+}
+
 export interface TrainingExample {
 	messages: ChatMessage[];
 }
@@ -209,7 +216,7 @@ export const BENCHMARK_PRESETS: Record<BenchmarkPreset, PresetConfig> = {
 		gpuLayers: 0, // CPU only
 		ctxSize: 2048,
 		batchSize: 512,
-		maxTokens: 50,
+		maxTokens: 128,
 	},
 	medium: {
 		name: 'Medium',
@@ -218,7 +225,7 @@ export const BENCHMARK_PRESETS: Record<BenchmarkPreset, PresetConfig> = {
 		gpuLayers: 20, // Partial GPU offload
 		ctxSize: 4096,
 		batchSize: 1024,
-		maxTokens: 100,
+		maxTokens: 256,
 	},
 	high: {
 		name: 'High-End',
@@ -227,7 +234,7 @@ export const BENCHMARK_PRESETS: Record<BenchmarkPreset, PresetConfig> = {
 		gpuLayers: undefined, // Max/all layers
 		ctxSize: 8192,
 		batchSize: 2048,
-		maxTokens: 150,
+		maxTokens: 512,
 	},
 	ultra: {
 		name: 'Ultra',
@@ -236,6 +243,6 @@ export const BENCHMARK_PRESETS: Record<BenchmarkPreset, PresetConfig> = {
 		gpuLayers: undefined, // Max/all layers
 		ctxSize: 16384,
 		batchSize: 4096,
-		maxTokens: 200,
+		maxTokens: 1024,
 	},
 };

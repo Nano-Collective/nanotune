@@ -1,3 +1,29 @@
+# 1.3.0
+
+## Multi-Turn Training & Benchmarking
+
+Nanotune now supports multi-turn conversations in both training data and benchmarks, enabling fine-tuning for dialogue and multi-step interactions.
+
+### Multi-Turn Training
+- **`nanotune data add`** supports building multi-turn examples interactively — add as many user/assistant exchanges as needed per example
+- **Import** preserves multi-turn conversations from JSONL and JSON sources (4+ messages kept as-is)
+- **`nanotune data list`** shows turn count per example
+- **Validation** warns on consecutive same-role messages (broken alternation)
+
+### Multi-Turn Benchmarking
+- **Benchmark tests** accept a `messages` array as an alternative to `prompt` for multi-turn evaluation
+- **LLM judge** receives full conversation context when evaluating multi-turn tests
+- **Reports** label multi-turn tests with turn count for clarity
+
+### Model Download Progress
+- **`nanotune train`** now shows download progress when fetching a model for the first time, with percentage, file size, and elapsed time
+- Downloads are tracked by polling the HuggingFace cache directory, avoiding tqdm/pipe issues
+
+### Improved Benchmark Presets
+- **`maxTokens`** values updated to sensible defaults: `low` 128, `medium` 256, `high` 512, `ultra` 1024 (previously 50–200, which was too small for meaningful responses)
+
+---
+
 # 1.2.1
 
 ## Bug Fix

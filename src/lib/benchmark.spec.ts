@@ -29,7 +29,7 @@ test("Low preset has correct configuration", (t) => {
 	t.is(preset.gpuLayers, 0);
 	t.is(preset.ctxSize, 2048);
 	t.is(preset.batchSize, 512);
-	t.is(preset.maxTokens, 50);
+	t.is(preset.maxTokens, 128);
 });
 
 test("Medium preset has correct configuration", (t) => {
@@ -43,7 +43,7 @@ test("Medium preset has correct configuration", (t) => {
 	t.is(preset.gpuLayers, 20);
 	t.is(preset.ctxSize, 4096);
 	t.is(preset.batchSize, 1024);
-	t.is(preset.maxTokens, 100);
+	t.is(preset.maxTokens, 256);
 });
 
 test("High preset has correct configuration", (t) => {
@@ -57,7 +57,7 @@ test("High preset has correct configuration", (t) => {
 	t.is(preset.gpuLayers, undefined);
 	t.is(preset.ctxSize, 8192);
 	t.is(preset.batchSize, 2048);
-	t.is(preset.maxTokens, 150);
+	t.is(preset.maxTokens, 512);
 });
 
 test("Ultra preset has correct configuration", (t) => {
@@ -71,7 +71,7 @@ test("Ultra preset has correct configuration", (t) => {
 	t.is(preset.gpuLayers, undefined);
 	t.is(preset.ctxSize, 16384);
 	t.is(preset.batchSize, 4096);
-	t.is(preset.maxTokens, 200);
+	t.is(preset.maxTokens, 1024);
 });
 
 test("Low preset uses CPU only (gpuLayers = 0)", (t) => {
@@ -118,10 +118,10 @@ test("Batch size increases with preset level", (t) => {
 });
 
 test("Max tokens increases with preset level", (t) => {
-	t.is(BENCHMARK_PRESETS.low.maxTokens, 50);
-	t.is(BENCHMARK_PRESETS.medium.maxTokens, 100);
-	t.is(BENCHMARK_PRESETS.high.maxTokens, 150);
-	t.is(BENCHMARK_PRESETS.ultra.maxTokens, 200);
+	t.is(BENCHMARK_PRESETS.low.maxTokens, 128);
+	t.is(BENCHMARK_PRESETS.medium.maxTokens, 256);
+	t.is(BENCHMARK_PRESETS.high.maxTokens, 512);
+	t.is(BENCHMARK_PRESETS.ultra.maxTokens, 1024);
 
 	// Verify increasing order
 	t.true(BENCHMARK_PRESETS.low.maxTokens < BENCHMARK_PRESETS.medium.maxTokens);
