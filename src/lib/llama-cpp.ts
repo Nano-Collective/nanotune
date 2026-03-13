@@ -307,6 +307,60 @@ export interface InferenceResult {
 	tokensGenerated?: number;
 }
 
+export interface ParsedStderr {
+	ttftMs?: number;
+	generationTimeMs?: number;
+	tokensPerSecond?: number;
+	tokensGenerated?: number;
+}
+
+/**
+ * Parse llama.cpp stderr output for timing metrics.
+ *
+ * llama.cpp outputs lines like:
+ *   llama_perf_context_print: prompt eval time =   567.89 ms /  50 tokens (  11.36 ms per token,   88.05 tokens per second)
+ *   llama_perf_context_print:        eval time =  1234.56 ms /  99 runs   (  12.47 ms per token,   80.19 tokens per second)
+ *   llama_perf_context_print:       total time =  1802.45 ms / 149 tokens
+ */
+export function parseLlamaCppStderr(stderr: string): ParsedStderr {
+	const result: ParsedStderr = {};
+
+	// TTFT: extract from "prompt eval time = <X> ms"
+	const promptEvalMatch = stderr.match(/prompt eval time\s*=\s*([\d.]+)\s*ms/);
+	if (promptEvalMatch) {
+		result.ttftMs = Math.round(Number.parseFloat(promptEvalMatch[1]));
+	}
+
+	// Generation tokens/sec: extract from eval time line (not prompt eval)
+	// Match "eval time = ... (<X> tokens per second)" but NOT "prompt eval time"
+	const evalTpsMatch = stderr.match(
+		/(?<!prompt\s)eval time\s*=\s*([\d.]+)\s*ms\s*\/\s*(\d+)\s*(?:runs|tokens)\s*\([^)]*?([\d.]+)\s*tokens per second\)/,
+	);
+	if (evalTpsMatch) {
+		result.generationTimeMs = Math.round(Number.parseFloat(evalTpsMatch[1]));
+		result.tokensGenerated = Number.parseInt(evalTpsMatch[2], 10);
+		result.tokensPerSecond = Number.parseFloat(evalTpsMatch[3]);
+	}
+
+	// Fallback: older llama.cpp versions that output "tok/s"
+	if (result.tokensPerSecond === undefined) {
+		const tpsMatch = stderr.match(/([\d.]+)\s*tok\/s/);
+		if (tpsMatch) {
+			result.tokensPerSecond = Number.parseFloat(tpsMatch[1]);
+		}
+	}
+
+	// Fallback: older format "N tokens generated"
+	if (result.tokensGenerated === undefined) {
+		const tokensMatch = stderr.match(/(\d+)\s+tokens\s+generated/i);
+		if (tokensMatch) {
+			result.tokensGenerated = Number.parseInt(tokensMatch[1], 10);
+		}
+	}
+
+	return result;
+}
+
 export async function runGGUFInference(
 	modelPath: string,
 	prompt: string,
@@ -343,6 +397,7 @@ export async function runGGUFInference(
 		String(temperature),
 		'--top-p',
 		String(topP),
+		'--verbose',
 	];
 
 	// Add optional flags
@@ -359,49 +414,26 @@ export async function runGGUFInference(
 		args.push('-ngl', '0'); // No GPU layers = CPU only
 	}
 
-	const startTime = Date.now();
 	const result = await execa(completionBin, args, {
 		input: '', // Close stdin immediately
 		stderr: 'pipe', // Capture stderr for timing info
 	});
-	const endTime = Date.now();
 
 	// Clean up output - remove "EOF by user" and extra prompts
 	let output = result.stdout.trim();
 	output = output.replace(/\n?>\s*\n?EOF by user\s*$/i, '').trim();
 	output = output.replace(/\n?>\s*$/i, '').trim();
 
-	// Parse timing info from stderr if available
-	// llama.cpp outputs timing info like:
-	// "llama_perf_sampler_print:    sampling time = ..."
-	// "llama_perf_context_print: ..."
+	// Parse timing info from stderr
 	const stderr = result.stderr || '';
-
-	// Try to extract tokens per second
-	const tpsMatch = stderr.match(/(\d+\.?\d*)\s*tok\/s/);
-	const tokensPerSecond = tpsMatch ? Number.parseFloat(tpsMatch[1]) : undefined;
-
-	// Try to extract token count
-	const tokensMatch = stderr.match(/(\d+)\s+tokens\s+generated/i);
-	const tokensGenerated = tokensMatch
-		? Number.parseInt(tokensMatch[1], 10)
-		: undefined;
-
-	// Estimate TTFT and generation time
-	const totalTimeMs = endTime - startTime;
-	const ttftMs = tokensGenerated
-		? Math.round(totalTimeMs * 0.1) // Rough estimate: 10% for TTFT
-		: undefined;
-	const generationTimeMs = tokensGenerated
-		? totalTimeMs - (ttftMs || 0)
-		: totalTimeMs;
+	const parsed = parseLlamaCppStderr(stderr);
 
 	return {
 		text: output,
-		ttftMs,
-		generationTimeMs,
-		tokensPerSecond,
-		tokensGenerated,
+		ttftMs: parsed.ttftMs,
+		generationTimeMs: parsed.generationTimeMs,
+		tokensPerSecond: parsed.tokensPerSecond,
+		tokensGenerated: parsed.tokensGenerated,
 	};
 }
 

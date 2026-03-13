@@ -159,6 +159,10 @@ export interface BenchmarkResult {
 		failed: number;
 		passRate: number;
 		avgLatencyMs?: number;
+		/** Average tokens per second across tests */
+		avgTokensPerSecond?: number;
+		/** Average time to first token in milliseconds */
+		avgTtftMs?: number;
 		/** Average judge score across llm-judge tests */
 		avgJudgeScore?: number;
 		/** Model used for judging */

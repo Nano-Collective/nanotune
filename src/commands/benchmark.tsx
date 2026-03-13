@@ -190,6 +190,14 @@ function generateMarkdownReport(
 	if (result.summary.avgLatencyMs) {
 		lines.push(`- **Avg Latency:** ${result.summary.avgLatencyMs}ms`);
 	}
+	if (result.summary.avgTokensPerSecond !== undefined) {
+		lines.push(
+			`- **Avg Tokens/sec:** ${result.summary.avgTokensPerSecond.toFixed(2)}`,
+		);
+	}
+	if (result.summary.avgTtftMs !== undefined) {
+		lines.push(`- **Avg TTFT:** ${result.summary.avgTtftMs}ms`);
+	}
 	if (result.summary.avgJudgeScore !== undefined) {
 		lines.push(`- **Avg Judge Score:** ${result.summary.avgJudgeScore}/10`);
 	}
@@ -641,6 +649,26 @@ export function BenchmarkCommand({options}: Props) {
 						)
 					: undefined;
 
+			// Calculate average tokens per second
+			const validTps = allResults
+				.filter(r => r.tokensPerSecond && !r.actual.startsWith('Error:'))
+				.map(r => r.tokensPerSecond as number);
+			const avgTokensPerSecond =
+				validTps.length > 0
+					? Math.round(
+							(validTps.reduce((a, b) => a + b, 0) / validTps.length) * 100,
+						) / 100
+					: undefined;
+
+			// Calculate average TTFT
+			const validTtft = allResults
+				.filter(r => r.ttftMs && !r.actual.startsWith('Error:'))
+				.map(r => r.ttftMs as number);
+			const avgTtftMs =
+				validTtft.length > 0
+					? Math.round(validTtft.reduce((a, b) => a + b, 0) / validTtft.length)
+					: undefined;
+
 			// Calculate average judge score (for llm-judge tests only)
 			const judgeResults = allResults.filter(r => r.judgeScore !== undefined);
 			const avgJudgeScore =
@@ -661,6 +689,8 @@ export function BenchmarkCommand({options}: Props) {
 					failed: totalTests - totalPassed,
 					passRate: totalPassed / totalTests,
 					avgLatencyMs,
+					avgTokensPerSecond,
+					avgTtftMs,
 					avgJudgeScore,
 					judgeModel: judgeConfig?.model,
 				},
@@ -774,6 +804,22 @@ export function BenchmarkCommand({options}: Props) {
 							{Math.round(results.summary.passRate * 100)}%)
 						</Text>
 					</Text>
+					{results.summary.avgLatencyMs !== undefined && (
+						<Text>
+							Avg Latency: <Text bold>{results.summary.avgLatencyMs}ms</Text>
+						</Text>
+					)}
+					{results.summary.avgTokensPerSecond !== undefined && (
+						<Text>
+							Avg Tokens/sec:{' '}
+							<Text bold>{results.summary.avgTokensPerSecond.toFixed(2)}</Text>
+						</Text>
+					)}
+					{results.summary.avgTtftMs !== undefined && (
+						<Text>
+							Avg TTFT: <Text bold>{results.summary.avgTtftMs}ms</Text>
+						</Text>
+					)}
 					{results.summary.avgJudgeScore !== undefined && (
 						<Text>
 							Judge Score:{' '}

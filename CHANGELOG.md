@@ -1,3 +1,16 @@
+# 1.3.1
+
+## Benchmark Timing Fixes
+
+- **Fixed tokens/sec parsing** — now matches llama.cpp's actual `llama_perf_context_print` output format instead of the old `tok/s` pattern
+- **Fixed TTFT** — extracted from `prompt eval time` in llama.cpp stderr instead of estimating as 10% of total time
+- **Fixed generation time and token count** — parsed from `eval time` stderr line
+- **Added `--verbose` flag** to llama-cli invocation to ensure timing output is always emitted
+- **Added summary averages** — benchmark results now include `avgTokensPerSecond` and `avgTtftMs` in the summary, displayed in both the terminal UI and markdown reports
+- **Backward compatible** — old `tok/s` and `tokens generated` patterns kept as fallback for older llama.cpp versions
+
+---
+
 # 1.3.0
 
 ## Multi-Turn Training & Benchmarking
