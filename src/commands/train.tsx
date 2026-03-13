@@ -152,8 +152,7 @@ export function TrainCommand({options}: Props) {
 				// Calculate ETA
 				const elapsedMs = Date.now() - startTime;
 				const iterationsComplete = update.iteration;
-				const iterationsRemaining =
-					update.totalIterations - iterationsComplete;
+				const iterationsRemaining = update.totalIterations - iterationsComplete;
 				if (iterationsComplete > 0) {
 					const msPerIteration = elapsedMs / iterationsComplete;
 					const msRemaining = msPerIteration * iterationsRemaining;
@@ -227,9 +226,7 @@ export function TrainCommand({options}: Props) {
 						</Box>
 					)}
 					{downloadDetail && <Text dimColor>{downloadDetail}</Text>}
-					{elapsed && (
-						<Text dimColor>Elapsed: {elapsed}</Text>
-					)}
+					{elapsed && <Text dimColor>Elapsed: {elapsed}</Text>}
 				</Box>
 			)}
 

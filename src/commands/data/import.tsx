@@ -9,8 +9,8 @@ import {
 	resolveContextMessage,
 } from '../../lib/config.js';
 import {
-	type ImportResult,
 	countTurns,
+	type ImportResult,
 	importData,
 	loadTrainingData,
 } from '../../lib/data.js';

@@ -333,10 +333,7 @@ export function importFromJSONL(
 					if (userMsg?.content && assistantMsg?.content) {
 						// Multi-turn: preserve full messages array as-is
 						if (data.messages.length > 3) {
-							appendTrainingExample(
-								{messages: data.messages},
-								false,
-							);
+							appendTrainingExample({messages: data.messages}, false);
 						} else {
 							appendToTrainingData({
 								contextMessage,
@@ -399,10 +396,7 @@ export function importFromJSON(
 			if (userMsg?.content && assistantMsg?.content) {
 				// Multi-turn: preserve full messages array as-is
 				if (item.messages.length > 3) {
-					appendTrainingExample(
-						{messages: item.messages},
-						false,
-					);
+					appendTrainingExample({messages: item.messages}, false);
 				} else {
 					appendToTrainingData({
 						contextMessage,

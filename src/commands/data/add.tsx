@@ -29,9 +29,7 @@ export function DataAddCommand() {
 		try {
 			const config = loadConfig();
 			const ctx = resolveContextMessage(config);
-			const messages: ChatMessage[] = [
-				{role: ctx.role, content: ctx.content},
-			];
+			const messages: ChatMessage[] = [{role: ctx.role, content: ctx.content}];
 			for (const turn of turns) {
 				messages.push({role: 'user', content: turn.user});
 				messages.push({role: 'assistant', content: turn.assistant});
@@ -87,10 +85,7 @@ export function DataAddCommand() {
 		}
 
 		setError(null);
-		setTurns(prev => [
-			...prev,
-			{user: input.trim(), assistant: value.trim()},
-		]);
+		setTurns(prev => [...prev, {user: input.trim(), assistant: value.trim()}]);
 		setInput('');
 		setOutput('');
 		setField('confirm');
@@ -156,8 +151,7 @@ export function DataAddCommand() {
 							</Text>
 							<Text dimColor>
 								{' '}
-								Turn {i + 1} - Assistant:{' '}
-								{turn.assistant.slice(0, 50)}
+								Turn {i + 1} - Assistant: {turn.assistant.slice(0, 50)}
 								{turn.assistant.length > 50 ? '...' : ''}
 							</Text>
 						</Box>
@@ -171,8 +165,7 @@ export function DataAddCommand() {
 						Turn {turns.length} added!
 					</Text>
 					<Text>
-						Add another turn?{' '}
-						<Text color="green">(y/n)</Text>
+						Add another turn? <Text color="green">(y/n)</Text>
 					</Text>
 				</Box>
 			) : (
@@ -189,17 +182,13 @@ export function DataAddCommand() {
 									placeholder="Enter user request..."
 								/>
 							) : (
-								<Text>
-									{input || <Text dimColor>Empty</Text>}
-								</Text>
+								<Text>{input || <Text dimColor>Empty</Text>}</Text>
 							)}
 						</Box>
 					</Box>
 
 					<Box flexDirection="column" marginBottom={1}>
-						<Text
-							color={field === 'output' ? 'yellow' : 'white'}
-						>
+						<Text color={field === 'output' ? 'yellow' : 'white'}>
 							Expected output:
 						</Text>
 						<Box borderStyle="round" paddingX={1}>
@@ -210,9 +199,7 @@ export function DataAddCommand() {
 									placeholder="Enter expected response..."
 								/>
 							) : (
-								<Text>
-									{output || <Text dimColor>Empty</Text>}
-								</Text>
+								<Text>{output || <Text dimColor>Empty</Text>}</Text>
 							)}
 						</Box>
 					</Box>

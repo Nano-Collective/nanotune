@@ -152,8 +152,7 @@ export function DataListCommand() {
 							paddingX={1}
 						>
 							<Text bold>
-								Conversation ({expandedExample.messages.length}{' '}
-								messages)
+								Conversation ({expandedExample.messages.length} messages)
 							</Text>
 							{expandedExample.messages.map((msg, i) => (
 								<Box key={`msg-${i}`}>
@@ -180,8 +179,8 @@ export function DataListCommand() {
 
 					<Text> </Text>
 					<Text dimColor>
-						[Up/Down] Navigate [Left/Right] Page [Enter]
-						Expand/collapse [d] Delete [q] Quit
+						[Up/Down] Navigate [Left/Right] Page [Enter] Expand/collapse [d]
+						Delete [q] Quit
 					</Text>
 				</Box>
 			)}
