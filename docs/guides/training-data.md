@@ -1,6 +1,12 @@
+---
+title: "Training Data"
+description: "Supported formats, importing, multi-turn examples, and data quality tips for Nanotune"
+sidebar_order: 1
+---
+
 # Training Data
 
-Nanotune supports multiple formats for training data. You can add examples interactively or import them from files. Examples can be single-turn (one user/assistant exchange) or multi-turn conversations with multiple exchanges.
+Nanotune supports multiple formats for training data. You can add examples interactively or import them from files. Examples can be single-turn (one user/assistant exchange) or multi-turn conversations.
 
 ## Supported Formats
 
@@ -13,17 +19,19 @@ One JSON object per line using the chat messages format:
 {"messages":[{"role":"system","content":"You are helpful."},{"role":"user","content":"Goodbye"},{"role":"assistant","content":"Bye!"}]}
 ```
 
-Multi-turn conversations are supported — just include multiple user/assistant exchanges in the messages array:
+Multi-turn conversations are supported — include multiple user/assistant exchanges:
 
 ```jsonl
 {"messages":[{"role":"system","content":"You are helpful."},{"role":"user","content":"What is Python?"},{"role":"assistant","content":"A programming language."},{"role":"user","content":"Show me hello world"},{"role":"assistant","content":"print('Hello, world!')"}]}
 ```
 
-When importing multi-turn JSONL (more than 3 messages), the full conversation is preserved as-is. Single-turn examples (3 messages or fewer) have their context message replaced with your project's configured context message.
+The first message role is flexible — it can be `system`, `developer`, or any role your model expects. Nanotune stores this as the "context message" and applies it consistently across all training examples.
+
+> **Note:** When importing multi-turn JSONL (more than 3 messages), the full conversation is preserved as-is. Single-turn examples (3 messages or fewer) have their context message replaced with your project's configured context message.
 
 ### CSV
 
-Simple two-column format with input and output (single-turn only):
+Simple two-column format (single-turn only):
 
 ```csv
 input,output
@@ -49,8 +57,6 @@ Array of objects with input/output pairs or messages format:
   }
 ]
 ```
-
-Multi-turn JSON examples (more than 3 messages) are preserved as-is, just like JSONL.
 
 ## Adding Data Interactively
 
@@ -119,7 +125,7 @@ For 0.5B–1.5B models, 100–500 quality examples typically work well.
 Multi-turn examples teach the model to maintain context across a conversation. Use them when:
 
 - The model needs to handle follow-up questions
-- Responses depend on earlier context in the conversation
+- Responses depend on earlier context
 - You're building a chat application with back-and-forth dialogue
 
 ### Variety

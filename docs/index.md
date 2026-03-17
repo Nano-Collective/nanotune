@@ -1,3 +1,9 @@
+---
+title: "Introduction"
+description: "Nanotune is an interactive CLI for fine-tuning small language models on Apple Silicon"
+sidebar_order: 1
+---
+
 # Nanotune
 
 Nanotune is an interactive CLI for fine-tuning small language models on Apple Silicon. No YAML configs, no complex flags — just guided prompts that walk you through each step.
@@ -11,94 +17,22 @@ Nanotune is an interactive CLI for fine-tuning small language models on Apple Si
 
 Nanotune works with any HuggingFace model and handles the MLX and llama.cpp tooling for you automatically.
 
-## Requirements
-
-- macOS with Apple Silicon (M1/M2/M3/M4)
-- Node.js 18+
-- Python 3.10+
-- 8GB RAM minimum (16GB recommended)
-
-## Installation
-
-Install globally via npm:
+## How It Works
 
 ```bash
-npm install -g @nanocollective/nanotune
+nanotune init           # Set up a project
+nanotune data add       # Add training examples
+nanotune train          # Fine-tune with LoRA
+nanotune export         # Convert to GGUF
+nanotune benchmark      # Test your model
 ```
 
-Or run directly with npx:
-
-```bash
-npx @nanocollective/nanotune init
-```
-
-## Quick Start
-
-### 1. Initialize a Project
-
-```bash
-nanotune init
-```
-
-You'll be prompted for a project name, base model, context message role, and context message content. This creates a `.nanotune/` directory with your configuration.
-
-### 2. Add Training Data
-
-Add examples interactively:
-
-```bash
-nanotune data add
-```
-
-Or import from a file:
-
-```bash
-nanotune data import examples.jsonl
-```
-
-Nanotune supports JSONL, CSV, and JSON formats. See [Training Data](training-data.md) for format details.
-
-### 3. Train Your Model
-
-```bash
-nanotune train
-```
-
-Training runs with a live progress display showing loss metrics in real time.
-
-### 4. Export to GGUF
-
-```bash
-nanotune export
-```
-
-This fuses your LoRA adapter with the base model and converts it to GGUF format. Pre-built llama.cpp binaries are downloaded automatically.
-
-### 5. Benchmark
-
-```bash
-nanotune benchmark
-```
-
-Generates JSON and Markdown reports with pass rates, timing metrics, and detailed results per test.
-
-## Recommended Models
-
-These models work well with Nanotune:
-
-| Model | Size | Use Case |
-|-------|------|----------|
-| `Qwen/Qwen2.5-Coder-0.5B-Instruct` | 0.5B | Quick experiments |
-| `Qwen/Qwen2.5-Coder-1.5B-Instruct` | 1.5B | Balanced performance |
-| `Qwen/Qwen2.5-0.5B-Instruct` | 0.5B | General purpose |
-| `Qwen/Qwen2.5-1.5B-Instruct` | 1.5B | General purpose |
+Each command launches an interactive TUI built with React Ink — no flags to memorize.
 
 ## Next Steps
 
-- [Commands](commands.md) — Full command reference
-- [Training Data](training-data.md) — Supported formats and tips
-- [Benchmarking](benchmarking.md) — Test datasets, match modes, and LLM-as-a-judge
-
-## Community
-
-Join our [Discord server](https://discord.gg/ktPDV6rekE) to connect with other users and get help. Contributions are welcome — see [CONTRIBUTING.md](https://github.com/Nano-Collective/nanotune/blob/main/CONTRIBUTING.md) on GitHub.
+- [Installation](getting-started/installation.md) — Requirements and setup
+- [Quick Start](getting-started/quick-start.md) — Build your first fine-tuned model
+- [Commands](commands/index.md) — Full command reference
+- [Guides](guides/index.md) — In-depth walkthroughs for training data, benchmarking, and more
+- [Community](community.md) — Get involved
