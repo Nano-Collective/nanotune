@@ -383,10 +383,7 @@ async function findFreePort(): Promise<number> {
 	});
 }
 
-async function waitForServer(
-	port: number,
-	timeoutMs = 30_000,
-): Promise<void> {
+async function waitForServer(port: number, timeoutMs = 30_000): Promise<void> {
 	const start = Date.now();
 	while (Date.now() - start < timeoutMs) {
 		try {
@@ -397,9 +394,7 @@ async function waitForServer(
 		}
 		await new Promise(r => setTimeout(r, 250));
 	}
-	throw new Error(
-		`llama-server failed to start within ${timeoutMs / 1000}s`,
-	);
+	throw new Error(`llama-server failed to start within ${timeoutMs / 1000}s`);
 }
 
 interface LlamaServerTimings {
@@ -496,9 +491,7 @@ export async function runGGUFInference(
 
 		return {
 			text: data.content.trim(),
-			ttftMs: timings?.prompt_ms
-				? Math.round(timings.prompt_ms)
-				: undefined,
+			ttftMs: timings?.prompt_ms ? Math.round(timings.prompt_ms) : undefined,
 			generationTimeMs: timings?.predicted_ms
 				? Math.round(timings.predicted_ms)
 				: undefined,
