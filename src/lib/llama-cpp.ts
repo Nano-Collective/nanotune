@@ -1,5 +1,6 @@
 import {createWriteStream, existsSync, mkdirSync} from 'node:fs';
 import {chmod, rm} from 'node:fs/promises';
+import {createServer} from 'node:net';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
 import {pipeline} from 'node:stream/promises';
@@ -92,7 +93,12 @@ async function downloadAndExtract(url: string, destDir: string): Promise<void> {
 	await rm(tarPath);
 
 	// Make binaries executable
-	const binaries = ['llama-quantize', 'llama-cli', 'llama-gguf-split'];
+	const binaries = [
+		'llama-quantize',
+		'llama-cli',
+		'llama-server',
+		'llama-gguf-split',
+	];
 	for (const bin of binaries) {
 		const binPath = join(destDir, bin);
 		if (existsSync(binPath)) {
@@ -361,6 +367,55 @@ export function parseLlamaCppStderr(stderr: string): ParsedStderr {
 	return result;
 }
 
+async function findFreePort(): Promise<number> {
+	return new Promise((resolve, reject) => {
+		const server = createServer();
+		server.listen(0, '127.0.0.1', () => {
+			const addr = server.address();
+			if (addr && typeof addr === 'object') {
+				const port = addr.port;
+				server.close(() => resolve(port));
+			} else {
+				server.close(() => reject(new Error('Failed to get port')));
+			}
+		});
+		server.on('error', reject);
+	});
+}
+
+async function waitForServer(
+	port: number,
+	timeoutMs = 30_000,
+): Promise<void> {
+	const start = Date.now();
+	while (Date.now() - start < timeoutMs) {
+		try {
+			const res = await fetch(`http://127.0.0.1:${port}/health`);
+			if (res.ok) return;
+		} catch {
+			// Server not ready yet
+		}
+		await new Promise(r => setTimeout(r, 250));
+	}
+	throw new Error(
+		`llama-server failed to start within ${timeoutMs / 1000}s`,
+	);
+}
+
+interface LlamaServerTimings {
+	prompt_n?: number;
+	prompt_ms?: number;
+	predicted_n?: number;
+	predicted_ms?: number;
+	predicted_per_token_ms?: number;
+	predicted_per_second?: number;
+}
+
+interface LlamaServerResponse {
+	content: string;
+	timings?: LlamaServerTimings;
+}
+
 export async function runGGUFInference(
 	modelPath: string,
 	prompt: string,
@@ -378,63 +433,81 @@ export async function runGGUFInference(
 		cpuOnly = false,
 	} = options;
 
-	// Use llama-cli for non-interactive single-shot inference
-	const completionBin = join(LLAMA_CPP_BIN_DIR, 'llama-cli');
+	const serverBin = join(LLAMA_CPP_BIN_DIR, 'llama-server');
+	const port = await findFreePort();
 
 	const args: string[] = [
 		'-m',
 		modelPath,
-		'-p',
-		prompt,
-		'-n',
-		String(maxTokens),
-		'--no-display-prompt',
+		'--port',
+		String(port),
+		'--host',
+		'127.0.0.1',
 		'-c',
 		String(ctxSize),
 		'-b',
 		String(batchSize),
-		'--temp',
-		String(temperature),
-		'--top-p',
-		String(topP),
-		'--verbose',
 	];
 
-	// Add optional flags
 	if (threads !== undefined) {
 		args.push('-t', String(threads));
 	}
 	if (gpuLayers !== undefined) {
 		args.push('-ngl', String(gpuLayers));
 	}
-	if (seed !== undefined) {
-		args.push('--seed', String(seed));
-	}
 	if (cpuOnly) {
-		args.push('-ngl', '0'); // No GPU layers = CPU only
+		args.push('-ngl', '0');
 	}
 
-	const result = await execa(completionBin, args, {
-		input: '', // Close stdin immediately
-		stderr: 'pipe', // Capture stderr for timing info
+	// Start llama-server in the background
+	const serverProcess = execa(serverBin, args, {
+		stdin: 'ignore',
+		stdout: 'ignore',
+		stderr: 'ignore',
 	});
 
-	// Clean up output - remove "EOF by user" and extra prompts
-	let output = result.stdout.trim();
-	output = output.replace(/\n?>\s*\n?EOF by user\s*$/i, '').trim();
-	output = output.replace(/\n?>\s*$/i, '').trim();
+	try {
+		await waitForServer(port);
 
-	// Parse timing info from stderr
-	const stderr = result.stderr || '';
-	const parsed = parseLlamaCppStderr(stderr);
+		const body: Record<string, unknown> = {
+			prompt,
+			n_predict: maxTokens,
+			temperature,
+			top_p: topP,
+		};
+		if (seed !== undefined) {
+			body.seed = seed;
+		}
 
-	return {
-		text: output,
-		ttftMs: parsed.ttftMs,
-		generationTimeMs: parsed.generationTimeMs,
-		tokensPerSecond: parsed.tokensPerSecond,
-		tokensGenerated: parsed.tokensGenerated,
-	};
+		const response = await fetch(`http://127.0.0.1:${port}/completion`, {
+			method: 'POST',
+			headers: {'Content-Type': 'application/json'},
+			body: JSON.stringify(body),
+		});
+
+		if (!response.ok) {
+			throw new Error(
+				`llama-server /completion failed: ${response.statusText}`,
+			);
+		}
+
+		const data = (await response.json()) as LlamaServerResponse;
+		const timings = data.timings;
+
+		return {
+			text: data.content.trim(),
+			ttftMs: timings?.prompt_ms
+				? Math.round(timings.prompt_ms)
+				: undefined,
+			generationTimeMs: timings?.predicted_ms
+				? Math.round(timings.predicted_ms)
+				: undefined,
+			tokensPerSecond: timings?.predicted_per_second,
+			tokensGenerated: timings?.predicted_n,
+		};
+	} finally {
+		serverProcess.kill();
+	}
 }
 
 /** @deprecated Use runGGUFInference with InferenceOptions instead */

@@ -1,3 +1,11 @@
+# 1.3.4
+
+## Benchmark Inference Fix
+
+- **Switched from `llama-cli` to `llama-server`** — benchmarks now spin up a temporary `llama-server` instance and use the `/completion` HTTP API instead of invoking `llama-cli` directly. This avoids the interactive conversation mode that newer llama.cpp versions enter by default, and returns structured timing data (TTFT, tokens/sec, generation time) directly from the response instead of parsing stderr.
+
+---
+
 # 1.3.3
 
 ## Benchmark Inference Fix
