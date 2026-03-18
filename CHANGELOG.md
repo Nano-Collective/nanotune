@@ -1,3 +1,11 @@
+# 1.3.3
+
+## Benchmark Inference Fix
+
+- **Fixed ENOENT error when running benchmarks** — the inference runner referenced a non-existent `llama-completion` binary. Updated to use `llama-cli`, which is the actual binary name shipped in llama.cpp releases and already provisioned by `nanotune export`.
+
+---
+
 # 1.3.1
 
 ## Benchmark Timing Fixes

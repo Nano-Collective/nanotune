@@ -20,7 +20,7 @@ export function getTestDisplayPrompt(test: BenchmarkTest): string {
 }
 
 /**
- * Build the full prompt string for llama-completion.
+ * Build the full prompt string for llama-cli.
  *
  * Single-turn: `{context}\n\nUser: {prompt}\n\nAssistant:`
  * Multi-turn:  `{context}\n\nUser: {msg1}\n\nAssistant: {msg2}\n\nUser: {msg3}\n\nAssistant:`

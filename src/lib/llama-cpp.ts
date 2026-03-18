@@ -378,8 +378,8 @@ export async function runGGUFInference(
 		cpuOnly = false,
 	} = options;
 
-	// Use llama-completion for non-interactive single-shot inference
-	const completionBin = join(LLAMA_CPP_BIN_DIR, 'llama-completion');
+	// Use llama-cli for non-interactive single-shot inference
+	const completionBin = join(LLAMA_CPP_BIN_DIR, 'llama-cli');
 
 	const args: string[] = [
 		'-m',
