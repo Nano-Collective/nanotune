@@ -1,3 +1,11 @@
+# 1.3.5
+
+## Auto-install llama-server
+
+- **Auto-install `llama-server` for existing users** — if the `llama-server` binary is missing from an older llama.cpp installation, benchmarks now automatically re-download llama.cpp before proceeding. No manual steps needed.
+
+---
+
 # 1.3.4
 
 ## Benchmark Inference Fix

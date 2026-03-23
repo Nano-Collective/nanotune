@@ -429,6 +429,19 @@ export async function runGGUFInference(
 	} = options;
 
 	const serverBin = join(LLAMA_CPP_BIN_DIR, 'llama-server');
+
+	// Ensure llama-server is available (may be missing from older installations)
+	if (!existsSync(serverBin)) {
+		for await (const _ of installLlamaCpp()) {
+			// consume install progress
+		}
+		if (!existsSync(serverBin)) {
+			throw new Error(
+				'llama-server binary not found after installation. Please re-run `nanotune export` to update llama.cpp.',
+			);
+		}
+	}
+
 	const port = await findFreePort();
 
 	const args: string[] = [
