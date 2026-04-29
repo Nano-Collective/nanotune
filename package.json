@@ -82,7 +82,9 @@
 	},
 	"pnpm": {
 		"overrides": {
+			"lodash": ">=4.17.24",
 			"minimatch": ">=10.2.3",
+			"picomatch": ">=4.0.4",
 			"tar": ">=7.5.11"
 		}
 	}
