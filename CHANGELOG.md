@@ -1,3 +1,9 @@
+# 1.3.6
+
+- Updated documentation to match guidelines.
+
+---
+
 # 1.3.5
 
 ## Auto-install llama-server
