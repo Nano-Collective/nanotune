@@ -22,7 +22,7 @@ importers:
         version: 3.0.29(zod@4.3.6)
       '@ai-sdk/openai-compatible':
         specifier: ^2.0.30
-        version: 2.0.35(zod@4.3.6)
+        version: 2.0.45(zod@4.3.6)
       '@inkjs/ui':
         specifier: ^2.0.0
         version: 2.0.0(ink@6.8.0(@types/react@19.2.14)(react@19.2.4))
@@ -90,8 +90,8 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  '@ai-sdk/openai-compatible@2.0.35':
-    resolution: {integrity: sha512-g3wA57IAQFb+3j4YuFndgkUdXyRETZVvbfAWM+UX7bZSxA3xjes0v3XKgIdKdekPtDGsh4ZX2byHD0gJIMPfiA==}
+  '@ai-sdk/openai-compatible@2.0.45':
+    resolution: {integrity: sha512-5YBvurNL7Oj7mT3srws4Rh4cQidoorfEGObAOb5jV40eld8IC7EkXWARZjnWYqgYzabUs6Sn6muiXfQVkgOyOQ==}
     engines: {node: '>=18'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -1516,10 +1516,10 @@ snapshots:
       '@ai-sdk/provider-utils': 4.0.15(zod@4.3.6)
       zod: 4.3.6
 
-  '@ai-sdk/openai-compatible@2.0.35(zod@4.3.6)':
+  '@ai-sdk/openai-compatible@2.0.45(zod@4.3.6)':
     dependencies:
-      '@ai-sdk/provider': 3.0.8
-      '@ai-sdk/provider-utils': 4.0.19(zod@4.3.6)
+      '@ai-sdk/provider': 3.0.10
+      '@ai-sdk/provider-utils': 4.0.26(zod@4.3.6)
       zod: 4.3.6
 
   '@ai-sdk/provider-utils@4.0.15(zod@4.3.6)':
