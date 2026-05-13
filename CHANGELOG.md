@@ -1,3 +1,55 @@
+# 1.5.0
+
+## `nanotune chat`
+
+A new interactive REPL closes the loop from train → export → chat. Talk to your fine-tuned model without leaving Nanotune.
+
+```bash
+nanotune chat                # uses the latest exported GGUF
+nanotune chat -m my.gguf     # specific model
+nanotune chat --preset high
+nanotune chat --system "You are a Bash command generator..."
+```
+
+### Features
+- **Persistent `llama-server`** — model loads once, conversation reuses the same hot process. No cold start between turns.
+- **Chat-template aware** — uses `/v1/chat/completions` so the GGUF's chat template is applied (ChatML, Llama-3 tags, etc.). Same wire format the model was trained on.
+- **Slash commands**:
+  - `/help` — show available commands
+  - `/reset` (or `/clear`) — wipe conversation history
+  - `/system <text>` — replace the system message mid-session and reset history
+  - `/stats` — show session token totals
+  - `/exit` or `/quit` — leave (Esc also exits when idle)
+- **Per-turn stats** — TTFT, tokens/sec, and tokens generated displayed below each assistant reply.
+- **Hardware controls** — same `--preset`, `--threads`, `--gpu-layers`, `--ctx-size`, `--batch-size`, `--cpu-only`, `--max-tokens`, `--temperature`, `--top-p`, `--seed` flags as `nanotune benchmark`.
+- **Override system prompt** — `--system` flag overrides the project's `contextMessage` for the session.
+
+### Internals
+- Extracted `findLatestGGUF()` into `src/lib/config.ts`; `benchmark` and `chat` both consume it.
+- Server lifecycle reuses the SIGTERM → SIGKILL escalation from 1.4.0, so a hung llama-server can't keep the REPL alive after exit.
+- `process.on('exit')` backstop SIGKILLs the child on abrupt terminations (Ctrl-C, signal kills) that bypass the React unmount.
+
+## Test Coverage
+
+Backfilled direct unit tests for several pure-function helpers that were previously only exercised indirectly. **223 tests total (+92).**
+
+### Extractions to enable testing
+- `checkPass` + `normalizeText` moved from `src/commands/benchmark.tsx` to `src/lib/benchmark-match.ts`.
+- `buildServerOptions`, `buildGenerateOptions`, and a new `parseSlashCommand` discriminated-union helper moved to `src/lib/chat-helpers.ts`.
+- `parseChatCompletionResponse` extracted from `chatCompletion` and exported from `src/lib/llama-cpp.ts`.
+
+### New tests
+- **`parseCSV`** — 13 cases covering LF/CRLF/CR endings, quoted fields with embedded commas, escaped quotes (`""`), newlines inside quoted fields, mixed quoted/unquoted columns, empty fields, unclosed-quote-at-EOF, and trailing-newline handling. Plus an `importFromCSV` regression asserting that a row with an embedded comma round-trips.
+- **`splitTrainValidation`** — same-seed reproducibility, full-permutation invariant (no drops, no duplicates), different-seeds-produce-different-splits, zero-examples, and the minimum-one-validation guarantee.
+- **`checkPass`** — every match mode, plus an explicit regression that `semantic` mode no longer accepts `"ls"` as a pass for `acceptable: ["ls -la"]` (the 1.4.0 bug fix).
+- **`normalizeText`** — whitespace collapse, quote canonicalization, trim.
+- **`findLatestGGUF`** — missing dir, empty dir, no GGUFs, newest-by-mtime selection, and ignores non-`.gguf` siblings even when they're newer.
+- **`parseChatCompletionResponse`** — content extraction, trimming, missing/empty `choices`, missing `message`, top-level `timings` mapping (rounded), `usage.completion_tokens` fallback, `timings.predicted_n` preferred over the usage fallback, and the `prompt_ms=0` edge case (pins current behaviour).
+- **`parseSlashCommand`** — empty/whitespace noop, plain-text send, `/exit` `/quit` `/reset` `/clear` `/help` `/stats` aliases, `/system` with and without arg, case-insensitive command name, case-preserving argument, unknown commands surface as `unknown` rather than being prompted into the model.
+- **`buildServerOptions` / `buildGenerateOptions`** — defaults, numeric flag parsing, `cpuOnly` passthrough, low/high preset application, preset wins over individual flags, unknown preset falls back, and the chat-specific 256-token default (vs benchmark's 50).
+
+---
+
 # 1.4.0
 
 ## Correctness Fixes
