@@ -1,15 +1,10 @@
-import {
-	existsSync,
-	readdirSync,
-	readFileSync,
-	statSync,
-	writeFileSync,
-} from 'node:fs';
+import {existsSync, readFileSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {Spinner, StatusMessage} from '@inkjs/ui';
 import {Box, Text, useApp, useInput} from 'ink';
 import {useCallback, useEffect, useState} from 'react';
 import {Header, Progress, StatusBadge} from '../components/index.js';
+import {checkPass} from '../lib/benchmark-match.js';
 import {
 	buildMessages,
 	formatConversationForJudge,
@@ -17,8 +12,8 @@ import {
 } from '../lib/benchmark-utils.js';
 import {
 	configExists,
+	findLatestGGUF,
 	getBenchmarksDir,
-	getModelsDir,
 	loadConfig,
 	resolveContextMessage,
 } from '../lib/config.js';
@@ -42,7 +37,6 @@ import {
 	type BenchmarkTest,
 	type BenchmarkTestResult,
 	type JudgeProviderConfig,
-	type MatchMode,
 } from '../types/index.js';
 
 interface Props {
@@ -67,122 +61,6 @@ type Status = 'loading' | 'running' | 'done' | 'error';
 interface CategoryResult {
 	passed: number;
 	total: number;
-}
-
-/**
- * Normalize text for comparison
- * - Trim whitespace
- * - Normalize multiple spaces/newlines to single space
- * - Normalize quotes
- */
-function normalizeText(text: string): string {
-	return text.trim().replace(/\s+/g, ' ').replace(/["'`]/g, '"');
-}
-
-/**
- * Check if actual response matches any acceptable answer
- *
- * Match modes:
- * - "exact": Must match exactly (after optional normalization)
- * - "contains": Response contains the acceptable answer anywhere
- * - "startsWith": Response starts with the acceptable answer
- * - "partial": Bidirectional prefix match — actual is a prefix of expected
- *   OR expected is a prefix of actual. Accepts truncated answers; use with
- *   care since it can inflate pass rates.
- * - "semantic": Normalized comparison; counts as a pass if actual exactly
- *   matches expected, or extends expected with a delimiter ("ls" + " -la").
- *   Does NOT accept truncations of expected (default, good for code).
- */
-export function checkPass(
-	acceptable: string[],
-	actual: string,
-	mode: MatchMode = 'semantic',
-	caseSensitive = false,
-): {passed: boolean; matchedAnswer: string | null; matchType: string | null} {
-	const processText = (text: string) => {
-		let processed = text.trim();
-		if (!caseSensitive) {
-			processed = processed.toLowerCase();
-		}
-		return processed;
-	};
-
-	const actualProcessed = processText(actual);
-	const actualNormalized = normalizeText(actualProcessed);
-
-	for (const expected of acceptable) {
-		const expectedProcessed = processText(expected);
-		const expectedNormalized = normalizeText(expectedProcessed);
-
-		switch (mode) {
-			case 'exact': {
-				// Strict exact match (only case normalization if enabled)
-				if (actualProcessed === expectedProcessed) {
-					return {passed: true, matchedAnswer: expected, matchType: 'exact'};
-				}
-				break;
-			}
-
-			case 'contains': {
-				// Response contains the acceptable answer anywhere
-				if (actualNormalized.includes(expectedNormalized)) {
-					return {passed: true, matchedAnswer: expected, matchType: 'contains'};
-				}
-				break;
-			}
-
-			case 'startsWith': {
-				// Response starts with the acceptable answer
-				if (actualNormalized.startsWith(expectedNormalized)) {
-					return {
-						passed: true,
-						matchedAnswer: expected,
-						matchType: 'startsWith',
-					};
-				}
-				break;
-			}
-
-			case 'partial': {
-				// Bidirectional prefix match. Opt-in because accepting a truncated
-				// answer ("ls" for "ls -la") will inflate pass rates.
-				if (
-					actualNormalized.startsWith(expectedNormalized) ||
-					expectedNormalized.startsWith(actualNormalized)
-				) {
-					return {passed: true, matchedAnswer: expected, matchType: 'partial'};
-				}
-				break;
-			}
-
-			case 'semantic':
-			default: {
-				// Normalized comparison with two safe strategies:
-				// 1. Exact match after normalization
-				if (actualNormalized === expectedNormalized) {
-					return {passed: true, matchedAnswer: expected, matchType: 'exact'};
-				}
-
-				// 2. Actual starts with expected followed by a delimiter — allows
-				// trailing content but the expected answer must appear in full.
-				if (
-					actualNormalized.startsWith(expectedNormalized + ' ') ||
-					actualNormalized.startsWith(expectedNormalized + ':') ||
-					actualNormalized.startsWith(expectedNormalized + '\n')
-				) {
-					return {
-						passed: true,
-						matchedAnswer: expected,
-						matchType: 'startsWith',
-					};
-				}
-
-				break;
-			}
-		}
-	}
-
-	return {passed: false, matchedAnswer: null, matchType: null};
 }
 
 function generateMarkdownReport(
@@ -369,32 +247,17 @@ export function BenchmarkCommand({options}: Props) {
 			} catch {
 				// Minimal config (e.g., external benchmark runner) — no context message needed
 			}
-			const modelsDir = getModelsDir();
 			const benchmarksDir = getBenchmarksDir();
 
 			// Find model
-			let modelPath = options.model;
+			let modelPath = options.model ?? findLatestGGUF();
 			if (!modelPath) {
-				// Find latest GGUF file
-				const ggufFiles = readdirSync(modelsDir).filter(f =>
-					f.endsWith('.gguf'),
-				);
-				if (ggufFiles.length === 0) {
-					setError('No exported models found. Run `nanotune export` first.');
-					setStatus('error');
-					return;
-				}
-				// Sort by modification time, newest first
-				const sorted = ggufFiles
-					.map(f => ({
-						name: f,
-						path: join(modelsDir, f),
-					}))
-					.sort((a, b) => statSync(b.path).mtimeMs - statSync(a.path).mtimeMs);
-				modelPath = sorted[0].path;
+				setError('No exported models found. Run `nanotune export` first.');
+				setStatus('error');
+				return;
 			}
 
-			if (!modelPath || !existsSync(modelPath)) {
+			if (!existsSync(modelPath)) {
 				setError(`Model not found: ${modelPath}`);
 				setStatus('error');
 				return;

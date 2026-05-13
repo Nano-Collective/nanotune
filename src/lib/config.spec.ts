@@ -1,8 +1,17 @@
-import { rmSync } from "node:fs";
+import {
+  mkdirSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import test from "ava";
 import { ConfigSchema } from "../types/index.js";
-import { createDefaultConfig, resolveContextMessage } from "./config.js";
+import {
+  createDefaultConfig,
+  findLatestGGUF,
+  resolveContextMessage,
+} from "./config.js";
 
 const TEST_DIR = join(process.cwd(), ".test-nanotune");
 
@@ -200,3 +209,102 @@ test("resolveContextMessage falls back to systemPrompt", (t) => {
   t.is(result.role, "system");
   t.is(result.content, "System prompt");
 });
+
+// ── findLatestGGUF ────────────────────────────────────────────────────
+
+const ORIG_CWD = process.cwd();
+const GGUF_TEST_DIR = join(ORIG_CWD, ".test-config-spec");
+const GGUF_MODELS_DIR = join(GGUF_TEST_DIR, ".nanotune", "models");
+
+function setupGGUFTest() {
+  rmSync(GGUF_TEST_DIR, { recursive: true, force: true });
+  mkdirSync(GGUF_TEST_DIR, { recursive: true });
+  process.chdir(GGUF_TEST_DIR);
+}
+
+function teardownGGUFTest() {
+  process.chdir(ORIG_CWD);
+  rmSync(GGUF_TEST_DIR, { recursive: true, force: true });
+}
+
+test.serial(
+  "findLatestGGUF returns null when models directory is missing",
+  (t) => {
+    setupGGUFTest();
+    try {
+      t.is(findLatestGGUF(), null);
+    } finally {
+      teardownGGUFTest();
+    }
+  },
+);
+
+test.serial(
+  "findLatestGGUF returns null when models directory is empty",
+  (t) => {
+    setupGGUFTest();
+    try {
+      mkdirSync(GGUF_MODELS_DIR, { recursive: true });
+      t.is(findLatestGGUF(), null);
+    } finally {
+      teardownGGUFTest();
+    }
+  },
+);
+
+test.serial(
+  "findLatestGGUF returns null when models directory has no .gguf files",
+  (t) => {
+    setupGGUFTest();
+    try {
+      mkdirSync(GGUF_MODELS_DIR, { recursive: true });
+      writeFileSync(join(GGUF_MODELS_DIR, "readme.txt"), "not a gguf");
+      t.is(findLatestGGUF(), null);
+    } finally {
+      teardownGGUFTest();
+    }
+  },
+);
+
+test.serial(
+  "findLatestGGUF returns the .gguf file with the newest mtime",
+  (t) => {
+    setupGGUFTest();
+    try {
+      mkdirSync(GGUF_MODELS_DIR, { recursive: true });
+      const older = join(GGUF_MODELS_DIR, "old.gguf");
+      const newer = join(GGUF_MODELS_DIR, "new.gguf");
+      writeFileSync(older, "stub");
+      writeFileSync(newer, "stub");
+
+      // Force older to have an earlier mtime.
+      const past = new Date(Date.now() - 60_000);
+      utimesSync(older, past, past);
+
+      t.is(findLatestGGUF(), newer);
+    } finally {
+      teardownGGUFTest();
+    }
+  },
+);
+
+test.serial("findLatestGGUF ignores non-.gguf siblings", (t) => {
+  setupGGUFTest();
+  try {
+    mkdirSync(GGUF_MODELS_DIR, { recursive: true });
+    const ggufFile = join(GGUF_MODELS_DIR, "model.gguf");
+    const sidecar = join(GGUF_MODELS_DIR, "model.json");
+    writeFileSync(ggufFile, "stub");
+    writeFileSync(sidecar, "{}");
+
+    // Make the .json *newer* so a naive impl that returned the newest file
+    // regardless of extension would pick it. The GGUF should still win.
+    const past = new Date(Date.now() - 60_000);
+    utimesSync(ggufFile, past, past);
+
+    t.is(findLatestGGUF(), ggufFile);
+  } finally {
+    teardownGGUFTest();
+  }
+});
+

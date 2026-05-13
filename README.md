@@ -24,6 +24,7 @@ nanotune init
 nanotune data add
 nanotune train
 nanotune export
+nanotune chat        # talk to your fine-tuned model
 nanotune benchmark
 ```
 

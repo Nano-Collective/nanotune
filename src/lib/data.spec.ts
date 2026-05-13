@@ -13,6 +13,8 @@ import {
   importFromJSONL,
   importData,
   loadTrainingData,
+  parseCSV,
+  splitTrainValidation,
   updateExample,
   updateTrainingExample,
   validateTrainingData,
@@ -520,3 +522,196 @@ test.serial("appendToTrainingData backward compat still creates 3-message exampl
   t.is(data[0].messages[1].role, "user");
   t.is(data[0].messages[2].role, "assistant");
 });
+
+// ── parseCSV ──────────────────────────────────────────────────────────
+
+test("parseCSV returns empty array for empty input", (t) => {
+  t.deepEqual(parseCSV(""), []);
+});
+
+test("parseCSV parses a simple two-column row", (t) => {
+  t.deepEqual(parseCSV("a,b"), [["a", "b"]]);
+});
+
+test("parseCSV trims trailing newline rather than emitting a blank row", (t) => {
+  t.deepEqual(parseCSV("a,b\n"), [["a", "b"]]);
+});
+
+test("parseCSV handles multiple rows with LF endings", (t) => {
+  t.deepEqual(parseCSV("a,b\nc,d\n"), [
+    ["a", "b"],
+    ["c", "d"],
+  ]);
+});
+
+test("parseCSV handles CRLF line endings", (t) => {
+  t.deepEqual(parseCSV("a,b\r\nc,d\r\n"), [
+    ["a", "b"],
+    ["c", "d"],
+  ]);
+});
+
+test("parseCSV handles bare CR line endings", (t) => {
+  t.deepEqual(parseCSV("a,b\rc,d"), [
+    ["a", "b"],
+    ["c", "d"],
+  ]);
+});
+
+test("parseCSV preserves commas inside quoted fields", (t) => {
+  // This is the case the old regex failed on.
+  t.deepEqual(parseCSV('"hello, world","answer"'), [["hello, world", "answer"]]);
+});
+
+test("parseCSV unescapes doubled quotes inside quoted fields", (t) => {
+  t.deepEqual(parseCSV('"she said ""hi""","ok"'), [
+    ['she said "hi"', "ok"],
+  ]);
+});
+
+test("parseCSV preserves newlines inside quoted fields", (t) => {
+  t.deepEqual(parseCSV('"line one\nline two","x"'), [
+    ["line one\nline two", "x"],
+  ]);
+});
+
+test("parseCSV handles a mix of quoted and unquoted fields", (t) => {
+  t.deepEqual(parseCSV('a,"b, with comma",c'), [["a", "b, with comma", "c"]]);
+});
+
+test("parseCSV handles empty fields", (t) => {
+  t.deepEqual(parseCSV("a,,c"), [["a", "", "c"]]);
+});
+
+test("parseCSV handles a single-field row", (t) => {
+  t.deepEqual(parseCSV("only-one"), [["only-one"]]);
+});
+
+test("parseCSV gracefully terminates an unclosed quote at EOF", (t) => {
+  // Better than throwing — the row is preserved up to where the user got to.
+  t.deepEqual(parseCSV('"unclosed'), [["unclosed"]]);
+});
+
+test("parseCSV drops only trailing entirely-empty rows", (t) => {
+  // A real blank middle row should survive; only the synthetic trailing blank
+  // from a final newline is stripped.
+  const rows = parseCSV("a,b\n\nc,d\n");
+  t.deepEqual(rows, [
+    ["a", "b"],
+    [""],
+    ["c", "d"],
+  ]);
+});
+
+test("importFromCSV correctly imports a row with an embedded comma", (t) => {
+  const csvPath = join(TEST_DIR, "embed.csv");
+  // Regression test: the old regex rejected this; the new state-machine
+  // parser must round-trip it as one example.
+  writeFileSync(csvPath, '"please list files, recursively","find ."\n');
+
+  const result = importFromCSV(csvPath, SYSTEM_CTX);
+  t.is(result.imported, 1);
+  t.is(result.skipped, 0);
+
+  const data = loadTrainingData();
+  t.is(data[0].messages[1].content, "please list files, recursively");
+  t.is(data[0].messages[2].content, "find .");
+});
+
+// ── splitTrainValidation seedability ──────────────────────────────────
+
+function seedExamples(count: number) {
+  for (let i = 0; i < count; i++) {
+    appendToTrainingData({
+      contextMessage: SYSTEM_CTX,
+      userInput: `q${i}`,
+      assistantOutput: `a${i}`,
+    });
+  }
+}
+
+test.serial(
+  "splitTrainValidation produces the same split for the same seed",
+  (t) => {
+    seedExamples(20);
+    splitTrainValidation(0.2, 42);
+    const firstTrain = loadTrainingData(false).map(
+      (ex) => ex.messages[1].content,
+    );
+    const firstValid = loadTrainingData(true).map(
+      (ex) => ex.messages[1].content,
+    );
+
+    // Reset training data and rerun with the same seed.
+    rmSync(DATA_DIR, { recursive: true, force: true });
+    mkdirSync(DATA_DIR, { recursive: true });
+    seedExamples(20);
+    splitTrainValidation(0.2, 42);
+    const secondTrain = loadTrainingData(false).map(
+      (ex) => ex.messages[1].content,
+    );
+    const secondValid = loadTrainingData(true).map(
+      (ex) => ex.messages[1].content,
+    );
+
+    t.deepEqual(firstTrain, secondTrain);
+    t.deepEqual(firstValid, secondValid);
+  },
+);
+
+test.serial(
+  "splitTrainValidation produces a full permutation (no duplicates, no drops)",
+  (t) => {
+    seedExamples(10);
+    splitTrainValidation(0.2, 7);
+    const train = loadTrainingData(false).map((ex) => ex.messages[1].content);
+    const valid = loadTrainingData(true).map((ex) => ex.messages[1].content);
+
+    const all = [...train, ...valid].sort();
+    const expected = Array.from({ length: 10 }, (_, i) => `q${i}`).sort();
+    t.deepEqual(all, expected);
+    // 10 examples, 20% → 2 in valid, 8 in train
+    t.is(train.length, 8);
+    t.is(valid.length, 2);
+  },
+);
+
+test.serial(
+  "splitTrainValidation with different seeds produces different splits",
+  (t) => {
+    seedExamples(20);
+    splitTrainValidation(0.5, 1);
+    const splitA = loadTrainingData(false).map(
+      (ex) => ex.messages[1].content,
+    );
+
+    rmSync(DATA_DIR, { recursive: true, force: true });
+    mkdirSync(DATA_DIR, { recursive: true });
+    seedExamples(20);
+    splitTrainValidation(0.5, 999);
+    const splitB = loadTrainingData(false).map(
+      (ex) => ex.messages[1].content,
+    );
+
+    // 20 examples, 50% split — two different seeds should almost certainly
+    // produce a different train half. (Mathematically possible to collide,
+    // but with mulberry32 + these seeds it doesn't.)
+    t.notDeepEqual(splitA, splitB);
+  },
+);
+
+test.serial("splitTrainValidation with zero examples returns zero counts", (t) => {
+  const result = splitTrainValidation(0.1, 1);
+  t.deepEqual(result, { trainCount: 0, validCount: 0 });
+});
+
+test.serial(
+  "splitTrainValidation guarantees at least one validation example when count >= 2",
+  (t) => {
+    seedExamples(2);
+    // 10% of 2 = 0.2 → floor = 0, but the function forces at least 1.
+    const result = splitTrainValidation(0.1, 1);
+    t.is(result.validCount, 1);
+    t.is(result.trainCount, 1);
+  },
+);

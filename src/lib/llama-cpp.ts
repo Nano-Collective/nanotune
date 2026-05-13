@@ -414,7 +414,7 @@ interface LlamaServerTimings {
 	predicted_per_second?: number;
 }
 
-interface ChatCompletionResponse {
+export interface ChatCompletionResponse {
 	choices?: Array<{
 		message?: {role?: string; content?: string};
 	}>;
@@ -423,6 +423,29 @@ interface ChatCompletionResponse {
 		prompt_tokens?: number;
 		completion_tokens?: number;
 		total_tokens?: number;
+	};
+}
+
+/**
+ * Parse a llama-server `/v1/chat/completions` response into our InferenceResult.
+ * Pulled out of `chatCompletion` so it can be unit-tested without spawning a
+ * server. Tolerates llama-server's non-standard top-level `timings` field and
+ * falls back to OpenAI-shaped `usage.completion_tokens` when timings are absent.
+ */
+export function parseChatCompletionResponse(
+	data: ChatCompletionResponse,
+): InferenceResult {
+	const content = data.choices?.[0]?.message?.content ?? '';
+	const timings = data.timings;
+
+	return {
+		text: content.trim(),
+		ttftMs: timings?.prompt_ms ? Math.round(timings.prompt_ms) : undefined,
+		generationTimeMs: timings?.predicted_ms
+			? Math.round(timings.predicted_ms)
+			: undefined,
+		tokensPerSecond: timings?.predicted_per_second,
+		tokensGenerated: timings?.predicted_n ?? data.usage?.completion_tokens,
 	};
 }
 
@@ -605,18 +628,7 @@ export async function chatCompletion(
 	}
 
 	const data = (await response.json()) as ChatCompletionResponse;
-	const content = data.choices?.[0]?.message?.content ?? '';
-	const timings = data.timings;
-
-	return {
-		text: content.trim(),
-		ttftMs: timings?.prompt_ms ? Math.round(timings.prompt_ms) : undefined,
-		generationTimeMs: timings?.predicted_ms
-			? Math.round(timings.predicted_ms)
-			: undefined,
-		tokensPerSecond: timings?.predicted_per_second,
-		tokensGenerated: timings?.predicted_n ?? data.usage?.completion_tokens,
-	};
+	return parseChatCompletionResponse(data);
 }
 
 /**

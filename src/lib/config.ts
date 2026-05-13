@@ -1,4 +1,11 @@
-import {existsSync, mkdirSync, readFileSync, writeFileSync} from 'node:fs';
+import {
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	statSync,
+	writeFileSync,
+} from 'node:fs';
 import {join} from 'node:path';
 import {type ChatMessage, type Config, ConfigSchema} from '../types/index.js';
 
@@ -79,6 +86,26 @@ export function initializeProjectDirs(): void {
 	if (!existsSync(gitignorePath)) {
 		writeFileSync(gitignorePath, GITIGNORE_CONTENTS);
 	}
+}
+
+/**
+ * Find the most recently modified GGUF in the project's models directory.
+ * Returns `null` if the directory is missing or contains no GGUFs — callers
+ * should surface a clear "run `nanotune export` first" message in that case.
+ */
+export function findLatestGGUF(): string | null {
+	const modelsDir = getModelsDir();
+	if (!existsSync(modelsDir)) {
+		return null;
+	}
+	const ggufs = readdirSync(modelsDir).filter(f => f.endsWith('.gguf'));
+	if (ggufs.length === 0) {
+		return null;
+	}
+	const sorted = ggufs
+		.map(f => ({name: f, path: join(modelsDir, f)}))
+		.sort((a, b) => statSync(b.path).mtimeMs - statSync(a.path).mtimeMs);
+	return sorted[0].path;
 }
 
 export function resolveContextMessage(config: Config): ChatMessage {
