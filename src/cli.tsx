@@ -1,6 +1,11 @@
 #!/usr/bin/env node
+import {readFileSync} from 'node:fs';
 import {Command} from 'commander';
 import {render} from 'ink';
+
+const pkg = JSON.parse(
+	readFileSync(new URL('../package.json', import.meta.url), 'utf-8'),
+) as {version: string};
 
 const program = new Command();
 
@@ -9,7 +14,7 @@ program
 	.description(
 		'A simple, interactive CLI for fine-tuning small language models on Apple Silicon. No YAML configs, no complex flags - just an interactive CLI that guides you through the process. ⚒️',
 	)
-	.version('1.0.0');
+	.version(pkg.version);
 
 // Init command
 program

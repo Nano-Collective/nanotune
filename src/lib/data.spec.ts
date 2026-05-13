@@ -231,7 +231,7 @@ test.serial("importFromCSV skips invalid lines", (t) => {
 
 // ── importFromJSONL ───────────────────────────────────────────────────
 
-test.serial("importFromJSONL imports messages format", (t) => {
+test.serial("importFromJSONL preserves imported messages array verbatim", (t) => {
   const jsonlPath = join(TEST_DIR, "data.jsonl");
   const line = JSON.stringify({
     messages: [
@@ -242,12 +242,15 @@ test.serial("importFromJSONL imports messages format", (t) => {
   });
   writeFileSync(jsonlPath, line + "\n");
 
+  // Even though DEV_CTX is passed, the imported messages array must be
+  // preserved — silently overwriting embedded system prompts would corrupt
+  // user-curated datasets.
   const result = importFromJSONL(jsonlPath, DEV_CTX);
   t.is(result.imported, 1);
 
   const data = loadTrainingData();
-  // Import uses the provided contextMessage, extracting user/assistant from source
-  t.is(data[0].messages[0].role, "developer");
+  t.is(data[0].messages[0].role, "system");
+  t.is(data[0].messages[0].content, "sys");
   t.is(data[0].messages[1].content, "hello");
   t.is(data[0].messages[2].content, "hi");
 });
@@ -296,8 +299,12 @@ test.serial("importFromJSON imports array of messages format", (t) => {
   t.is(result.imported, 2);
 
   const data = loadTrainingData();
-  t.is(data[0].messages[0].role, "developer");
+  // First item used the messages format → preserved verbatim.
+  t.is(data[0].messages[0].role, "system");
+  t.is(data[0].messages[0].content, "sys");
   t.is(data[0].messages[1].content, "q1");
+  // Second item used {input, output} → wrapped with DEV_CTX.
+  t.is(data[1].messages[0].role, "developer");
   t.is(data[1].messages[1].content, "q2");
 });
 

@@ -1,11 +1,17 @@
-import {existsSync, readdirSync, readFileSync, writeFileSync} from 'node:fs';
+import {
+	existsSync,
+	readdirSync,
+	readFileSync,
+	statSync,
+	writeFileSync,
+} from 'node:fs';
 import {join} from 'node:path';
 import {Spinner, StatusMessage} from '@inkjs/ui';
 import {Box, Text, useApp, useInput} from 'ink';
 import {useCallback, useEffect, useState} from 'react';
 import {Header, Progress, StatusBadge} from '../components/index.js';
 import {
-	buildFullPrompt,
+	buildMessages,
 	formatConversationForJudge,
 	getTestDisplayPrompt,
 } from '../lib/benchmark-utils.js';
@@ -23,9 +29,11 @@ import {
 	resolveCriteria,
 } from '../lib/judge.js';
 import {
-	type InferenceOptions,
-	type InferenceResult,
-	runGGUFInference,
+	chatCompletion,
+	type GenerateOptions,
+	type ServerOptions,
+	startLlamaServer,
+	stopLlamaServer,
 } from '../lib/llama-cpp.js';
 import {
 	BENCHMARK_PRESETS,
@@ -78,9 +86,14 @@ function normalizeText(text: string): string {
  * - "exact": Must match exactly (after optional normalization)
  * - "contains": Response contains the acceptable answer anywhere
  * - "startsWith": Response starts with the acceptable answer
- * - "semantic": Normalized comparison with prefix matching (default, good for code)
+ * - "partial": Bidirectional prefix match — actual is a prefix of expected
+ *   OR expected is a prefix of actual. Accepts truncated answers; use with
+ *   care since it can inflate pass rates.
+ * - "semantic": Normalized comparison; counts as a pass if actual exactly
+ *   matches expected, or extends expected with a delimiter ("ls" + " -la").
+ *   Does NOT accept truncations of expected (default, good for code).
  */
-function checkPass(
+export function checkPass(
 	acceptable: string[],
 	actual: string,
 	mode: MatchMode = 'semantic',
@@ -130,16 +143,28 @@ function checkPass(
 				break;
 			}
 
+			case 'partial': {
+				// Bidirectional prefix match. Opt-in because accepting a truncated
+				// answer ("ls" for "ls -la") will inflate pass rates.
+				if (
+					actualNormalized.startsWith(expectedNormalized) ||
+					expectedNormalized.startsWith(actualNormalized)
+				) {
+					return {passed: true, matchedAnswer: expected, matchType: 'partial'};
+				}
+				break;
+			}
+
 			case 'semantic':
 			default: {
-				// Normalized comparison with multiple match strategies
-
+				// Normalized comparison with two safe strategies:
 				// 1. Exact match after normalization
 				if (actualNormalized === expectedNormalized) {
 					return {passed: true, matchedAnswer: expected, matchType: 'exact'};
 				}
 
-				// 2. Starts with (for responses with extra content)
+				// 2. Actual starts with expected followed by a delimiter — allows
+				// trailing content but the expected answer must appear in full.
 				if (
 					actualNormalized.startsWith(expectedNormalized + ' ') ||
 					actualNormalized.startsWith(expectedNormalized + ':') ||
@@ -150,14 +175,6 @@ function checkPass(
 						matchedAnswer: expected,
 						matchType: 'startsWith',
 					};
-				}
-
-				// 3. Expected starts with actual (actual is subset of expected)
-				if (
-					expectedNormalized.startsWith(actualNormalized + ' ') ||
-					expectedNormalized.startsWith(actualNormalized)
-				) {
-					return {passed: true, matchedAnswer: expected, matchType: 'partial'};
 				}
 
 				break;
@@ -373,14 +390,11 @@ export function BenchmarkCommand({options}: Props) {
 						name: f,
 						path: join(modelsDir, f),
 					}))
-					.sort((a, b) => {
-						const {statSync} = require('node:fs');
-						return statSync(b.path).mtimeMs - statSync(a.path).mtimeMs;
-					});
+					.sort((a, b) => statSync(b.path).mtimeMs - statSync(a.path).mtimeMs);
 				modelPath = sorted[0].path;
 			}
 
-			if (!existsSync(modelPath)) {
+			if (!modelPath || !existsSync(modelPath)) {
 				setError(`Model not found: ${modelPath}`);
 				setStatus('error');
 				return;
@@ -429,7 +443,8 @@ export function BenchmarkCommand({options}: Props) {
 			}
 
 			// Build inference options from CLI flags or preset
-			let inferenceOptions: InferenceOptions;
+			let serverOptions: ServerOptions;
+			let generateOptions: GenerateOptions;
 
 			if (options.preset) {
 				// Validate preset
@@ -449,24 +464,22 @@ export function BenchmarkCommand({options}: Props) {
 
 				// Apply preset configuration
 				const preset = BENCHMARK_PRESETS[options.preset as BenchmarkPreset];
-				inferenceOptions = {
-					maxTokens: preset.maxTokens,
+				serverOptions = {
 					threads: preset.threads,
 					gpuLayers: preset.gpuLayers,
 					ctxSize: preset.ctxSize,
 					batchSize: preset.batchSize,
 					cpuOnly: preset.gpuLayers === 0,
+				};
+				generateOptions = {
+					maxTokens: preset.maxTokens,
 					temperature: options.temperature
 						? Number.parseFloat(options.temperature)
 						: 0.8,
 					seed: options.seed ? Number.parseInt(options.seed, 10) : undefined,
 				};
 			} else {
-				// Build from individual CLI flags
-				inferenceOptions = {
-					maxTokens: options.maxTokens
-						? Number.parseInt(options.maxTokens, 10)
-						: 50,
+				serverOptions = {
 					threads: options.threads
 						? Number.parseInt(options.threads, 10)
 						: undefined,
@@ -480,6 +493,11 @@ export function BenchmarkCommand({options}: Props) {
 						? Number.parseInt(options.batchSize, 10)
 						: 2048,
 					cpuOnly: options.cpuOnly,
+				};
+				generateOptions = {
+					maxTokens: options.maxTokens
+						? Number.parseInt(options.maxTokens, 10)
+						: 50,
 					temperature: options.temperature
 						? Number.parseFloat(options.temperature)
 						: 0.8,
@@ -512,123 +530,146 @@ export function BenchmarkCommand({options}: Props) {
 			const allResults: BenchmarkTestResult[] = [];
 			const categoryResults: Record<string, CategoryResult> = {};
 
-			for (let i = 0; i < tests.length; i++) {
-				const test = tests[i];
-				setCurrentTest(getTestDisplayPrompt(test));
-				setProgress(((i + 1) / tests.length) * 100);
+			// Start llama-server once for the whole run — cold-starting per test
+			// would multiply latency by N and cache the model from disk N times.
+			const serverHandle = await startLlamaServer(modelPath, serverOptions);
 
-				// Initialize category
-				if (!categoryResults[test.category]) {
-					categoryResults[test.category] = {passed: 0, total: 0};
-				}
-				categoryResults[test.category].total++;
+			try {
+				for (let i = 0; i < tests.length; i++) {
+					const test = tests[i];
+					setCurrentTest(getTestDisplayPrompt(test));
+					setProgress(((i + 1) / tests.length) * 100);
 
-				const startTime = Date.now();
-				let response = '';
-				let passed = false;
-				let latencyMs: number | undefined;
-				let ttftMs: number | undefined;
-				let generationTimeMs: number | undefined;
-				let tokensGenerated: number | undefined;
-				let tokensPerSecond: number | undefined;
-
-				let judgeScore: number | undefined;
-				let judgeReasoning: string | undefined;
-				let judgeCriteriaScores: Record<string, number> | undefined;
-
-				try {
-					// Build prompt with context message
-					const fullPrompt = buildFullPrompt(test, contextMsg);
-
-					const inferenceResult = await Promise.race<InferenceResult | never>([
-						runGGUFInference(modelPath, fullPrompt, inferenceOptions),
-						new Promise<never>((_, reject) =>
-							setTimeout(() => reject(new Error('Timeout')), timeout),
-						),
-					]);
-
-					latencyMs = Date.now() - startTime;
-					response = inferenceResult.text;
-					ttftMs = inferenceResult.ttftMs;
-					generationTimeMs = inferenceResult.generationTimeMs;
-					tokensGenerated = inferenceResult.tokensGenerated;
-					tokensPerSecond = inferenceResult.tokensPerSecond;
-
-					if (test.match === 'llm-judge' && judgeConfig) {
-						// Use LLM judge for evaluation
-						const criteria = resolveCriteria(test.criteria);
-						const threshold = test.passThreshold ?? 7;
-						// For multi-turn tests, include conversation context in the judge prompt
-						const judgePrompt = test.messages
-							? formatConversationForJudge(test.messages, contextMsg)
-							: (test.prompt as string);
-						const judgeResult = await callJudge(
-							judgePrompt,
-							response.trim(),
-							criteria,
-							judgeConfig,
-							threshold,
-							test.acceptable,
-						);
-						passed = judgeResult.pass;
-						judgeScore = judgeResult.score;
-						judgeReasoning = judgeResult.reasoning;
-						judgeCriteriaScores = judgeResult.criteriaScores;
-					} else {
-						// Use string matching
-						const matchResult = checkPass(
-							test.acceptable || [],
-							response.trim(),
-							test.match || 'semantic',
-							test.caseSensitive ?? false,
-						);
-						passed = matchResult.passed;
+					// Initialize category
+					if (!categoryResults[test.category]) {
+						categoryResults[test.category] = {passed: 0, total: 0};
 					}
+					categoryResults[test.category].total++;
 
-					if (passed) {
-						categoryResults[test.category].passed++;
-					} else {
+					const startTime = Date.now();
+					let response = '';
+					let passed = false;
+					let latencyMs: number | undefined;
+					let ttftMs: number | undefined;
+					let generationTimeMs: number | undefined;
+					let tokensGenerated: number | undefined;
+					let tokensPerSecond: number | undefined;
+
+					let judgeScore: number | undefined;
+					let judgeReasoning: string | undefined;
+					let judgeCriteriaScores: Record<string, number> | undefined;
+
+					try {
+						// Build messages array (chat-template aware) for this test.
+						const requestMessages = buildMessages(test, contextMsg);
+
+						// Cancel the in-flight fetch when the timeout wins — otherwise
+						// llama-server keeps generating into the void and the next test
+						// is delayed waiting for the server to free up.
+						const controller = new AbortController();
+						const timeoutId = setTimeout(() => {
+							controller.abort();
+						}, timeout);
+
+						try {
+							const inferenceResult = await chatCompletion(
+								serverHandle,
+								requestMessages,
+								{...generateOptions, signal: controller.signal},
+							);
+							latencyMs = Date.now() - startTime;
+							response = inferenceResult.text;
+							ttftMs = inferenceResult.ttftMs;
+							generationTimeMs = inferenceResult.generationTimeMs;
+							tokensGenerated = inferenceResult.tokensGenerated;
+							tokensPerSecond = inferenceResult.tokensPerSecond;
+						} catch (err) {
+							if (controller.signal.aborted) {
+								throw new Error('Timeout');
+							}
+							throw err;
+						} finally {
+							clearTimeout(timeoutId);
+						}
+
+						if (test.match === 'llm-judge' && judgeConfig) {
+							// Use LLM judge for evaluation
+							const criteria = resolveCriteria(test.criteria);
+							const threshold = test.passThreshold ?? 7;
+							// For multi-turn tests, include conversation context in the judge prompt
+							const judgePrompt = test.messages
+								? formatConversationForJudge(test.messages, contextMsg)
+								: (test.prompt as string);
+							const judgeResult = await callJudge(
+								judgePrompt,
+								response.trim(),
+								criteria,
+								judgeConfig,
+								threshold,
+								test.acceptable,
+							);
+							passed = judgeResult.pass;
+							judgeScore = judgeResult.score;
+							judgeReasoning = judgeResult.reasoning;
+							judgeCriteriaScores = judgeResult.criteriaScores;
+						} else {
+							// Use string matching
+							const matchResult = checkPass(
+								test.acceptable || [],
+								response.trim(),
+								test.match || 'semantic',
+								test.caseSensitive ?? false,
+							);
+							passed = matchResult.passed;
+						}
+
+						if (passed) {
+							categoryResults[test.category].passed++;
+						} else {
+							failures.push({
+								id: test.id,
+								prompt: getTestDisplayPrompt(test),
+								messages: test.messages,
+								expected: test.acceptable || [],
+								actual: response.trim(),
+							});
+						}
+					} catch (err) {
+						latencyMs = Date.now() - startTime;
+						response =
+							err instanceof Error ? `Error: ${err.message}` : 'Unknown error';
 						failures.push({
 							id: test.id,
 							prompt: getTestDisplayPrompt(test),
 							messages: test.messages,
 							expected: test.acceptable || [],
-							actual: response.trim(),
+							actual: response,
 						});
 					}
-				} catch (err) {
-					latencyMs = Date.now() - startTime;
-					response =
-						err instanceof Error ? `Error: ${err.message}` : 'Unknown error';
-					failures.push({
+
+					// Store full result for detailed report
+					allResults.push({
 						id: test.id,
 						prompt: getTestDisplayPrompt(test),
 						messages: test.messages,
 						expected: test.acceptable || [],
-						actual: response,
+						actual: response.trim(),
+						passed,
+						category: test.category,
+						latencyMs,
+						ttftMs,
+						generationTimeMs,
+						tokensGenerated,
+						tokensPerSecond,
+						judgeScore,
+						judgeReasoning,
+						judgeCriteriaScores,
 					});
+
+					setCategories({...categoryResults});
 				}
-
-				// Store full result for detailed report
-				allResults.push({
-					id: test.id,
-					prompt: getTestDisplayPrompt(test),
-					messages: test.messages,
-					expected: test.acceptable || [],
-					actual: response.trim(),
-					passed,
-					category: test.category,
-					latencyMs,
-					ttftMs,
-					generationTimeMs,
-					tokensGenerated,
-					tokensPerSecond,
-					judgeScore,
-					judgeReasoning,
-					judgeCriteriaScores,
-				});
-
-				setCategories({...categoryResults});
+			} finally {
+				await stopLlamaServer(serverHandle);
 			}
 
 			// Calculate final results

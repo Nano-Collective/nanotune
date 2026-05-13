@@ -1,7 +1,7 @@
 import test from "ava";
 import type { BenchmarkTest } from "../types/index.js";
 import {
-  buildFullPrompt,
+  buildMessages,
   formatConversationForJudge,
   getTestDisplayPrompt,
 } from "./benchmark-utils.js";
@@ -37,22 +37,24 @@ test("getTestDisplayPrompt returns empty string for test with neither", (t) => {
   t.is(getTestDisplayPrompt(empty), "");
 });
 
-// ── buildFullPrompt ─────────────────────────────────────────────────
+// ── buildMessages ───────────────────────────────────────────────────
 
 const ctx = { role: "system", content: "You are helpful." };
 
-test("buildFullPrompt single-turn matches existing format", (t) => {
+test("buildMessages single-turn prepends context and user message", (t) => {
   const singleTurn: BenchmarkTest = {
     id: 1,
     prompt: "list all files",
     acceptable: ["ls"],
     category: "basic",
   };
-  const result = buildFullPrompt(singleTurn, ctx);
-  t.is(result, "You are helpful.\n\nUser: list all files\n\nAssistant:");
+  t.deepEqual(buildMessages(singleTurn, ctx), [
+    { role: "system", content: "You are helpful." },
+    { role: "user", content: "list all files" },
+  ]);
 });
 
-test("buildFullPrompt multi-turn formats conversation with trailing Assistant:", (t) => {
+test("buildMessages multi-turn preserves messages array verbatim", (t) => {
   const multiTurn: BenchmarkTest = {
     id: 2,
     messages: [
@@ -63,28 +65,38 @@ test("buildFullPrompt multi-turn formats conversation with trailing Assistant:",
     acceptable: ["Alice"],
     category: "memory",
   };
-  const result = buildFullPrompt(multiTurn, ctx);
-  t.is(
-    result,
-    "You are helpful.\n\nUser: My name is Alice\n\nAssistant: Hello Alice!\n\nUser: What's my name?\n\nAssistant:",
-  );
+  t.deepEqual(buildMessages(multiTurn, ctx), [
+    { role: "system", content: "You are helpful." },
+    { role: "user", content: "My name is Alice" },
+    { role: "assistant", content: "Hello Alice!" },
+    { role: "user", content: "What's my name?" },
+  ]);
 });
 
-test("buildFullPrompt multi-turn without trailing user does not add extra Assistant:", (t) => {
-  const multiTurn: BenchmarkTest = {
-    id: 3,
-    messages: [
-      { role: "user", content: "Hello" },
-      { role: "assistant", content: "Hi there!" },
-    ],
-    acceptable: ["Hi"],
-    category: "test",
+test("buildMessages omits empty context message", (t) => {
+  const singleTurn: BenchmarkTest = {
+    id: 1,
+    prompt: "hi",
+    acceptable: ["hello"],
+    category: "basic",
   };
-  const result = buildFullPrompt(multiTurn, ctx);
-  t.is(
-    result,
-    "You are helpful.\n\nUser: Hello\n\nAssistant: Hi there!",
-  );
+  t.deepEqual(buildMessages(singleTurn, { role: "system", content: "" }), [
+    { role: "user", content: "hi" },
+  ]);
+});
+
+test("buildMessages uses custom context role", (t) => {
+  const singleTurn: BenchmarkTest = {
+    id: 1,
+    prompt: "hi",
+    acceptable: ["hello"],
+    category: "basic",
+  };
+  const devCtx = { role: "developer", content: "code rules" };
+  t.deepEqual(buildMessages(singleTurn, devCtx), [
+    { role: "developer", content: "code rules" },
+    { role: "user", content: "hi" },
+  ]);
 });
 
 // ── formatConversationForJudge ──────────────────────────────────────

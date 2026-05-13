@@ -1,3 +1,5 @@
+import {existsSync} from 'node:fs';
+import {join} from 'node:path';
 import {Spinner, StatusMessage} from '@inkjs/ui';
 import {Box, Text, useApp, useInput} from 'ink';
 import {useCallback, useEffect, useState} from 'react';
@@ -63,6 +65,19 @@ export function TrainCommand({options}: Props) {
 				setError('Not a Nanotune project. Run `nanotune init` first.');
 				setStatus('error');
 				return;
+			}
+
+			// Resume requires an existing checkpoint — fail fast with a clear
+			// message rather than letting MLX throw an opaque file-not-found.
+			if (options.resume) {
+				const adapterFile = join(getAdaptersDir(), 'adapters.safetensors');
+				if (!existsSync(adapterFile)) {
+					setError(
+						'Cannot --resume: no checkpoint found. Run `nanotune train` without --resume first.',
+					);
+					setStatus('error');
+					return;
+				}
 			}
 
 			// Check MLX

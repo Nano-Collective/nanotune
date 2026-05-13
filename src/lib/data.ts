@@ -260,6 +260,92 @@ export interface ImportResult {
 	errors: string[];
 }
 
+/**
+ * Parse a CSV file into an array of row arrays. Supports:
+ *  - Quoted fields with embedded commas, newlines, and escaped quotes ("")
+ *  - Unquoted fields
+ *  - CRLF or LF line endings
+ */
+export function parseCSV(content: string): string[][] {
+	const rows: string[][] = [];
+	let field = '';
+	let row: string[] = [];
+	let inQuotes = false;
+	let i = 0;
+
+	while (i < content.length) {
+		const ch = content[i];
+
+		if (inQuotes) {
+			if (ch === '"') {
+				if (content[i + 1] === '"') {
+					field += '"';
+					i += 2;
+					continue;
+				}
+				inQuotes = false;
+				i++;
+				continue;
+			}
+			field += ch;
+			i++;
+			continue;
+		}
+
+		if (ch === '"') {
+			inQuotes = true;
+			i++;
+			continue;
+		}
+
+		if (ch === ',') {
+			row.push(field);
+			field = '';
+			i++;
+			continue;
+		}
+
+		if (ch === '\r' && content[i + 1] === '\n') {
+			row.push(field);
+			rows.push(row);
+			field = '';
+			row = [];
+			i += 2;
+			continue;
+		}
+
+		if (ch === '\n' || ch === '\r') {
+			row.push(field);
+			rows.push(row);
+			field = '';
+			row = [];
+			i++;
+			continue;
+		}
+
+		field += ch;
+		i++;
+	}
+
+	// Flush any trailing field/row
+	if (field.length > 0 || row.length > 0) {
+		row.push(field);
+		rows.push(row);
+	}
+
+	// Drop trailing entirely-empty rows (file ended with newline)
+	while (rows.length > 0) {
+		const last = rows[rows.length - 1];
+		if (last.length === 1 && last[0] === '') {
+			rows.pop();
+		} else {
+			break;
+		}
+	}
+
+	return rows;
+}
+
 export function importFromCSV(
 	filePath: string,
 	contextMessage: ChatMessage,
@@ -269,25 +355,29 @@ export function importFromCSV(
 	let skipped = 0;
 
 	const content = readFileSync(filePath, 'utf-8');
-	const lines = content.split('\n').filter(line => line.trim());
+	const rows = parseCSV(content);
 
-	// Skip header if present
+	if (rows.length === 0) {
+		return {imported, skipped, errors};
+	}
+
+	// Skip header if first row looks like one
+	const firstRowLower = rows[0].map(c => c.toLowerCase());
 	const hasHeader =
-		lines[0]?.toLowerCase().includes('input') ||
-		lines[0]?.toLowerCase().includes('output');
+		firstRowLower.some(c => c.includes('input')) ||
+		firstRowLower.some(c => c.includes('output'));
 	const startIndex = hasHeader ? 1 : 0;
 
-	for (let i = startIndex; i < lines.length; i++) {
-		const line = lines[i];
-		// Simple CSV parsing (handles quoted fields)
-		const match = line.match(/^"?([^"]*)"?,\s*"?([^"]*)"?$/);
-		if (!match) {
-			errors.push(`Line ${i + 1}: Invalid CSV format`);
+	for (let i = startIndex; i < rows.length; i++) {
+		const row = rows[i];
+		if (row.length < 2) {
+			errors.push(`Line ${i + 1}: Expected 2 columns (input, output)`);
 			skipped++;
 			continue;
 		}
 
-		const [, input, output] = match;
+		const input = row[0];
+		const output = row[1];
 		if (!input?.trim() || !output?.trim()) {
 			errors.push(`Line ${i + 1}: Empty input or output`);
 			skipped++;
@@ -320,7 +410,7 @@ export function importFromJSONL(
 		try {
 			const data = JSON.parse(lines[i]);
 
-			// Check if it's already in the right format
+			// Preferred format: existing messages array — preserve verbatim.
 			if (data.messages && Array.isArray(data.messages)) {
 				if (data.messages.length >= 2) {
 					const userMsg = data.messages.find(
@@ -331,23 +421,18 @@ export function importFromJSONL(
 					);
 
 					if (userMsg?.content && assistantMsg?.content) {
-						// Multi-turn: preserve full messages array as-is
-						if (data.messages.length > 3) {
-							appendTrainingExample({messages: data.messages}, false);
-						} else {
-							appendToTrainingData({
-								contextMessage,
-								userInput: userMsg.content,
-								assistantOutput: assistantMsg.content,
-							});
-						}
+						appendTrainingExample({messages: data.messages}, false);
 						imported++;
 						continue;
 					}
 				}
+
+				errors.push(`Line ${i + 1}: messages array missing user/assistant`);
+				skipped++;
+				continue;
 			}
 
-			// Check for simple input/output format
+			// Simple {input, output} format — wrap with the project context.
 			if (data.input && data.output) {
 				appendToTrainingData({
 					contextMessage,
@@ -387,6 +472,7 @@ export function importFromJSON(
 	for (let i = 0; i < data.length; i++) {
 		const item = data[i];
 
+		// Preferred format: existing messages array — preserve verbatim.
 		if (item.messages && Array.isArray(item.messages)) {
 			const userMsg = item.messages.find((m: ChatMessage) => m.role === 'user');
 			const assistantMsg = item.messages.find(
@@ -394,19 +480,14 @@ export function importFromJSON(
 			);
 
 			if (userMsg?.content && assistantMsg?.content) {
-				// Multi-turn: preserve full messages array as-is
-				if (item.messages.length > 3) {
-					appendTrainingExample({messages: item.messages}, false);
-				} else {
-					appendToTrainingData({
-						contextMessage,
-						userInput: userMsg.content,
-						assistantOutput: assistantMsg.content,
-					});
-				}
+				appendTrainingExample({messages: item.messages}, false);
 				imported++;
 				continue;
 			}
+
+			errors.push(`Item ${i + 1}: messages array missing user/assistant`);
+			skipped++;
+			continue;
 		}
 
 		if (item.input && item.output) {
@@ -453,22 +534,47 @@ export function importData(
 }
 
 /**
+ * Mulberry32: small, fast, 32-bit seedable PRNG. Used so train/valid splits
+ * are reproducible across runs when a seed is provided.
+ */
+function mulberry32(seed: number): () => number {
+	let a = seed >>> 0;
+	return () => {
+		a = (a + 0x6d2b79f5) >>> 0;
+		let t = a;
+		t = Math.imul(t ^ (t >>> 15), t | 1);
+		t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+	};
+}
+
+/** In-place Fisher-Yates shuffle. Returns the same array for chaining. */
+function shuffleInPlace<T>(arr: T[], rng: () => number): T[] {
+	for (let i = arr.length - 1; i > 0; i--) {
+		const j = Math.floor(rng() * (i + 1));
+		[arr[i], arr[j]] = [arr[j], arr[i]];
+	}
+	return arr;
+}
+
+/**
  * Split training data into train and validation sets.
  * MLX requires a valid.jsonl file for training.
  * @param validationRatio - Portion of data to use for validation (default 10%)
+ * @param seed - Optional seed for a reproducible split.
  */
-export function splitTrainValidation(validationRatio = 0.1): {
-	trainCount: number;
-	validCount: number;
-} {
+export function splitTrainValidation(
+	validationRatio = 0.1,
+	seed?: number,
+): {trainCount: number; validCount: number} {
 	const allExamples = loadTrainingData();
 
 	if (allExamples.length === 0) {
 		return {trainCount: 0, validCount: 0};
 	}
 
-	// Shuffle examples for random split
-	const shuffled = [...allExamples].sort(() => Math.random() - 0.5);
+	const rng = seed === undefined ? Math.random : mulberry32(seed);
+	const shuffled = shuffleInPlace([...allExamples], rng);
 
 	// Calculate split - minimum 1 validation example if we have at least 2 total
 	const validCount = Math.max(
@@ -490,17 +596,16 @@ export function splitTrainValidation(validationRatio = 0.1): {
 /**
  * Ensure validation set exists. If not, split from training data.
  */
-export function ensureValidationSet(): {
+export function ensureValidationSet(seed?: number): {
 	trainCount: number;
 	validCount: number;
 } {
-	const _validPath = getEvalDataPath();
 	const validCount = countExamples(true);
 	const trainCount = countExamples(false);
 
 	if (validCount === 0 && trainCount > 0) {
 		// No validation set - create one by splitting
-		return splitTrainValidation();
+		return splitTrainValidation(0.1, seed);
 	}
 
 	return {trainCount, validCount};

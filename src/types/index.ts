@@ -64,6 +64,7 @@ export type MatchMode =
 	| 'exact'
 	| 'contains'
 	| 'startsWith'
+	| 'partial'
 	| 'semantic'
 	| 'llm-judge';
 

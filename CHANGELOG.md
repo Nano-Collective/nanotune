@@ -1,3 +1,42 @@
+# 1.4.0
+
+## Correctness Fixes
+
+### Chat-template-aware inference
+- **Switched benchmark inference from `/completion` to `/v1/chat/completions`** — llama-server now applies the model's chat template (ChatML, Llama-3 tags, etc.) baked into the GGUF. Training (which feeds MLX a `messages: []` array) and benchmarking now use the same wire format end-to-end. Previously, benchmarks built raw `User:/Assistant:` strings, bypassing the chat template and systematically under-reporting fine-tuned model quality.
+- **`llama-server` is now started once per benchmark run** instead of once per test. Cold-starting the server (which loads a multi-GB model) per test has been collapsed to a single startup.
+
+### Data import
+- **Fixed CSV parser** — replaced a regex that broke on any field containing a comma with a proper state-machine parser. Quoted fields with embedded commas, escaped quotes (`""`), and CRLF line endings are now handled correctly.
+- **JSONL/JSON imports preserve `messages` arrays verbatim** — previously, examples with ≤3 messages had their embedded system prompts silently overwritten by the project's context message. Now any imported `messages` array is preserved as-is.
+
+### Benchmark `semantic` match mode
+- **No longer accepts truncated answers** — the old `semantic` mode treated `"ls"` as a pass for `acceptable: ["ls -la"]`, inflating pass rates. The truncation behaviour is now opt-in via a new `partial` match mode.
+
+### Train/valid split
+- **Seedable Fisher-Yates shuffle** — replaced the biased `sort(() => Math.random() - 0.5)` with Mulberry32 + Fisher-Yates. Pass a seed to `splitTrainValidation` for a reproducible split.
+
+## Robustness & UX
+
+- **CLI `--version` now reads from `package.json`** (was hardcoded to `1.0.0`).
+- **`nanotune init` writes `.nanotune/.gitignore`** covering `judge.json` (API keys), `adapters/`, `models/`, and `benchmarks/` — protects users from committing keys or multi-GB binaries.
+- **Upfront platform check** — non-arm64 / non-macOS systems now get a clear, actionable error before any download attempt.
+- **Better `mlx-lm` install errors** — `installMLX` tries `--user` first and surfaces actionable guidance when stock macOS Python rejects pip with `externally-managed-environment`.
+- **`nanotune train --resume` validates the checkpoint exists** before invoking MLX, replacing an opaque file-not-found with a clear message.
+- **f16 intermediate cleanup moved to `finally`** — quantization failures no longer leak multi-GB intermediate files in `models/`.
+- **Removed `console.error` in env-substitution** — was corrupting Ink TUI output when an env var was missing.
+- **Removed CommonJS `require('node:fs')`** inside the ESM benchmark module.
+
+## Cleanup
+
+- Removed dead code: `runInference`, `parseDownloadProgress`, `runGGUFInferenceLegacy`.
+- `InferenceOptions` is now a type alias for `ServerOptions & GenerateOptions` (was a duplicate interface).
+- `chatCompletion` accepts an `AbortSignal` via `GenerateOptions.signal`; benchmarks pass one so a timed-out test actually cancels its in-flight `fetch` rather than letting the server keep generating into the void.
+- `stopLlamaServer` escalates SIGTERM → SIGKILL after a 2s grace period so a hung server can't block the caller's `finally`.
+- Updated spec files to match new behaviour. All 131 tests pass.
+
+---
+
 # 1.3.7
 
 ## Toolchain

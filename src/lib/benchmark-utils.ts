@@ -20,34 +20,32 @@ export function getTestDisplayPrompt(test: BenchmarkTest): string {
 }
 
 /**
- * Build the full prompt string for llama-cli.
+ * Build a messages array for the chat-completions inference endpoint.
+ * Mirrors the format MLX trained on so the model's chat template applies
+ * end-to-end (vs. the old hand-built `User:/Assistant:` text).
  *
- * Single-turn: `{context}\n\nUser: {prompt}\n\nAssistant:`
- * Multi-turn:  `{context}\n\nUser: {msg1}\n\nAssistant: {msg2}\n\nUser: {msg3}\n\nAssistant:`
+ * - Prepends the project context message when present and non-empty.
+ * - Single-turn tests: appends `{role: 'user', content: test.prompt}`.
+ * - Multi-turn tests: appends the test's messages verbatim.
  */
-export function buildFullPrompt(
+export function buildMessages(
 	test: BenchmarkTest,
 	contextMsg: {role: string; content: string},
-): string {
+): ChatMessage[] {
+	const messages: ChatMessage[] = [];
+	if (contextMsg.content) {
+		messages.push({role: contextMsg.role, content: contextMsg.content});
+	}
+
 	if (test.prompt) {
-		return `${contextMsg.content}\n\nUser: ${test.prompt}\n\nAssistant:`;
+		messages.push({role: 'user', content: test.prompt});
+		return messages;
 	}
 
 	if (test.messages && test.messages.length > 0) {
-		const parts = [contextMsg.content];
-		for (const msg of test.messages) {
-			const role = msg.role === 'user' ? 'User' : 'Assistant';
-			parts.push(`${role}: ${msg.content}`);
-		}
-		// If the last message is from the user, add the trailing Assistant: prompt
-		const lastMsg = test.messages[test.messages.length - 1];
-		if (lastMsg.role === 'user') {
-			parts.push('Assistant:');
-		}
-		return parts.join('\n\n');
+		messages.push(...test.messages);
 	}
-
-	return `${contextMsg.content}\n\nAssistant:`;
+	return messages;
 }
 
 /**

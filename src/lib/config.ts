@@ -51,6 +51,13 @@ export function saveConfig(config: Config): void {
 	writeFileSync(path, JSON.stringify(config, null, 2));
 }
 
+const GITIGNORE_CONTENTS = `# Nanotune project artifacts
+adapters/
+models/
+benchmarks/
+judge.json
+`;
+
 export function initializeProjectDirs(): void {
 	const dirs = [
 		getProjectDir(),
@@ -64,6 +71,13 @@ export function initializeProjectDirs(): void {
 		if (!existsSync(dir)) {
 			mkdirSync(dir, {recursive: true});
 		}
+	}
+
+	// Write .gitignore inside .nanotune/ to protect API keys and keep
+	// multi-GB adapters/models out of the user's git history.
+	const gitignorePath = join(getProjectDir(), '.gitignore');
+	if (!existsSync(gitignorePath)) {
+		writeFileSync(gitignorePath, GITIGNORE_CONTENTS);
 	}
 }
 

@@ -44,7 +44,35 @@ export async function checkMLXInstalled(): Promise<boolean> {
 }
 
 export async function installMLX(): Promise<void> {
-	await execa('pip3', ['install', 'mlx-lm'], {stdio: 'inherit'});
+	try {
+		// Try the friendly user-site install first; on stock macOS Python 3.12+
+		// this avoids the externally-managed-environment lockout.
+		await execa('pip3', ['install', '--user', 'mlx-lm'], {
+			stdout: 'inherit',
+			stderr: 'pipe',
+		});
+	} catch (err) {
+		const stderr =
+			err && typeof err === 'object' && 'stderr' in err
+				? String((err as {stderr: unknown}).stderr ?? '')
+				: '';
+
+		if (stderr.includes('externally-managed-environment')) {
+			throw new Error(
+				'pip refuses to install mlx-lm into the system Python (externally-managed-environment).\n' +
+					'Pick one of:\n' +
+					'  • Create a venv: python3 -m venv ~/.nanotune/venv && source ~/.nanotune/venv/bin/activate && pip install mlx-lm\n' +
+					'  • Install via pipx: pipx install mlx-lm\n' +
+					'  • Override (not recommended): pip3 install --user --break-system-packages mlx-lm\n' +
+					'Then re-run `nanotune train`.',
+			);
+		}
+
+		const tail = stderr.trim().split('\n').slice(-10).join('\n');
+		throw new Error(
+			`Failed to install mlx-lm via pip3.${tail ? `\n\nDetails:\n${tail}` : ''}`,
+		);
+	}
 }
 
 export async function checkDependencies(): Promise<DependencyStatus> {
@@ -230,41 +258,6 @@ function formatBytes(bytes: number, decimals = 2): string {
 	return `${(bytes / 1e3).toFixed(decimals)} KB`;
 }
 
-export function parseDownloadProgress(line: string): DownloadProgress | null {
-	// File download: "model.safetensors: 45%|██▍   |1.2G/2.7G [00:30<00:37, 40.5MB/s]"
-	const fileMatch = line.match(
-		/^(.+?):\s+(\d+)%\|.*?\|\s*([\d.]+\w+\/[\d.]+\w+)/,
-	);
-	if (fileMatch) {
-		return {
-			type: 'download',
-			fileName: fileMatch[1].trim(),
-			percent: Number.parseInt(fileMatch[2], 10),
-			sizeInfo: fileMatch[3],
-		};
-	}
-
-	// Multi-file fetch: "Fetching 12 files: 75%|██▍   |9/12"
-	const fetchMatch = line.match(/^Fetching\s+\d+\s+files?:\s+(\d+)%\|/);
-	if (fetchMatch) {
-		return {
-			type: 'download',
-			percent: Number.parseInt(fetchMatch[1], 10),
-		};
-	}
-
-	// Generic tqdm fallback: anything with N%|
-	const genericMatch = line.match(/(\d+)%\|/);
-	if (genericMatch) {
-		return {
-			type: 'download',
-			percent: Number.parseInt(genericMatch[1], 10),
-		};
-	}
-
-	return null;
-}
-
 export async function* runTraining(
 	options: MLXTrainingOptions,
 ): AsyncGenerator<TrainingProgress> {
@@ -375,25 +368,6 @@ export async function fuseAdapters(
 		'--save-path',
 		outputPath,
 	]);
-}
-
-export async function runInference(
-	model: string,
-	prompt: string,
-	maxTokens = 100,
-): Promise<string> {
-	const result = await execa('python3', [
-		'-m',
-		'mlx_lm.generate',
-		'--model',
-		model,
-		'--prompt',
-		prompt,
-		'--max-tokens',
-		String(maxTokens),
-	]);
-
-	return result.stdout;
 }
 
 export function abortTraining(subprocess: ResultPromise): void {

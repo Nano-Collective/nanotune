@@ -1,4 +1,8 @@
-// Expand environment variable references in a string
+// Expand environment variable references in a string.
+// Stays silent on missing vars; callers downstream will surface a clear error
+// when an empty value (e.g. blank API key) fails the actual operation. We
+// can't write to stdout/stderr from a TUI-rendered process without scrambling
+// Ink's output.
 function expandEnvVar(str: string): string {
 	if (typeof str !== 'string') {
 		return str;
@@ -26,10 +30,6 @@ function expandEnvVar(str: string): string {
 			if (defaultValue !== undefined) {
 				return defaultValue;
 			}
-
-			console.error(
-				`Environment variable ${varName} not found in config, using empty string`,
-			);
 
 			return '';
 		},

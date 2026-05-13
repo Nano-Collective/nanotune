@@ -4,8 +4,8 @@ import {createServer} from 'node:net';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
 import {pipeline} from 'node:stream/promises';
-import {execa} from 'execa';
-import type {QuantizationType} from '../types/index.js';
+import {execa, type ResultPromise} from 'execa';
+import type {ChatMessage, QuantizationType} from '../types/index.js';
 
 const LLAMA_CPP_DIR = join(homedir(), '.nanotune', 'llama.cpp');
 const LLAMA_CPP_BIN_DIR = join(LLAMA_CPP_DIR, 'bin');
@@ -165,7 +165,22 @@ async function downloadConvertScript(tag: string): Promise<void> {
 	await rm(ggufTarPath);
 }
 
+/**
+ * Throw a clear, actionable error when Nanotune is run on an unsupported
+ * platform. We only ship pre-built llama.cpp binaries for macOS arm64.
+ */
+function assertSupportedPlatform(): void {
+	if (process.platform !== 'darwin' || process.arch !== 'arm64') {
+		throw new Error(
+			`Nanotune requires macOS on Apple Silicon (arm64). Detected: ${process.platform}/${process.arch}.\n` +
+				'Other platforms are not currently supported — track progress at https://github.com/Nano-Collective/nanotune.',
+		);
+	}
+}
+
 export async function* installLlamaCpp(): AsyncGenerator<string> {
+	assertSupportedPlatform();
+
 	// Create directories
 	if (!existsSync(LLAMA_CPP_DIR)) {
 		mkdirSync(LLAMA_CPP_DIR, {recursive: true});
@@ -249,56 +264,49 @@ export async function* exportModel(
 
 	yield {step: 'Step 1/2: Converting to GGUF...', progress: 0};
 
-	for await (const progress of convertToGGUF(fusedModelPath, f16Path)) {
-		yield {step: progress.step, progress: 25};
-	}
-
-	// Step 2: Quantize if needed
-	if (quantization === 'f16') {
-		// Already done, just rename
-		const {rename} = await import('node:fs/promises');
-		await rename(f16Path, outputPath);
-		yield {step: 'Export complete!', progress: 100};
-		return;
-	}
-
-	yield {step: `Step 2/2: Quantizing to ${quantization}...`, progress: 50};
-
-	for await (const progress of quantize(f16Path, outputPath, quantization)) {
-		yield {step: progress.step, progress: 100};
-	}
-
-	// Clean up f16 intermediate file
-	const {unlink} = await import('node:fs/promises');
 	try {
-		await unlink(f16Path);
-	} catch {
-		// Ignore cleanup errors
+		for await (const progress of convertToGGUF(fusedModelPath, f16Path)) {
+			yield {step: progress.step, progress: 25};
+		}
+
+		// Step 2: Quantize if needed
+		if (quantization === 'f16') {
+			// Already done, just rename
+			const {rename} = await import('node:fs/promises');
+			await rename(f16Path, outputPath);
+			yield {step: 'Export complete!', progress: 100};
+			return;
+		}
+
+		yield {step: `Step 2/2: Quantizing to ${quantization}...`, progress: 50};
+
+		for await (const progress of quantize(f16Path, outputPath, quantization)) {
+			yield {step: progress.step, progress: 100};
+		}
+
+		yield {step: 'Export complete!', progress: 100};
+	} finally {
+		// Clean up f16 intermediate whether or not quantize succeeded. If
+		// quantization was 'f16' we already renamed it away, so unlink is a no-op.
+		if (existsSync(f16Path)) {
+			const {unlink} = await import('node:fs/promises');
+			try {
+				await unlink(f16Path);
+			} catch {
+				// Ignore cleanup errors
+			}
+		}
 	}
-
-	yield {step: 'Export complete!', progress: 100};
 }
 
-export interface InferenceOptions {
-	/** Maximum tokens to generate */
-	maxTokens?: number;
-	/** Number of CPU threads to use (default: auto) */
-	threads?: number;
-	/** Number of GPU layers to offload (default: auto/max) */
-	gpuLayers?: number;
-	/** Context size in tokens (default: 4096) */
-	ctxSize?: number;
-	/** Batch size for prompt processing (default: 2048) */
-	batchSize?: number;
-	/** Temperature for sampling (default: 0.8) */
-	temperature?: number;
-	/** Top-p sampling (default: 0.9) */
-	topP?: number;
-	/** Seed for reproducibility (default: random) */
-	seed?: number;
-	/** Disable GPU/METAL and use CPU only */
-	cpuOnly?: boolean;
-}
+/**
+ * Combined server + generation options accepted by the one-shot
+ * `runGGUFInference` helper. New code should prefer the split `ServerOptions`
+ * (for `startLlamaServer`) and `GenerateOptions` (for `chatCompletion`)
+ * directly; this exists so callers that bundle everything into one object
+ * still have a single type to import.
+ */
+export type InferenceOptions = ServerOptions & GenerateOptions;
 
 export interface InferenceResult {
 	/** Generated text output */
@@ -406,26 +414,64 @@ interface LlamaServerTimings {
 	predicted_per_second?: number;
 }
 
-interface LlamaServerResponse {
-	content: string;
+interface ChatCompletionResponse {
+	choices?: Array<{
+		message?: {role?: string; content?: string};
+	}>;
 	timings?: LlamaServerTimings;
+	usage?: {
+		prompt_tokens?: number;
+		completion_tokens?: number;
+		total_tokens?: number;
+	};
 }
 
-export async function runGGUFInference(
+/** Server-lifetime options (used at llama-server startup time). */
+export interface ServerOptions {
+	threads?: number;
+	gpuLayers?: number;
+	ctxSize?: number;
+	batchSize?: number;
+	cpuOnly?: boolean;
+}
+
+/** Per-request generation options (passed in the chat completions body). */
+export interface GenerateOptions {
+	maxTokens?: number;
+	temperature?: number;
+	topP?: number;
+	seed?: number;
+	/**
+	 * Optional AbortSignal forwarded to the underlying fetch. Callers racing
+	 * a timeout against `chatCompletion` should pass a signal here so the
+	 * in-flight request is actually cancelled, freeing up the server for the
+	 * next test instead of letting it generate into the void.
+	 */
+	signal?: AbortSignal;
+}
+
+/** Handle to a running llama-server. Pass it back to `chatCompletion`. */
+export interface ServerHandle {
+	port: number;
+	process: ResultPromise;
+}
+
+/**
+ * Start a llama-server child process bound to a free local port. Caller must
+ * stop it with `stopLlamaServer` (the kill is non-graceful but llama-server
+ * is happy to be killed).
+ */
+export async function startLlamaServer(
 	modelPath: string,
-	prompt: string,
-	options: InferenceOptions = {},
-): Promise<InferenceResult> {
+	options: ServerOptions = {},
+	startupTimeoutMs = 60_000,
+): Promise<ServerHandle> {
 	const {
-		maxTokens = 100,
 		threads,
 		gpuLayers,
 		ctxSize = 4096,
 		batchSize = 2048,
-		temperature = 0.8,
-		topP = 0.9,
-		seed,
-		cpuOnly = false,
+		cpuOnly,
 	} = options;
 
 	const serverBin = join(LLAMA_CPP_BIN_DIR, 'llama-server');
@@ -467,7 +513,6 @@ export async function runGGUFInference(
 		args.push('-ngl', '0');
 	}
 
-	// Start llama-server in the background
 	const serverProcess = execa(serverBin, args, {
 		stdin: 'ignore',
 		stdout: 'ignore',
@@ -475,53 +520,119 @@ export async function runGGUFInference(
 	});
 
 	try {
-		await waitForServer(port);
+		await waitForServer(port, startupTimeoutMs);
+	} catch (err) {
+		serverProcess.kill();
+		throw err;
+	}
 
-		const body: Record<string, unknown> = {
-			prompt,
-			n_predict: maxTokens,
-			temperature,
-			top_p: topP,
-		};
-		if (seed !== undefined) {
-			body.seed = seed;
-		}
+	return {port, process: serverProcess};
+}
 
-		const response = await fetch(`http://127.0.0.1:${port}/completion`, {
+/**
+ * Stop a running llama-server started with `startLlamaServer`. Sends SIGTERM
+ * first and escalates to SIGKILL after a short grace period if the process
+ * hasn't exited — so a hung server can't block the caller's `finally` forever.
+ */
+export async function stopLlamaServer(
+	handle: ServerHandle,
+	graceMs = 2000,
+): Promise<void> {
+	const exited = handle.process.catch(() => {});
+	handle.process.kill('SIGTERM');
+
+	const escalation = new Promise<void>(resolve => {
+		const timer = setTimeout(() => {
+			// Process hasn't exited within grace window — force-kill.
+			handle.process.kill('SIGKILL');
+			resolve();
+		}, graceMs);
+		exited.then(() => {
+			clearTimeout(timer);
+			resolve();
+		});
+	});
+
+	await Promise.race([exited, escalation]);
+	// Wait for the actual exit so callers aren't holding a zombie handle.
+	await exited;
+}
+
+/**
+ * Send a chat-completion request to a running llama-server. Uses the OpenAI-
+ * compatible `/v1/chat/completions` endpoint so llama-server applies the
+ * model's chat template baked into the GGUF — matching the format the model
+ * was trained on. This is the inference-time counterpart to MLX training's
+ * `messages: [...]` input.
+ */
+export async function chatCompletion(
+	handle: ServerHandle,
+	messages: ChatMessage[],
+	options: GenerateOptions = {},
+): Promise<InferenceResult> {
+	const {
+		maxTokens = 100,
+		temperature = 0.8,
+		topP = 0.9,
+		seed,
+		signal,
+	} = options;
+
+	const body: Record<string, unknown> = {
+		messages,
+		max_tokens: maxTokens,
+		temperature,
+		top_p: topP,
+	};
+	if (seed !== undefined) {
+		body.seed = seed;
+	}
+
+	const response = await fetch(
+		`http://127.0.0.1:${handle.port}/v1/chat/completions`,
+		{
 			method: 'POST',
 			headers: {'Content-Type': 'application/json'},
 			body: JSON.stringify(body),
-		});
+			signal,
+		},
+	);
 
-		if (!response.ok) {
-			throw new Error(
-				`llama-server /completion failed: ${response.statusText}`,
-			);
-		}
-
-		const data = (await response.json()) as LlamaServerResponse;
-		const timings = data.timings;
-
-		return {
-			text: data.content.trim(),
-			ttftMs: timings?.prompt_ms ? Math.round(timings.prompt_ms) : undefined,
-			generationTimeMs: timings?.predicted_ms
-				? Math.round(timings.predicted_ms)
-				: undefined,
-			tokensPerSecond: timings?.predicted_per_second,
-			tokensGenerated: timings?.predicted_n,
-		};
-	} finally {
-		serverProcess.kill();
+	if (!response.ok) {
+		throw new Error(
+			`llama-server /v1/chat/completions failed: ${response.statusText}`,
+		);
 	}
+
+	const data = (await response.json()) as ChatCompletionResponse;
+	const content = data.choices?.[0]?.message?.content ?? '';
+	const timings = data.timings;
+
+	return {
+		text: content.trim(),
+		ttftMs: timings?.prompt_ms ? Math.round(timings.prompt_ms) : undefined,
+		generationTimeMs: timings?.predicted_ms
+			? Math.round(timings.predicted_ms)
+			: undefined,
+		tokensPerSecond: timings?.predicted_per_second,
+		tokensGenerated: timings?.predicted_n ?? data.usage?.completion_tokens,
+	};
 }
 
-/** @deprecated Use runGGUFInference with InferenceOptions instead */
-export async function runGGUFInferenceLegacy(
+/**
+ * One-shot convenience: start a server, run one chat completion, stop the
+ * server. Prefer `startLlamaServer` + `chatCompletion` when you have more
+ * than one request to make.
+ */
+export async function runGGUFInference(
 	modelPath: string,
-	prompt: string,
-	maxTokens = 100,
-): Promise<string> {
-	const result = await runGGUFInference(modelPath, prompt, {maxTokens});
-	return result.text;
+	messages: ChatMessage[],
+	options: ServerOptions & GenerateOptions = {},
+): Promise<InferenceResult> {
+	const handle = await startLlamaServer(modelPath, options);
+	try {
+		return await chatCompletion(handle, messages, options);
+	} finally {
+		await stopLlamaServer(handle);
+	}
 }
