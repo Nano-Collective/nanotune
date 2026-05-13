@@ -1,3 +1,13 @@
+# 1.3.7
+
+## Toolchain
+
+- **Bumped to pnpm 11 and Node.js 22** — `packageManager` field pinned in `package.json` so CI and contributors stay in sync.
+- **Regenerated `pnpm-lock.yaml`** under pnpm 11 to fix `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH` on frozen installs.
+- **Raised `engines.node` to `>=22.0.0`** and updated CONTRIBUTING and installation docs to match.
+
+---
+
 # 1.3.6
 
 - Updated documentation to match guidelines.

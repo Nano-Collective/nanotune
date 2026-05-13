@@ -36,10 +36,10 @@ Browse our open issues. If you find an unassigned issue you'd like to work on, c
 
 ### Prerequisites
 
-- macOS with Apple Silicon (M1/M2/M3/M4)
-- Node.js 18+
+- macOS with Apple Silicon (M1/M2/M3/M4/M5)
+- Node.js 22+
 - Python 3.10+
-- pnpm
+- pnpm 11+
 
 ### Setup Steps
 

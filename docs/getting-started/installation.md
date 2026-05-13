@@ -9,7 +9,7 @@ sidebar_order: 1
 ## Requirements
 
 - macOS with Apple Silicon (M1/M2/M3/M4)
-- Node.js 18+
+- Node.js 22+
 - Python 3.10+
 - 8GB RAM minimum (16GB recommended)
 
