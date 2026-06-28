@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@ai-sdk/anthropic':
-        specifier: ^3.0.45
-        version: 3.0.79(zod@4.4.3)
+        specifier: ^4.0.1
+        version: 4.0.1(zod@4.4.3)
       '@ai-sdk/google':
         specifier: ^3.0.29
         version: 3.0.83(zod@4.4.3)
@@ -66,9 +66,9 @@ importers:
 
 packages:
 
-  '@ai-sdk/anthropic@3.0.79':
-    resolution: {integrity: sha512-saEX+h5JDOkT9P/+REKDyikbnJiToFuLipgNcsmu4Zr3GW5kW1m9HhvrPK+vj63itIOsoZU6tmVIjkrePOlIUA==}
-    engines: {node: '>=18'}
+  '@ai-sdk/anthropic@4.0.1':
+    resolution: {integrity: sha512-q9PMy0r3LGzSTu6FtYhFj6EesVpSpsEoPLsRKFnaK4YJd7SdUJlYIUJ4EXd5LTWzeXxk4r02z3gymo24c9jyQA==}
+    engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
@@ -102,9 +102,19 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
+  '@ai-sdk/provider-utils@5.0.1':
+    resolution: {integrity: sha512-p9Ra+dN4jjHrssXvklNf4nFvWbj1KePMfUOs7nue0NuoIMbYFBULhX4Vu0+6DWLnw3+UsLL9+RCKLtzzU43Qpg==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
   '@ai-sdk/provider@3.0.10':
     resolution: {integrity: sha512-Q3BZ27qfpYqnCYGvE3vt+Qi6LGOF9R5Nmzn+9JoM1lCRsD9mYaIhfJLkSunN48nfGXJ6n+XNV0J/XVpqGQl7Dw==}
     engines: {node: '>=18'}
+
+  '@ai-sdk/provider@4.0.0':
+    resolution: {integrity: sha512-fr9Gs89prDWiuox/T+kCA+i2cJkHpxU5S+tr4megjTzRC27ZsvFhwjU/+XrqqMbvBUlfmXxTOYWy8ng45dsjIg==}
+    engines: {node: '>=22'}
 
   '@alcalzone/ansi-tokenize@0.3.0':
     resolution: {integrity: sha512-p+CMKJ93HFmLkjXKlXiVGlMQEuRb6H0MokBSwUsX+S6BRX8eV5naFZpQJFfJHjRZY0Hmnqy1/r6UWl3x+19zYA==}
@@ -666,6 +676,9 @@ packages:
   '@vercel/oidc@3.2.0':
     resolution: {integrity: sha512-UycprH3T6n3jH0k44NHMa7pnFHGu/N05MjojYr+Mc6I7obkoLIJujSWwin1pCvdy/eOxrI/l3uDLQsmcrOb4ug==}
     engines: {node: '>= 20'}
+
+  '@workflow/serde@4.1.0':
+    resolution: {integrity: sha512-pav4F2BoirECWR7Nf1TKt+2eETcBj7jj4cBefQ8VXQCA6NPkaKeLfj/zMgi+3zYV5ZIBT4GuUiphsj0/b9hPQQ==}
 
   abbrev@3.0.1:
     resolution: {integrity: sha512-AO2ac6pjRB3SJmGJo+v5/aK6Omggp6fsLrs6wN9bd35ulu4cCwaAU9+7ZhXjeqHVkaHThLuzH0nZr0YpCDhygg==}
@@ -1599,10 +1612,10 @@ packages:
 
 snapshots:
 
-  '@ai-sdk/anthropic@3.0.79(zod@4.4.3)':
+  '@ai-sdk/anthropic@4.0.1(zod@4.4.3)':
     dependencies:
-      '@ai-sdk/provider': 3.0.10
-      '@ai-sdk/provider-utils': 4.0.27(zod@4.4.3)
+      '@ai-sdk/provider': 4.0.0
+      '@ai-sdk/provider-utils': 5.0.1(zod@4.4.3)
       zod: 4.4.3
 
   '@ai-sdk/gateway@3.0.133(zod@4.4.3)':
@@ -1638,7 +1651,19 @@ snapshots:
       eventsource-parser: 3.1.0
       zod: 4.4.3
 
+  '@ai-sdk/provider-utils@5.0.1(zod@4.4.3)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.0
+      '@standard-schema/spec': 1.1.0
+      '@workflow/serde': 4.1.0
+      eventsource-parser: 3.1.0
+      zod: 4.4.3
+
   '@ai-sdk/provider@3.0.10':
+    dependencies:
+      json-schema: 0.4.0
+
+  '@ai-sdk/provider@4.0.0':
     dependencies:
       json-schema: 0.4.0
 
@@ -2013,6 +2038,8 @@ snapshots:
       - supports-color
 
   '@vercel/oidc@3.2.0': {}
+
+  '@workflow/serde@4.1.0': {}
 
   abbrev@3.0.1: {}
 
