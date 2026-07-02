@@ -60,7 +60,7 @@
 	},
 	"packageManager": "pnpm@11.0.9",
 	"dependencies": {
-		"@ai-sdk/anthropic": "^3.0.45",
+		"@ai-sdk/anthropic": "^4.0.1",
 		"@ai-sdk/google": "^3.0.29",
 		"@ai-sdk/openai-compatible": "^2.0.30",
 		"@inkjs/ui": "^2.0.0",
