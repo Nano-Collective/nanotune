@@ -64,7 +64,7 @@
 		"@ai-sdk/google": "^3.0.29",
 		"@ai-sdk/openai-compatible": "^2.0.30",
 		"@inkjs/ui": "^2.0.0",
-		"ai": "^6.0.91",
+		"ai": "^7.0.15",
 		"commander": "^14.0.3",
 		"execa": "^9.6.1",
 		"ink": "^7.0.3",
