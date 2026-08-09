@@ -21,9 +21,9 @@
 		"format": "biome check --write ."
 	},
 	"ava": {
-		"extensions": {
-			"ts": "module"
-		},
+		"extensions": [
+			"ts"
+		],
 		"nodeArguments": [
 			"--import=tsx"
 		],
@@ -80,13 +80,5 @@
 		"knip": "^6.12.2",
 		"tsx": "^4.21.0",
 		"typescript": "^6.0.3"
-	},
-	"pnpm": {
-		"overrides": {
-			"lodash": ">=4.17.24",
-			"minimatch": ">=10.2.3",
-			"picomatch": ">=4.0.4",
-			"tar": ">=7.5.11"
-		}
 	}
 }
