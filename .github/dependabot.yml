@@ -4,6 +4,10 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # Wait 7 days before proposing a newly published version, so freshly
+    # compromised or unstable releases are not picked up immediately.
+    cooldown:
+      default-days: 7
     ignore:
-      # Managed via pnpm overrides in package.json
+      # Managed via pnpm overrides in pnpm-workspace.yaml
       - dependency-name: "jws"
