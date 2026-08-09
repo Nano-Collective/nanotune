@@ -6,7 +6,7 @@ sidebar_order: 2
 
 # Quick Start
 
-This guide walks you through the full workflow: initialize a project, add training data, train, export, and benchmark.
+This guide walks you through the full workflow: initialize a project, add training data, train, export, chat, and benchmark.
 
 ## 1. Initialize a Project
 
@@ -61,7 +61,19 @@ nanotune export
 
 This fuses your LoRA adapter with the base model and converts it to GGUF format. Pre-built llama.cpp binaries are downloaded automatically — no compilation needed.
 
-## 5. Benchmark Your Model
+## 5. Chat With Your Model
+
+```bash
+nanotune chat
+```
+
+Opens an interactive REPL against your exported model — the quickest way to see what fine-tuning actually changed. The model loads once and stays hot between turns, and each reply shows time-to-first-token and tokens/sec.
+
+Useful slash commands: `/system <text>` to try a different system prompt without editing your config, `/reset` to clear history, and `/exit` to leave.
+
+See [`nanotune chat`](../commands/chat.md) for all options.
+
+## 6. Benchmark Your Model
 
 ```bash
 nanotune benchmark

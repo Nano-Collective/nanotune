@@ -1,7 +1,7 @@
 import {StatusMessage, TextInput} from '@inkjs/ui';
-import {Box, Text, useApp, useInput} from 'ink';
+import {Box, Text, useApp} from 'ink';
 import {useState} from 'react';
-import {Header} from '../components/index.js';
+import {Header, useKeyInput} from '../components/index.js';
 import {
 	configExists,
 	createDefaultConfig,
@@ -34,7 +34,7 @@ export function InitCommand() {
 		'A Nanotune project already exists in this directory.',
 	);
 
-	useInput((_input, key) => {
+	useKeyInput((_input, key) => {
 		if (key.escape) {
 			exit();
 		}
@@ -67,7 +67,7 @@ export function InitCommand() {
 		}
 	};
 
-	useInput(input => {
+	useKeyInput(input => {
 		if (step === 'confirm') {
 			if (input.toLowerCase() === 'y') {
 				try {

@@ -1,3 +1,66 @@
+# 1.6.0
+
+## Nanotune works without a terminal
+
+Every command previously crashed when `stdin` wasn't a TTY. Ink enables raw mode as soon as a component calls `useInput`, so piping output, running in CI, running in Docker without `-t`, or simply redirecting stdin produced a 40-line React reconciler stack trace instead of output — even for read-only commands like `status` that never needed a keypress.
+
+```bash
+nanotune status | tee run.log     # previously: ERROR Raw mode is not supported...
+```
+
+Commands now detect whether a keyboard is available and behave accordingly.
+
+### Render-and-exit commands
+`status`, `data validate`, `train`, `export`, `benchmark`, and `judge test` render their output and exit on their own when there's no TTY, instead of parking on a "press any key" frame forever.
+
+- **Non-zero exit codes on failure** — a failed run now sets exit code 1, so `nanotune train && nanotune export` chains correctly and CI can gate on `nanotune data validate`.
+- **Keyboard hints are suppressed** when there's no keyboard, keeping captured output clean.
+
+### Interactive-only commands
+`init`, `data add`, `data list`, `chat`, and `judge configure` genuinely need a keyboard. They now print a single clear sentence and exit 1:
+
+```
+`nanotune chat` needs an interactive terminal.
+stdin is not a TTY, so it cannot read keypresses. Run it directly in a
+terminal rather than through a pipe, a CI job, or with stdin redirected.
+```
+
+### `nanotune data import --yes`
+New `-y, --yes` flag skips the confirmation prompt, making `data import` usable from scripts and CI:
+
+```bash
+nanotune data import examples.jsonl --yes
+```
+
+Without a TTY and without `--yes`, the command explains that the flag is required rather than failing obscurely.
+
+## Fixes
+
+- **Platform check now fires up front.** The Apple Silicon assertion only ran inside `installLlamaCpp`, so users on Linux or Intel Macs hit a confusing `pip install mlx-lm` resolver error during `train` instead of the clear message that already existed. `train` and `export` now assert supported hardware before doing any work. Extracted to `src/lib/platform.ts`.
+- **`judge.json` is written with `0600` permissions.** The file can hold a literal API key for users who don't use the `${ENV_VAR}` form. Existing configs written by earlier versions are tightened on next save.
+
+## Documentation
+
+- **`nanotune chat` is documented.** The 1.5.0 headline feature shipped with no docs page. Added [`docs/commands/chat.md`](docs/commands/chat.md) covering slash commands, all flags, per-turn stats, and chat-template handling, and listed it in the commands index.
+- **Quick start covers `chat`** — added as step 5, between export and benchmark.
+- **`data import --yes` documented** in the data command reference.
+- **Fixed the benchmark preset table** — the max-tokens column read 50/100/150/200; the actual values are 128/256/512/1024.
+
+## Internals
+
+- **Coverage now reports an honest number.** The `c8` `exclude` pointed at `source/app/App.tsx`, a path that has never existed, and spec files were counted as covered source — trivially 100%, inflating the total. Excluding them moves the reported figure from 88.62% to 78.97% with no change in actual test coverage.
+- New `src/lib/tty.ts` (raw-mode detection) and `src/lib/platform.ts` (hardware assertion), both pure and unit-tested.
+- New `useKeyInput`, `useAutoExit`, and `ExitHint` in `src/components/` — `useKeyInput` is now the only sanctioned way to read keys; calling Ink's `useInput` directly reintroduces the crash.
+- **239 tests total (+16)** covering raw-mode detection, platform assertions, and judge config file permissions.
+
+## Toolchain
+
+- Dependency updates via Dependabot: `ai` 7.0.15, `@ai-sdk/anthropic` 4.0.8, `@ai-sdk/google` 4.0.8, `ink` 7.1.0, `ava` 8.0.1, `c8` 11.0.0, `knip` 6.24.0, `tsx` 4.23.0, `typescript` 6.0.3, `@types/node` 26.x, `@biomejs/biome` 2.5.1.
+- Repaired a broken `pnpm-lock.yaml` and several latent toolchain breaks in CI.
+- Resolved Biome config deprecations and Semgrep findings.
+
+---
+
 # 1.5.0
 
 ## `nanotune chat`

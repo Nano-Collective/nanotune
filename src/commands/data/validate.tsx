@@ -1,6 +1,12 @@
 import {StatusMessage} from '@inkjs/ui';
-import {Box, Text, useApp, useInput} from 'ink';
-import {Header, StatusBadge} from '../../components/index.js';
+import {Box, Text, useApp} from 'ink';
+import {
+	ExitHint,
+	Header,
+	StatusBadge,
+	useAutoExit,
+	useKeyInput,
+} from '../../components/index.js';
 import {
 	configExists,
 	loadConfig,
@@ -10,14 +16,24 @@ import {countExamples, validateTrainingData} from '../../lib/data.js';
 
 export function DataValidateCommand() {
 	const {exit} = useApp();
+	const hasConfig = configExists();
 
-	useInput((input, key) => {
+	useKeyInput((input, key) => {
 		if (key.escape || input === 'q' || key.return) {
 			exit();
 		}
 	});
 
-	if (!configExists()) {
+	const count = hasConfig ? countExamples() : 0;
+	const result = hasConfig
+		? validateTrainingData(resolveContextMessage(loadConfig()))
+		: null;
+
+	// Report is fully rendered on first pass — without a keyboard there is
+	// nothing to wait for. Invalid data exits non-zero so CI can gate on it.
+	useAutoExit(true, !hasConfig || !result?.valid);
+
+	if (!hasConfig || !result) {
 		return (
 			<Box flexDirection="column" padding={1}>
 				<Header title="Validate Training Data" />
@@ -27,10 +43,6 @@ export function DataValidateCommand() {
 			</Box>
 		);
 	}
-
-	const config = loadConfig();
-	const count = countExamples();
-	const result = validateTrainingData(resolveContextMessage(config));
 
 	return (
 		<Box flexDirection="column" padding={1}>
@@ -116,7 +128,7 @@ export function DataValidateCommand() {
 			</Box>
 
 			<Text> </Text>
-			<Text dimColor>Press any key to exit</Text>
+			<ExitHint>Press any key to exit</ExitHint>
 		</Box>
 	);
 }

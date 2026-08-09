@@ -6,6 +6,7 @@ import {join} from 'node:path';
 import {pipeline} from 'node:stream/promises';
 import {execa, type ResultPromise} from 'execa';
 import type {ChatMessage, QuantizationType} from '../types/index.js';
+import {assertSupportedPlatform} from './platform.js';
 
 const LLAMA_CPP_DIR = join(homedir(), '.nanotune', 'llama.cpp');
 const LLAMA_CPP_BIN_DIR = join(LLAMA_CPP_DIR, 'bin');
@@ -163,19 +164,6 @@ async function downloadConvertScript(tag: string): Promise<void> {
 
 	// Clean up tarball
 	await rm(ggufTarPath);
-}
-
-/**
- * Throw a clear, actionable error when Nanotune is run on an unsupported
- * platform. We only ship pre-built llama.cpp binaries for macOS arm64.
- */
-function assertSupportedPlatform(): void {
-	if (process.platform !== 'darwin' || process.arch !== 'arm64') {
-		throw new Error(
-			`Nanotune requires macOS on Apple Silicon (arm64). Detected: ${process.platform}/${process.arch}.\n` +
-				'Other platforms are not currently supported — track progress at https://github.com/Nano-Collective/nanotune.',
-		);
-	}
 }
 
 export async function* installLlamaCpp(): AsyncGenerator<string> {

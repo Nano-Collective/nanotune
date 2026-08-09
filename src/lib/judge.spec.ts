@@ -1,9 +1,14 @@
+import {mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import test from 'ava';
 import {
 	buildJudgePrompt,
+	getJudgeConfigPath,
 	JUDGE_CRITERIA,
 	parseJudgeResponse,
 	resolveCriteria,
+	saveJudgeConfig,
 } from './judge.js';
 import type {JudgeCriteria} from '../types/index.js';
 
@@ -195,5 +200,55 @@ test('JUDGE_CRITERIA - contains all expected presets', t => {
 		t.truthy(JUDGE_CRITERIA[name], `Criteria '${name}' should exist`);
 		t.truthy(JUDGE_CRITERIA[name].name);
 		t.truthy(JUDGE_CRITERIA[name].description);
+	}
+});
+
+// saveJudgeConfig file permissions
+
+test.serial('saveJudgeConfig - writes judge.json with 0600 permissions', t => {
+	const originalCwd = process.cwd();
+	const dir = mkdtempSync(join(tmpdir(), 'nanotune-judge-'));
+	try {
+		process.chdir(dir);
+		mkdirSync(join(dir, '.nanotune'), {recursive: true});
+
+		saveJudgeConfig({
+			name: 'Test',
+			baseUrl: 'https://example.invalid/v1',
+			apiKey: 'sk-secret',
+			model: 'test-model',
+		});
+
+		const path = getJudgeConfigPath();
+		// The key may be a literal, so the file must not be group/world readable.
+		t.is(statSync(path).mode & 0o777, 0o600);
+	} finally {
+		process.chdir(originalCwd);
+		rmSync(dir, {recursive: true, force: true});
+	}
+});
+
+test.serial('saveJudgeConfig - tightens permissions on a pre-existing file', t => {
+	const originalCwd = process.cwd();
+	const dir = mkdtempSync(join(tmpdir(), 'nanotune-judge-'));
+	try {
+		process.chdir(dir);
+		mkdirSync(join(dir, '.nanotune'), {recursive: true});
+
+		// Simulate a judge.json written by an earlier version at default mode.
+		const path = join(dir, '.nanotune', 'judge.json');
+		writeFileSync(path, '{}', {mode: 0o644});
+		t.is(statSync(path).mode & 0o777, 0o644);
+
+		saveJudgeConfig({
+			name: 'Test',
+			baseUrl: 'https://example.invalid/v1',
+			model: 'test-model',
+		});
+
+		t.is(statSync(path).mode & 0o777, 0o600);
+	} finally {
+		process.chdir(originalCwd);
+		rmSync(dir, {recursive: true, force: true});
 	}
 });

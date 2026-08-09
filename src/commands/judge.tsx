@@ -1,7 +1,12 @@
 import {Select, Spinner, StatusMessage, TextInput} from '@inkjs/ui';
-import {Box, Text, useApp, useInput} from 'ink';
+import {Box, Text, useApp} from 'ink';
 import {useCallback, useEffect, useState} from 'react';
-import {Header} from '../components/index.js';
+import {
+	ExitHint,
+	Header,
+	useAutoExit,
+	useKeyInput,
+} from '../components/index.js';
 import {configExists} from '../lib/config.js';
 import {
 	callJudge,
@@ -34,7 +39,7 @@ export function JudgeConfigureCommand() {
 	);
 	const [errorMessage, setErrorMessage] = useState('');
 
-	useInput((_input, key) => {
+	useKeyInput((_input, key) => {
 		if (key.escape) {
 			exit();
 		}
@@ -88,7 +93,7 @@ export function JudgeConfigureCommand() {
 		[template, fieldIndex, answers],
 	);
 
-	useInput(input => {
+	useKeyInput(input => {
 		if (step === 'confirm' && builtConfig) {
 			if (input.toLowerCase() === 'y') {
 				setStep('testing');
@@ -258,11 +263,13 @@ export function JudgeTestCommand() {
 	} | null>(null);
 	const [errorMessage, setErrorMessage] = useState('');
 
-	useInput((_input, key) => {
+	useKeyInput((_input, key) => {
 		if (key.escape || key.return) {
 			exit();
 		}
 	});
+
+	useAutoExit(status === 'done' || status === 'error', status === 'error');
 
 	useEffect(() => {
 		let cancelled = false;
@@ -376,7 +383,7 @@ export function JudgeTestCommand() {
 			)}
 
 			<Text> </Text>
-			<Text dimColor>Press any key to exit</Text>
+			<ExitHint>Press any key to exit</ExitHint>
 		</Box>
 	);
 }

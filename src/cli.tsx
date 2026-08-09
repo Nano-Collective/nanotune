@@ -2,10 +2,26 @@
 import {readFileSync} from 'node:fs';
 import {Command} from 'commander';
 import {render} from 'ink';
+import type {ReactElement} from 'react';
+import {interactiveRequiredMessage, supportsRawMode} from './lib/tty.js';
 
 const pkg = JSON.parse(
 	readFileSync(new URL('../package.json', import.meta.url), 'utf-8'),
 ) as {version: string};
+
+/**
+ * Render a command that cannot work without a keyboard (prompts, menus, the
+ * chat REPL). Without a TTY we print one clear line instead of letting Ink
+ * throw "Raw mode is not supported" and spray a React stack trace.
+ */
+function renderInteractive(name: string, node: ReactElement): void {
+	if (!supportsRawMode()) {
+		console.error(interactiveRequiredMessage(name));
+		process.exitCode = 1;
+		return;
+	}
+	render(node);
+}
 
 const program = new Command();
 
@@ -22,7 +38,7 @@ program
 	.description('Initialize a new fine-tuning project')
 	.action(async () => {
 		const {InitCommand} = await import('./commands/init.js');
-		render(<InitCommand />);
+		renderInteractive('init', <InitCommand />);
 	});
 
 // Data commands
@@ -33,15 +49,23 @@ dataCommand
 	.description('Interactively add training examples')
 	.action(async () => {
 		const {DataAddCommand} = await import('./commands/data/add.js');
-		render(<DataAddCommand />);
+		renderInteractive('data add', <DataAddCommand />);
 	});
 
 dataCommand
 	.command('import <file>')
 	.description('Import training data from file (JSONL, CSV, or JSON)')
-	.action(async (file: string) => {
+	.option('-y, --yes', 'Skip the confirmation prompt (for scripts and CI)')
+	.action(async (file: string, options: {yes?: boolean}) => {
 		const {DataImportCommand} = await import('./commands/data/import.js');
-		render(<DataImportCommand file={file} />);
+		// Without a TTY there is no way to answer the prompt, so require --yes.
+		if (!options.yes && !supportsRawMode()) {
+			console.error(interactiveRequiredMessage('data import'));
+			console.error('Pass --yes to import without confirmation.');
+			process.exitCode = 1;
+			return;
+		}
+		render(<DataImportCommand file={file} yes={options.yes} />);
 	});
 
 dataCommand
@@ -50,7 +74,7 @@ dataCommand
 	.description('View training data')
 	.action(async () => {
 		const {DataListCommand} = await import('./commands/data/list.js');
-		render(<DataListCommand />);
+		renderInteractive('data list', <DataListCommand />);
 	});
 
 dataCommand
@@ -152,7 +176,7 @@ program
 	.option('--seed <n>', 'Random seed for reproducibility')
 	.action(async options => {
 		const {ChatCommand} = await import('./commands/chat.js');
-		render(<ChatCommand options={options} />);
+		renderInteractive('chat', <ChatCommand options={options} />);
 	});
 
 // Judge commands
@@ -165,7 +189,7 @@ judgeCommand
 	.description('Set up the LLM provider for judge evaluations')
 	.action(async () => {
 		const {JudgeConfigureCommand} = await import('./commands/judge.js');
-		render(<JudgeConfigureCommand />);
+		renderInteractive('judge configure', <JudgeConfigureCommand />);
 	});
 
 judgeCommand

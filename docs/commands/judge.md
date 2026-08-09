@@ -1,7 +1,7 @@
 ---
 title: "nanotune judge"
 description: "Configure and test an LLM judge for evaluating open-ended responses"
-sidebar_order: 6
+sidebar_order: 7
 ---
 
 # nanotune judge

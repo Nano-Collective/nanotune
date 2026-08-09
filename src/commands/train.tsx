@@ -1,9 +1,16 @@
 import {existsSync} from 'node:fs';
 import {join} from 'node:path';
 import {Spinner, StatusMessage} from '@inkjs/ui';
-import {Box, Text, useApp, useInput} from 'ink';
+import {Box, Text, useApp} from 'ink';
 import {useCallback, useEffect, useState} from 'react';
-import {Header, LossChart, Progress} from '../components/index.js';
+import {
+	ExitHint,
+	Header,
+	LossChart,
+	Progress,
+	useAutoExit,
+	useKeyInput,
+} from '../components/index.js';
 import {
 	configExists,
 	getAdaptersDir,
@@ -18,6 +25,7 @@ import {
 	type MLXTrainingOptions,
 	runTraining,
 } from '../lib/mlx.js';
+import {assertSupportedPlatform} from '../lib/platform.js';
 import type {TrainingProgress} from '../types/index.js';
 
 interface Props {
@@ -49,7 +57,7 @@ export function TrainCommand({options}: Props) {
 	const [downloadDetail, setDownloadDetail] = useState<string | null>(null);
 	const [elapsed, setElapsed] = useState<string | null>(null);
 
-	useInput((input, key) => {
+	useKeyInput((input, key) => {
 		if (key.escape && status !== 'training' && status !== 'downloading') {
 			exit();
 		}
@@ -58,8 +66,14 @@ export function TrainCommand({options}: Props) {
 		}
 	});
 
+	useAutoExit(status === 'done' || status === 'error', status === 'error');
+
 	const run = useCallback(async () => {
 		try {
+			// Fail fast on unsupported hardware. Without this the run dies much
+			// later inside `pip install mlx-lm` with an opaque resolver error.
+			assertSupportedPlatform();
+
 			// Check project exists
 			if (!configExists()) {
 				setError('Not a Nanotune project. Run `nanotune init` first.');
@@ -303,7 +317,7 @@ export function TrainCommand({options}: Props) {
 						Next: <Text color="cyan">nanotune export</Text>
 					</Text>
 					<Text> </Text>
-					<Text dimColor>Press any key to exit</Text>
+					<ExitHint>Press any key to exit</ExitHint>
 				</Box>
 			)}
 
@@ -311,7 +325,7 @@ export function TrainCommand({options}: Props) {
 				<Box flexDirection="column">
 					<StatusMessage variant="error">{error}</StatusMessage>
 					<Text> </Text>
-					<Text dimColor>Press Esc to exit</Text>
+					<ExitHint>Press Esc to exit</ExitHint>
 				</Box>
 			)}
 		</Box>

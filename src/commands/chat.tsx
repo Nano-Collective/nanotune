@@ -1,8 +1,8 @@
 import {existsSync} from 'node:fs';
 import {Spinner, StatusMessage, TextInput} from '@inkjs/ui';
-import {Box, Static, Text, useApp, useInput} from 'ink';
+import {Box, Static, Text, useApp} from 'ink';
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {Header} from '../components/index.js';
+import {Header, useKeyInput} from '../components/index.js';
 import {
 	buildGenerateOptions,
 	buildServerOptions,
@@ -314,7 +314,7 @@ export function ChatCommand({options}: Props) {
 		[appendTurn, exit, history.length, sendMessage, systemMessage, totalTokens],
 	);
 
-	useInput((_input, key) => {
+	useKeyInput((_input, key) => {
 		// Esc exits when not actively generating (so users don't kill a long gen
 		// by accident — they can still Ctrl-C if needed).
 		if (key.escape && status !== 'generating') {

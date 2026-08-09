@@ -1,8 +1,14 @@
 import {existsSync, readdirSync, readFileSync, statSync} from 'node:fs';
 import {join} from 'node:path';
 import {StatusMessage} from '@inkjs/ui';
-import {Box, Text, useApp, useInput} from 'ink';
-import {Header, StatusBadge} from '../components/index.js';
+import {Box, Text, useApp} from 'ink';
+import {
+	ExitHint,
+	Header,
+	StatusBadge,
+	useAutoExit,
+	useKeyInput,
+} from '../components/index.js';
 import {
 	configExists,
 	getAdaptersDir,
@@ -39,14 +45,18 @@ function formatFileSize(bytes: number): string {
 
 export function StatusCommand() {
 	const {exit} = useApp();
+	const hasConfig = configExists();
 
-	useInput((input, key) => {
+	useKeyInput((input, key) => {
 		if (key.escape || key.return || input === 'q') {
 			exit();
 		}
 	});
 
-	if (!configExists()) {
+	// Nothing to wait for without a keyboard — render the report and leave.
+	useAutoExit(true, !hasConfig);
+
+	if (!hasConfig) {
 		return (
 			<Box flexDirection="column" padding={1}>
 				<Header title="Project Status" />
@@ -200,7 +210,7 @@ export function StatusCommand() {
 			</Box>
 
 			<Text> </Text>
-			<Text dimColor>Press any key to exit</Text>
+			<ExitHint>Press any key to exit</ExitHint>
 		</Box>
 	);
 }

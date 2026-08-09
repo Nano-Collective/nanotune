@@ -1,8 +1,13 @@
 import {resolve} from 'node:path';
 import {Spinner, StatusMessage} from '@inkjs/ui';
-import {Box, Text, useApp, useInput} from 'ink';
-import {useEffect, useState} from 'react';
-import {Header} from '../../components/index.js';
+import {Box, Text, useApp} from 'ink';
+import {useCallback, useEffect, useState} from 'react';
+import {
+	ExitHint,
+	Header,
+	useAutoExit,
+	useKeyInput,
+} from '../../components/index.js';
 import {
 	configExists,
 	loadConfig,
@@ -17,13 +22,15 @@ import {
 
 interface Props {
 	file: string;
+	/** Skip the y/n confirmation — needed to run under CI or in a pipeline. */
+	yes?: boolean;
 }
 
-export function DataImportCommand({file}: Props) {
+export function DataImportCommand({file, yes}: Props) {
 	const {exit} = useApp();
 	const [status, setStatus] = useState<
 		'preview' | 'importing' | 'done' | 'error'
-	>('preview');
+	>(yes ? 'importing' : 'preview');
 	const [result, setResult] = useState<ImportResult | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [preview, setPreview] = useState<string[]>([]);
@@ -45,20 +52,7 @@ export function DataImportCommand({file}: Props) {
 		}
 	}, []);
 
-	useInput(input => {
-		if (status === 'preview') {
-			if (input.toLowerCase() === 'y') {
-				setStatus('importing');
-				doImport();
-			} else if (input.toLowerCase() === 'n' || input === '\x1b') {
-				exit();
-			}
-		} else if (status === 'done' || status === 'error') {
-			exit();
-		}
-	});
-
-	const doImport = async () => {
+	const doImport = useCallback(() => {
 		try {
 			if (!configExists()) {
 				setError('Not a Nanotune project. Run `nanotune init` first.');
@@ -76,7 +70,29 @@ export function DataImportCommand({file}: Props) {
 			setError(err instanceof Error ? err.message : 'Import failed');
 			setStatus('error');
 		}
-	};
+	}, [file]);
+
+	// `--yes` skips straight past the confirmation prompt.
+	useEffect(() => {
+		if (yes) {
+			doImport();
+		}
+	}, [yes, doImport]);
+
+	useKeyInput(input => {
+		if (status === 'preview') {
+			if (input.toLowerCase() === 'y') {
+				setStatus('importing');
+				doImport();
+			} else if (input.toLowerCase() === 'n' || input === '\x1b') {
+				exit();
+			}
+		} else if (status === 'done' || status === 'error') {
+			exit();
+		}
+	});
+
+	useAutoExit(status === 'done' || status === 'error', status === 'error');
 
 	if (!configExists()) {
 		return (
@@ -145,7 +161,7 @@ export function DataImportCommand({file}: Props) {
 						</Box>
 					)}
 					<Text> </Text>
-					<Text dimColor>Press any key to exit</Text>
+					<ExitHint>Press any key to exit</ExitHint>
 				</Box>
 			)}
 
@@ -153,7 +169,7 @@ export function DataImportCommand({file}: Props) {
 				<Box flexDirection="column">
 					<StatusMessage variant="error">{error}</StatusMessage>
 					<Text> </Text>
-					<Text dimColor>Press any key to exit</Text>
+					<ExitHint>Press any key to exit</ExitHint>
 				</Box>
 			)}
 		</Box>

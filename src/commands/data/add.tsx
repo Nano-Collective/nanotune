@@ -1,7 +1,7 @@
 import {StatusMessage, TextInput} from '@inkjs/ui';
-import {Box, Text, useApp, useInput} from 'ink';
+import {Box, Text, useApp} from 'ink';
 import {useState} from 'react';
-import {Header} from '../../components/index.js';
+import {Header, useKeyInput} from '../../components/index.js';
 import {
 	configExists,
 	loadConfig,
@@ -52,7 +52,7 @@ export function DataAddCommand() {
 		}
 	};
 
-	useInput((_char, key) => {
+	useKeyInput((_char, key) => {
 		if (key.escape) {
 			// Auto-save accumulated turns before exit
 			if (turns.length > 0) {
@@ -91,7 +91,7 @@ export function DataAddCommand() {
 		setField('confirm');
 	};
 
-	useInput((char, _key) => {
+	useKeyInput((char, _key) => {
 		if (field !== 'confirm') return;
 
 		if (char.toLowerCase() === 'y') {

@@ -19,5 +19,6 @@ A complete reference for all Nanotune CLI commands.
 | [`nanotune train`](train.md) | Run LoRA fine-tuning |
 | [`nanotune export`](export.md) | Export model to GGUF format |
 | [`nanotune benchmark`](benchmark.md) | Run benchmarks against a test dataset |
+| [`nanotune chat`](chat.md) | Talk to your fine-tuned model in a REPL |
 | [`nanotune judge configure`](judge.md) | Set up an LLM judge |
 | [`nanotune judge test`](judge.md) | Test the configured LLM judge |

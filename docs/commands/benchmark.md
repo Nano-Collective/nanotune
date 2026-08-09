@@ -20,10 +20,10 @@ Use `--preset <name>` to quickly configure for your hardware:
 
 | Preset | Description | Threads | GPU Layers | Context | Batch | Max Tokens |
 |--------|-------------|---------|------------|---------|-------|------------|
-| `low` | Older laptops | 4 | 0 (CPU only) | 2048 | 512 | 50 |
-| `medium` | Modern laptops | 8 | 20 | 4096 | 1024 | 100 |
-| `high` | Apple Silicon M1/M2/M3 | auto | max | 8192 | 2048 | 150 |
-| `ultra` | Maximum performance | auto | max | 16384 | 4096 | 200 |
+| `low` | Older laptops | 4 | 0 (CPU only) | 2048 | 512 | 128 |
+| `medium` | Modern laptops | 8 | 20 | 4096 | 1024 | 256 |
+| `high` | Apple Silicon M1/M2/M3 | auto | max | 8192 | 2048 | 512 |
+| `ultra` | Maximum performance | auto | max | 16384 | 4096 | 1024 |
 
 ## Options
 

@@ -1,7 +1,7 @@
 import {StatusMessage} from '@inkjs/ui';
-import {Box, Text, useApp, useInput} from 'ink';
+import {Box, Text, useApp} from 'ink';
 import {useState} from 'react';
-import {DataTable, Header} from '../../components/index.js';
+import {DataTable, Header, useKeyInput} from '../../components/index.js';
 import {configExists} from '../../lib/config.js';
 import {countTurns, deleteExample, loadTrainingData} from '../../lib/data.js';
 
@@ -23,7 +23,7 @@ export function DataListCommand() {
 	const startIndex = page * PAGE_SIZE;
 	const pageData = data.slice(startIndex, startIndex + PAGE_SIZE);
 
-	useInput((input, key) => {
+	useKeyInput((input, key) => {
 		if (key.escape || input === 'q') {
 			exit();
 		}

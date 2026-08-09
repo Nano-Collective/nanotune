@@ -44,6 +44,18 @@ Import training data from a file. The importer auto-detects format based on file
 
 Multi-turn examples in JSONL and JSON files are preserved with all their turns intact.
 
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `-y, --yes` | Skip the confirmation prompt |
+
+By default the importer previews your existing data and asks for confirmation. Pass `--yes` to import without prompting — this is also what lets `data import` run in a script or CI job, where there is no terminal to answer the prompt.
+
+```bash
+nanotune data import examples.jsonl --yes
+```
+
 See the [Training Data](../guides/training-data.md) guide for format details and examples.
 
 ## nanotune data list

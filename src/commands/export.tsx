@@ -1,9 +1,16 @@
 import {existsSync, statSync} from 'node:fs';
 import {join} from 'node:path';
 import {Spinner, StatusMessage} from '@inkjs/ui';
-import {Box, Text, useApp, useInput} from 'ink';
+import {Box, Text, useApp} from 'ink';
 import {useCallback, useEffect, useState} from 'react';
-import {Header, Progress, StatusBadge} from '../components/index.js';
+import {
+	ExitHint,
+	Header,
+	Progress,
+	StatusBadge,
+	useAutoExit,
+	useKeyInput,
+} from '../components/index.js';
 import {
 	configExists,
 	getAdaptersDir,
@@ -16,6 +23,7 @@ import {
 	installLlamaCpp,
 } from '../lib/llama-cpp.js';
 import {fuseAdapters} from '../lib/mlx.js';
+import {assertSupportedPlatform} from '../lib/platform.js';
 import type {QuantizationType} from '../types/index.js';
 
 interface Props {
@@ -53,11 +61,13 @@ export function ExportCommand({options}: Props) {
 		{name: 'Quantizing', status: 'pending'},
 	]);
 
-	useInput((_input, key) => {
+	useKeyInput((_input, key) => {
 		if (key.escape || key.return) {
 			exit();
 		}
 	});
+
+	useAutoExit(status === 'done' || status === 'error', status === 'error');
 
 	const updateStep = useCallback((index: number, newStatus: Step['status']) => {
 		setSteps(prev =>
@@ -67,6 +77,10 @@ export function ExportCommand({options}: Props) {
 
 	const run = useCallback(async () => {
 		try {
+			// Fail fast on unsupported hardware rather than after a multi-minute
+			// adapter fuse, when the llama.cpp download finds no matching asset.
+			assertSupportedPlatform();
+
 			// Check project exists
 			if (!configExists()) {
 				setError('Not a Nanotune project. Run `nanotune init` first.');
@@ -254,7 +268,7 @@ export function ExportCommand({options}: Props) {
 						Next: <Text color="cyan">nanotune benchmark</Text>
 					</Text>
 					<Text> </Text>
-					<Text dimColor>Press any key to exit</Text>
+					<ExitHint>Press any key to exit</ExitHint>
 				</Box>
 			)}
 
@@ -262,7 +276,7 @@ export function ExportCommand({options}: Props) {
 				<Box flexDirection="column">
 					<StatusMessage variant="error">{error}</StatusMessage>
 					<Text> </Text>
-					<Text dimColor>Press any key to exit</Text>
+					<ExitHint>Press any key to exit</ExitHint>
 				</Box>
 			)}
 		</Box>

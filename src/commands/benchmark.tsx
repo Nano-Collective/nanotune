@@ -1,9 +1,16 @@
 import {existsSync, readFileSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {Spinner, StatusMessage} from '@inkjs/ui';
-import {Box, Text, useApp, useInput} from 'ink';
+import {Box, Text, useApp} from 'ink';
 import {useCallback, useEffect, useState} from 'react';
-import {Header, Progress, StatusBadge} from '../components/index.js';
+import {
+	ExitHint,
+	Header,
+	Progress,
+	StatusBadge,
+	useAutoExit,
+	useKeyInput,
+} from '../components/index.js';
 import {checkPass} from '../lib/benchmark-match.js';
 import {
 	buildMessages,
@@ -221,11 +228,13 @@ export function BenchmarkCommand({options}: Props) {
 		{},
 	);
 
-	useInput((_input, key) => {
+	useKeyInput((_input, key) => {
 		if (key.escape || key.return) {
 			exit();
 		}
 	});
+
+	useAutoExit(status === 'done' || status === 'error', status === 'error');
 
 	const run = useCallback(async () => {
 		try {
@@ -787,7 +796,7 @@ export function BenchmarkCommand({options}: Props) {
 					)}
 
 					<Text> </Text>
-					<Text dimColor>Press any key to exit</Text>
+					<ExitHint>Press any key to exit</ExitHint>
 				</Box>
 			)}
 
@@ -795,7 +804,7 @@ export function BenchmarkCommand({options}: Props) {
 				<Box flexDirection="column">
 					<StatusMessage variant="error">{error}</StatusMessage>
 					<Text> </Text>
-					<Text dimColor>Press any key to exit</Text>
+					<ExitHint>Press any key to exit</ExitHint>
 				</Box>
 			)}
 		</Box>

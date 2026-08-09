@@ -1,7 +1,7 @@
 ---
 title: "nanotune status"
 description: "Show current project status"
-sidebar_order: 7
+sidebar_order: 8
 ---
 
 # nanotune status

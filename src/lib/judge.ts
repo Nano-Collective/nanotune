@@ -1,4 +1,4 @@
-import {existsSync, readFileSync, writeFileSync} from 'node:fs';
+import {chmodSync, existsSync, readFileSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {createAnthropic} from '@ai-sdk/anthropic';
 import {createGoogleGenerativeAI} from '@ai-sdk/google';
@@ -61,7 +61,12 @@ export function loadJudgeConfig(): JudgeProviderConfig {
 
 export function saveJudgeConfig(config: JudgeProviderConfig): void {
 	const path = getJudgeConfigPath();
-	writeFileSync(path, JSON.stringify(config, null, 2));
+	// 0600 — this file can hold a literal API key (users who don't use the
+	// ${ENV_VAR} form), so keep it readable only by its owner.
+	writeFileSync(path, JSON.stringify(config, null, 2), {mode: 0o600});
+	// writeFileSync only applies `mode` when it creates the file, so re-chmod
+	// to also fix up configs written by earlier versions.
+	chmodSync(path, 0o600);
 }
 
 /** Resolve criteria names to full JudgeCriteria objects */
