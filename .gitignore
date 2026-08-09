@@ -9,3 +9,4 @@ CLAUDE.md
 agents/
 .vscode/
 examples/
+coverage/
