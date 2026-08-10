@@ -6,6 +6,13 @@
 	"bin": {
 		"nanotune": "./dist/cli.js"
 	},
+	"files": [
+		"dist",
+		"!dist/**/*.spec.*",
+		"README.md",
+		"LICENSE.md",
+		"CHANGELOG.md"
+	],
 	"scripts": {
 		"build": "tsc",
 		"dev": "tsx src/cli.tsx",
