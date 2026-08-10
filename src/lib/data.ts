@@ -466,6 +466,7 @@ export function parseCSV(content: string): string[][] {
 export function importFromCSV(
 	filePath: string,
 	contextMessage: ChatMessage,
+	isEval = false,
 ): ImportResult {
 	const errors: string[] = [];
 	let imported = 0;
@@ -504,11 +505,14 @@ export function importFromCSV(
 			continue;
 		}
 
-		appendToTrainingData({
-			contextMessage,
-			userInput: input.trim(),
-			assistantOutput: output.trim(),
-		});
+		appendToTrainingData(
+			{
+				contextMessage,
+				userInput: input.trim(),
+				assistantOutput: output.trim(),
+			},
+			isEval,
+		);
 		imported++;
 	}
 
@@ -518,6 +522,7 @@ export function importFromCSV(
 export function importFromJSONL(
 	filePath: string,
 	contextMessage: ChatMessage,
+	isEval = false,
 ): ImportResult {
 	const errors: string[] = [];
 	let imported = 0;
@@ -541,7 +546,7 @@ export function importFromJSONL(
 					);
 
 					if (userMsg?.content && assistantMsg?.content) {
-						appendTrainingExample({messages: data.messages}, false);
+						appendTrainingExample({messages: data.messages}, isEval);
 						imported++;
 						continue;
 					}
@@ -554,11 +559,14 @@ export function importFromJSONL(
 
 			// Simple {input, output} format — wrap with the project context.
 			if (data.input && data.output) {
-				appendToTrainingData({
-					contextMessage,
-					userInput: data.input,
-					assistantOutput: data.output,
-				});
+				appendToTrainingData(
+					{
+						contextMessage,
+						userInput: data.input,
+						assistantOutput: data.output,
+					},
+					isEval,
+				);
 				imported++;
 				continue;
 			}
@@ -577,6 +585,7 @@ export function importFromJSONL(
 export function importFromJSON(
 	filePath: string,
 	contextMessage: ChatMessage,
+	isEval = false,
 ): ImportResult {
 	const errors: string[] = [];
 	let imported = 0;
@@ -600,7 +609,7 @@ export function importFromJSON(
 			);
 
 			if (userMsg?.content && assistantMsg?.content) {
-				appendTrainingExample({messages: item.messages}, false);
+				appendTrainingExample({messages: item.messages}, isEval);
 				imported++;
 				continue;
 			}
@@ -611,11 +620,14 @@ export function importFromJSON(
 		}
 
 		if (item.input && item.output) {
-			appendToTrainingData({
-				contextMessage,
-				userInput: item.input,
-				assistantOutput: item.output,
-			});
+			appendToTrainingData(
+				{
+					contextMessage,
+					userInput: item.input,
+					assistantOutput: item.output,
+				},
+				isEval,
+			);
 			imported++;
 			continue;
 		}
@@ -630,6 +642,7 @@ export function importFromJSON(
 export function importData(
 	filePath: string,
 	contextMessage: ChatMessage,
+	isEval = false,
 ): ImportResult {
 	if (!existsSync(filePath)) {
 		return {imported: 0, skipped: 0, errors: ['File not found']};
@@ -639,11 +652,11 @@ export function importData(
 
 	switch (ext) {
 		case 'csv':
-			return importFromCSV(filePath, contextMessage);
+			return importFromCSV(filePath, contextMessage, isEval);
 		case 'jsonl':
-			return importFromJSONL(filePath, contextMessage);
+			return importFromJSONL(filePath, contextMessage, isEval);
 		case 'json':
-			return importFromJSON(filePath, contextMessage);
+			return importFromJSON(filePath, contextMessage, isEval);
 		default:
 			return {
 				imported: 0,
@@ -801,14 +814,15 @@ export function splitTrainValidation(
 export function ensureValidationSet(seed?: number): {
 	trainCount: number;
 	validCount: number;
+	didSplit: boolean;
 } {
 	const validCount = countExamples(true);
 	const trainCount = countExamples(false);
 
 	if (validCount === 0 && trainCount > 0) {
 		// No validation set - create one by splitting
-		return splitTrainValidation(0.1, seed);
+		return {...splitTrainValidation(0.1, seed), didSplit: true};
 	}
 
-	return {trainCount, validCount};
+	return {trainCount, validCount, didSplit: false};
 }

@@ -9,6 +9,7 @@ import {
   countTurns,
   dedupeExamples,
   deleteExample,
+  ensureValidationSet,
   exportData,
   exportToCSV,
   exportToJSON,
@@ -1207,3 +1208,142 @@ test.serial(
     t.is(result.trainCount, 1);
   },
 );
+
+// ── ensureValidationSet ───────────────────────────────────────────────
+
+test.serial("ensureValidationSet splits and reports it when no valid.jsonl exists", (t) => {
+  seedExamples(10);
+
+  const result = ensureValidationSet(1);
+
+  t.true(result.didSplit);
+  t.is(result.trainCount, 9);
+  t.is(result.validCount, 1);
+  t.is(countExamples(false), 9);
+  t.is(countExamples(true), 1);
+});
+
+test.serial("ensureValidationSet leaves an existing validation set alone", (t) => {
+  seedExamples(10);
+  ensureValidationSet(1);
+
+  const second = ensureValidationSet(1);
+
+  t.false(second.didSplit);
+  t.is(second.trainCount, 9);
+  t.is(second.validCount, 1);
+});
+
+test.serial("ensureValidationSet reports counts that account for every example", (t) => {
+  seedExamples(10);
+
+  const result = ensureValidationSet(1);
+
+  t.is(result.trainCount + result.validCount, 10);
+});
+
+test.serial("ensureValidationSet forwards its seed to the split", (t) => {
+  seedExamples(20);
+  ensureValidationSet(42);
+  const firstValid = loadTrainingData(true).map((ex) => ex.messages[1].content);
+
+  rmSync(DATA_DIR, { recursive: true, force: true });
+  mkdirSync(DATA_DIR, { recursive: true });
+  seedExamples(20);
+  ensureValidationSet(42);
+  const secondValid = loadTrainingData(true).map((ex) => ex.messages[1].content);
+
+  t.deepEqual(firstValid, secondValid);
+});
+
+test.serial("ensureValidationSet returns zero counts with no data at all", (t) => {
+  const result = ensureValidationSet(1);
+
+  t.false(result.didSplit);
+  t.is(result.trainCount, 0);
+  t.is(result.validCount, 0);
+});
+
+// ── isEval imports ────────────────────────────────────────────────────
+
+test.serial("importFromJSONL writes to valid.jsonl when isEval is true", (t) => {
+  const jsonlPath = join(TEST_DIR, "in.jsonl");
+  writeFileSync(
+    jsonlPath,
+    `${JSON.stringify({ input: "q", output: "a" })}\n`,
+  );
+
+  const result = importFromJSONL(jsonlPath, SYSTEM_CTX, true);
+
+  t.is(result.imported, 1);
+  t.is(countExamples(true), 1);
+  t.is(countExamples(false), 0);
+});
+
+test.serial("importFromCSV writes to valid.jsonl when isEval is true", (t) => {
+  const csvPath = join(TEST_DIR, "in.csv");
+  writeFileSync(csvPath, "input,output\nq,a\n");
+
+  const result = importFromCSV(csvPath, SYSTEM_CTX, true);
+
+  t.is(result.imported, 1);
+  t.is(countExamples(true), 1);
+  t.is(countExamples(false), 0);
+});
+
+test.serial("importFromJSON writes to valid.jsonl when isEval is true", (t) => {
+  const jsonPath = join(TEST_DIR, "in.json");
+  writeFileSync(jsonPath, JSON.stringify([{ input: "q", output: "a" }]));
+
+  const result = importFromJSON(jsonPath, SYSTEM_CTX, true);
+
+  t.is(result.imported, 1);
+  t.is(countExamples(true), 1);
+  t.is(countExamples(false), 0);
+});
+
+test.serial("importFromJSONL preserves a messages array into valid.jsonl", (t) => {
+  const jsonlPath = join(TEST_DIR, "in.jsonl");
+  writeFileSync(
+    jsonlPath,
+    `${JSON.stringify({
+      messages: [
+        { role: "system", content: "You are helpful." },
+        { role: "user", content: "q" },
+        { role: "assistant", content: "a" },
+      ],
+    })}\n`,
+  );
+
+  const result = importFromJSONL(jsonlPath, SYSTEM_CTX, true);
+
+  t.is(result.imported, 1);
+  t.is(loadTrainingData(true)[0].messages[1].content, "q");
+  t.is(countExamples(false), 0);
+});
+
+test.serial("importData routes to the validation set when isEval is true", (t) => {
+  const jsonlPath = join(TEST_DIR, "in.jsonl");
+  writeFileSync(
+    jsonlPath,
+    `${JSON.stringify({ input: "q", output: "a" })}\n`,
+  );
+
+  importData(jsonlPath, SYSTEM_CTX, true);
+
+  t.is(countExamples(true), 1);
+  t.is(countExamples(false), 0);
+});
+
+test.serial("importData still defaults to the training set", (t) => {
+  const jsonlPath = join(TEST_DIR, "in.jsonl");
+  writeFileSync(
+    jsonlPath,
+    `${JSON.stringify({ input: "q", output: "a" })}\n`,
+  );
+
+  importData(jsonlPath, SYSTEM_CTX);
+
+  t.is(countExamples(false), 1);
+  t.is(countExamples(true), 0);
+});

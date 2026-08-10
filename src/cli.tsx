@@ -47,16 +47,21 @@ const dataCommand = program.command('data').description('Manage training data');
 dataCommand
 	.command('add')
 	.description('Interactively add training examples')
-	.action(async () => {
+	.option('-e, --eval', 'Add to the validation set instead of training data')
+	.action(async (options: {eval?: boolean}) => {
 		const {DataAddCommand} = await import('./commands/data/add.js');
-		renderInteractive('data add', <DataAddCommand />);
+		renderInteractive('data add', <DataAddCommand isEval={options.eval} />);
 	});
 
 dataCommand
 	.command('import <file>')
 	.description('Import training data from file (JSONL, CSV, or JSON)')
 	.option('-y, --yes', 'Skip the confirmation prompt (for scripts and CI)')
-	.action(async (file: string, options: {yes?: boolean}) => {
+	.option(
+		'-e, --eval',
+		'Import into the validation set instead of training data',
+	)
+	.action(async (file: string, options: {yes?: boolean; eval?: boolean}) => {
 		const {DataImportCommand} = await import('./commands/data/import.js');
 		// Without a TTY there is no way to answer the prompt, so require --yes.
 		if (!options.yes && !supportsRawMode()) {
@@ -65,7 +70,9 @@ dataCommand
 			process.exitCode = 1;
 			return;
 		}
-		render(<DataImportCommand file={file} yes={options.yes} />);
+		render(
+			<DataImportCommand file={file} yes={options.yes} isEval={options.eval} />,
+		);
 	});
 
 dataCommand
@@ -88,9 +95,10 @@ dataCommand
 	.command('list')
 	.alias('ls')
 	.description('View training data')
-	.action(async () => {
+	.option('-e, --eval', 'View the validation set instead of training data')
+	.action(async (options: {eval?: boolean}) => {
 		const {DataListCommand} = await import('./commands/data/list.js');
-		renderInteractive('data list', <DataListCommand />);
+		renderInteractive('data list', <DataListCommand isEval={options.eval} />);
 	});
 
 dataCommand
@@ -119,6 +127,7 @@ program
 	.option('--lr <rate>', 'Learning rate')
 	.option('--resume', 'Resume from last checkpoint')
 	.option('--dry-run', 'Validate config without training')
+	.option('--seed <n>', 'Seed for a reproducible train/validation split')
 	.action(async options => {
 		const {TrainCommand} = await import('./commands/train.js');
 		render(<TrainCommand options={options} />);

@@ -34,6 +34,7 @@ interface Props {
 		lr?: string;
 		resume?: boolean;
 		dryRun?: boolean;
+		seed?: string;
 	};
 }
 
@@ -56,6 +57,11 @@ export function TrainCommand({options}: Props) {
 	const [downloadPercent, setDownloadPercent] = useState<number | null>(null);
 	const [downloadDetail, setDownloadDetail] = useState<string | null>(null);
 	const [elapsed, setElapsed] = useState<string | null>(null);
+	const [split, setSplit] = useState<{
+		trainCount: number;
+		validCount: number;
+		didSplit: boolean;
+	} | null>(null);
 
 	useKeyInput((input, key) => {
 		if (key.escape && status !== 'training' && status !== 'downloading') {
@@ -114,7 +120,8 @@ export function TrainCommand({options}: Props) {
 			}
 
 			// Ensure we have a validation set (MLX requires it)
-			ensureValidationSet();
+			const seed = options.seed ? Number.parseInt(options.seed, 10) : undefined;
+			setSplit(ensureValidationSet(seed));
 
 			// Load config
 			const config = loadConfig();
@@ -197,7 +204,13 @@ export function TrainCommand({options}: Props) {
 			setError(err instanceof Error ? err.message : 'Training failed');
 			setStatus('error');
 		}
-	}, [options.iterations, options.lr, options.resume, options.dryRun]);
+	}, [
+		options.iterations,
+		options.lr,
+		options.resume,
+		options.dryRun,
+		options.seed,
+	]);
 
 	useEffect(() => {
 		run();
@@ -216,6 +229,7 @@ export function TrainCommand({options}: Props) {
 
 	const config = loadConfig();
 	const exampleCount = countExamples();
+	const validCount = countExamples(true);
 
 	return (
 		<Box flexDirection="column" padding={1}>
@@ -226,8 +240,16 @@ export function TrainCommand({options}: Props) {
 					Model: <Text color="cyan">{config.baseModel}</Text>
 				</Text>
 				<Text>
-					Examples: <Text color="cyan">{exampleCount}</Text>
+					Examples: <Text color="cyan">{exampleCount}</Text> train
+					{' | '}
+					<Text color="cyan">{validCount}</Text> validation
 				</Text>
+				{split?.didSplit && (
+					<Text color="yellow">
+						Split {split.trainCount + split.validCount} examples into{' '}
+						{split.trainCount} train / {split.validCount} validation.
+					</Text>
+				)}
 				<Text>
 					Iterations:{' '}
 					<Text color="cyan">
