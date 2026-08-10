@@ -149,6 +149,12 @@ export interface BenchmarkTestResult {
 	judgeReasoning?: string;
 	/** Per-criteria scores from LLM judge */
 	judgeCriteriaScores?: Record<string, number>;
+	/** Number of samples run for this test. Present when greater than 1. */
+	samples?: number;
+	/** Portion of samples that passed. Present when samples > 1. */
+	samplePassRate?: number;
+	/** Variance of the sample outcomes. Present when samples > 1. */
+	sampleVariance?: number;
 }
 
 export interface BenchmarkResult {

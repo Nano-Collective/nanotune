@@ -139,8 +139,12 @@ program
 		'--max-tokens <n>',
 		'Maximum tokens to generate per test (default: 50)',
 	)
-	.option('--temperature <n>', 'Sampling temperature (default: 0.8)')
-	.option('--seed <n>', 'Random seed for reproducibility')
+	.option('--temperature <n>', 'Sampling temperature (default: 0)')
+	.option('--seed <n>', 'Random seed for reproducibility (default: 42)')
+	.option(
+		'--samples <n>',
+		'Run each test n times and report pass rate and variance (default: 1)',
+	)
 	.action(async options => {
 		const {BenchmarkCommand} = await import('./commands/benchmark.js');
 		render(<BenchmarkCommand options={options} />);

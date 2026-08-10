@@ -147,6 +147,18 @@ nanotune benchmark --threads 4 --gpu-layers 10 --ctx-size 2048
 
 See [`nanotune benchmark`](../commands/benchmark.md) for all available options and presets.
 
+### Reproducibility
+
+Runs are deterministic by default — temperature `0` and a fixed seed of `42` — so two consecutive runs against the same model produce identical results and a moved pass rate means the model actually changed.
+
+Opt into sampling with an explicit temperature, and use `--samples` to measure how stable the score is:
+
+```bash
+nanotune benchmark --temperature 0.8 --samples 5
+```
+
+Each test then reports its pass rate and variance across the samples, and passes when the majority of samples pass. A test that passes 3 of 5 runs is a different signal from one that passes 5 of 5, even though both count as a pass.
+
 ## Reports
 
 After running, two files are generated in `.nanotune/benchmarks/`:
@@ -158,6 +170,7 @@ After running, two files are generated in `.nanotune/benchmarks/`:
 
 - Summary statistics (total tests, pass rate)
 - Pass rate by category
+- Per-test sample pass rate and variance, when `--samples` is above 1
 - Detailed results for every test
 - Failed tests table
 

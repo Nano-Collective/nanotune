@@ -66,3 +66,40 @@ export function formatConversationForJudge(
 	}
 	return parts.join('\n');
 }
+
+export const DEFAULT_BENCHMARK_TEMPERATURE = 0;
+export const DEFAULT_BENCHMARK_SEED = 42;
+
+export function resolveSamplingOptions(options: {
+	temperature?: string;
+	seed?: string;
+	samples?: string;
+}): {temperature: number; seed: number; samples: number} {
+	const temperature = Number.parseFloat(options.temperature ?? '');
+	const seed = Number.parseInt(options.seed ?? '', 10);
+	const samples = Number.parseInt(options.samples ?? '', 10);
+
+	return {
+		temperature: Number.isFinite(temperature)
+			? temperature
+			: DEFAULT_BENCHMARK_TEMPERATURE,
+		seed: Number.isFinite(seed) ? seed : DEFAULT_BENCHMARK_SEED,
+		samples: Number.isFinite(samples) && samples > 0 ? samples : 1,
+	};
+}
+
+export function summarizeSamples(passes: boolean[]): {
+	passed: boolean;
+	passRate: number;
+	variance: number;
+} {
+	if (passes.length === 0) {
+		return {passed: false, passRate: 0, variance: 0};
+	}
+	const passRate = passes.filter(Boolean).length / passes.length;
+	return {
+		passed: passRate >= 0.5,
+		passRate,
+		variance: passRate * (1 - passRate),
+	};
+}

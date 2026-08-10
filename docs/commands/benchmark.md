@@ -39,8 +39,25 @@ Use `--preset <name>` to quickly configure for your hardware:
 | `--batch-size <n>` | Batch size for processing (default: 2048) |
 | `--cpu-only` | Disable GPU, use CPU only |
 | `--max-tokens <n>` | Max tokens to generate (default: 50) |
-| `--temperature <n>` | Sampling temperature (default: 0.8) |
-| `--seed <n>` | Random seed for reproducibility |
+| `--temperature <n>` | Sampling temperature (default: 0) |
+| `--seed <n>` | Random seed for reproducibility (default: 42) |
+| `--samples <n>` | Run each test n times, reporting pass rate and variance (default: 1) |
+
+## Reproducibility
+
+Benchmarks are deterministic by default: temperature is `0` and the seed is fixed at `42`. Running the same suite twice against the same model gives the same score, so a change in pass rate reflects a real change in the model rather than sampling noise.
+
+To sample instead, pass a temperature explicitly:
+
+```bash
+nanotune benchmark --temperature 0.8
+```
+
+With sampling enabled, `--samples <n>` runs each test n times and records the per-test pass rate and variance in the reports, which is a more honest signal than a single draw. A test counts as passed when the majority of its samples pass. Each sample uses `seed + sample_index`, so repeated runs stay reproducible while the samples differ from one another.
+
+```bash
+nanotune benchmark --temperature 0.8 --samples 5
+```
 
 ## Examples
 
@@ -55,7 +72,10 @@ nanotune benchmark --preset low
 nanotune benchmark --threads 4 --gpu-layers 10 --ctx-size 2048
 
 # Mix preset with overrides
-nanotune benchmark --preset medium --temperature 0.5 --seed 42
+nanotune benchmark --preset medium --temperature 0.5 --seed 7
+
+# Measure variance under sampling
+nanotune benchmark --temperature 0.8 --samples 5
 ```
 
 ## See Also
