@@ -1,5 +1,12 @@
-import {existsSync, readFileSync, writeFileSync} from 'node:fs';
-import {join} from 'node:path';
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from 'node:fs';
+import {dirname, join} from 'node:path';
 import {Spinner, StatusMessage} from '@inkjs/ui';
 import {Box, Text, useApp} from 'ink';
 import {useCallback, useEffect, useState} from 'react';
@@ -32,11 +39,17 @@ import {
 } from '../lib/judge.js';
 import {
 	chatCompletion,
+	checkLlamaCppInstalled,
+	exportModel,
 	type GenerateOptions,
+	installLlamaCpp,
 	type ServerOptions,
 	startLlamaServer,
 	stopLlamaServer,
 } from '../lib/llama-cpp.js';
+import {ensureModelDownloaded} from '../lib/mlx.js';
+import {getBaseModelCachePath} from '../lib/model-cache.js';
+import {assertSupportedPlatform} from '../lib/platform.js';
 import {
 	BENCHMARK_PRESETS,
 	type BenchmarkPreset,
@@ -44,11 +57,13 @@ import {
 	type BenchmarkTest,
 	type BenchmarkTestResult,
 	type JudgeProviderConfig,
+	type QuantizationType,
 } from '../types/index.js';
 
 interface Props {
 	options: {
 		model?: string;
+		base?: boolean;
 		dataset?: string;
 		timeout?: string;
 		preset?: string;
@@ -80,6 +95,9 @@ function generateMarkdownReport(
 	lines.push('');
 	lines.push(`**Date:** ${new Date(result.timestamp).toLocaleString()}`);
 	lines.push(`**Model:** ${result.model.split('/').pop()}`);
+	lines.push(
+		`**Run Type:** ${result.isBase ? 'Base model (control)' : 'Fine-tuned'}`,
+	);
 	lines.push('');
 
 	// Summary
@@ -221,6 +239,7 @@ export function BenchmarkCommand({options}: Props) {
 	const {exit} = useApp();
 	const [status, setStatus] = useState<Status>('loading');
 	const [error, setError] = useState<string | null>(null);
+	const [prepStep, setPrepStep] = useState<string | null>(null);
 	const [currentTest, setCurrentTest] = useState<string | null>(null);
 	const [progress, setProgress] = useState(0);
 	const [results, setResults] = useState<BenchmarkResult | null>(null);
@@ -250,20 +269,111 @@ export function BenchmarkCommand({options}: Props) {
 				role: 'system',
 				content: '',
 			};
+			let config: ReturnType<typeof loadConfig> | null = null;
 			try {
-				const config = loadConfig();
+				config = loadConfig();
 				contextMsg = resolveContextMessage(config);
 			} catch {
 				// Minimal config (e.g., external benchmark runner) — no context message needed
 			}
 			const benchmarksDir = getBenchmarksDir();
 
-			// Find model
-			let modelPath = options.model ?? findLatestGGUF();
-			if (!modelPath) {
-				setError('No exported models found. Run `nanotune export` first.');
+			if (options.model && options.base) {
+				setError(
+					'`--model` and `--base` are mutually exclusive — `--base` resolves the model itself.',
+				);
 				setStatus('error');
 				return;
+			}
+
+			// Find model
+			let modelPath: string | null;
+			if (options.base) {
+				if (!config) {
+					setError(
+						'`--base` requires a full nanotune config with `baseModel` set. Run `nanotune init` first, or omit `--base` and pass `--model` directly.',
+					);
+					setStatus('error');
+					return;
+				}
+
+				// Fail fast on unsupported hardware before a multi-minute
+				// download/convert/quantize run.
+				assertSupportedPlatform();
+
+				const quantization = config.export.quantization as QuantizationType;
+				const cachePath = getBaseModelCachePath(config.baseModel, quantization);
+
+				if (!existsSync(cachePath)) {
+					// Installing llama.cpp and downloading the base model are
+					// independent — run them concurrently instead of waiting on
+					// one before starting the other.
+					const [, snapshotPath] = await Promise.all([
+						(async () => {
+							const hasLlamaCpp = await checkLlamaCppInstalled();
+							if (!hasLlamaCpp) {
+								setPrepStep('Installing llama.cpp...');
+								for await (const msg of installLlamaCpp()) {
+									setPrepStep(msg);
+								}
+							}
+						})(),
+						(async (): Promise<string | undefined> => {
+							setPrepStep(`Downloading base model ${config.baseModel}...`);
+							let resolvedPath: string | undefined;
+							for await (const progress of ensureModelDownloaded(
+								config.baseModel,
+							)) {
+								setPrepStep(
+									progress.sizeInfo
+										? `Downloading base model... ${progress.sizeInfo}`
+										: 'Downloading base model...',
+								);
+								if (progress.path) {
+									resolvedPath = progress.path;
+								}
+							}
+							return resolvedPath;
+						})(),
+					]);
+					if (!snapshotPath) {
+						throw new Error('Could not resolve the downloaded base model path.');
+					}
+
+					// Export to a temp path and rename into place atomically.
+					// existsSync(cachePath) above is the only thing gating reuse of
+					// this cache — if a run gets killed mid-quantize and the partial
+					// file landed directly at cachePath, every future run would
+					// silently treat that corrupt file as a valid cache hit.
+					mkdirSync(dirname(cachePath), {recursive: true});
+					const tempCachePath = cachePath.replace(
+						/\.gguf$/,
+						`.tmp-${process.pid}.gguf`,
+					);
+					try {
+						for await (const progress of exportModel(
+							snapshotPath,
+							tempCachePath,
+							quantization,
+						)) {
+							setPrepStep(progress.step);
+						}
+						renameSync(tempCachePath, cachePath);
+					} finally {
+						if (existsSync(tempCachePath)) {
+							rmSync(tempCachePath, {force: true});
+						}
+					}
+				}
+
+				modelPath = cachePath;
+			} else {
+				modelPath = options.model ?? findLatestGGUF();
+				if (!modelPath) {
+					setError('No exported models found. Run `nanotune export` first.');
+					setStatus('error');
+					return;
+				}
 			}
 
 			if (!existsSync(modelPath)) {
@@ -596,6 +706,7 @@ export function BenchmarkCommand({options}: Props) {
 			const finalResult: BenchmarkResult = {
 				model: modelPath,
 				timestamp: new Date().toISOString(),
+				isBase: Boolean(options.base),
 				summary: {
 					total: totalTests,
 					passed: totalPassed,
@@ -633,6 +744,7 @@ export function BenchmarkCommand({options}: Props) {
 		}
 	}, [
 		options.model,
+		options.base,
 		options.dataset,
 		options.timeout,
 		options.preset,
@@ -665,7 +777,13 @@ export function BenchmarkCommand({options}: Props) {
 		<Box flexDirection="column" padding={1}>
 			<Header title="Benchmark" />
 
-			{status === 'loading' && <Spinner label="Loading benchmark data..." />}
+			{status === 'loading' && (
+				<Box flexDirection="column">
+					<Spinner
+						label={prepStep ?? 'Loading benchmark data...'}
+					/>
+				</Box>
+			)}
 
 			{status === 'running' && (
 				<Box flexDirection="column">
@@ -706,6 +824,7 @@ export function BenchmarkCommand({options}: Props) {
 					<Text> </Text>
 					<Text>
 						Model: <Text color="cyan">{results.model.split('/').pop()}</Text>
+						{results.isBase && <Text dimColor> (base model, control)</Text>}
 					</Text>
 					<Text>
 						Score:{' '}

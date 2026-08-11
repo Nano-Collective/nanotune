@@ -150,7 +150,7 @@ if result["error"]:
     print(json.dumps({"status":"error","error":result["error"]}), flush=True)
     sys.exit(1)
 else:
-    print(json.dumps({"status":"done","percent":100}), flush=True)
+    print(json.dumps({"status":"done","percent":100,"path":result["path"]}), flush=True)
 `.trim();
 
 export interface DownloadStatus {
@@ -160,6 +160,8 @@ export interface DownloadStatus {
 	downloaded?: number;
 	percent?: number;
 	error?: string;
+	/** Resolved local snapshot directory, present on the final 'done' event. */
+	path?: string;
 }
 
 export async function* ensureModelDownloaded(
@@ -218,7 +220,7 @@ export async function* ensureModelDownloaded(
 									: undefined,
 						};
 					} else if (msg.status === 'done') {
-						yield {type: 'download', percent: 100};
+						yield {type: 'download', percent: 100, path: msg.path};
 					} else if (msg.status === 'error') {
 						downloadError = msg.error || 'Model download failed';
 					}
