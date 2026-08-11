@@ -69,6 +69,22 @@ dataCommand
 	});
 
 dataCommand
+	.command('export <file>')
+	.description('Export training data to file (JSONL, CSV, or JSON)')
+	.option('-y, --yes', 'Skip the overwrite confirmation prompt (for scripts and CI)')
+	.action(async (file: string, options: {yes?: boolean}) => {
+		const {DataExportCommand} = await import('./commands/data/export.js');
+		// Without a TTY there is no way to answer the overwrite prompt, so require --yes.
+		if (!options.yes && !supportsRawMode()) {
+			console.error(interactiveRequiredMessage('data export'));
+			console.error('Pass --yes to export without confirmation.');
+			process.exitCode = 1;
+			return;
+		}
+		render(<DataExportCommand file={file} yes={options.yes} />);
+	});
+
+dataCommand
 	.command('list')
 	.alias('ls')
 	.description('View training data')
@@ -80,9 +96,19 @@ dataCommand
 dataCommand
 	.command('validate')
 	.description('Validate training data format and quality')
-	.action(async () => {
+	.option('--fix', 'Remove exact-duplicate examples')
+	.option(
+		'--rewrite-context',
+		"Rewrite each example's context message to match the current config",
+	)
+	.action(async (options: {fix?: boolean; rewriteContext?: boolean}) => {
 		const {DataValidateCommand} = await import('./commands/data/validate.js');
-		render(<DataValidateCommand />);
+		render(
+			<DataValidateCommand
+				fix={options.fix}
+				rewriteContext={options.rewriteContext}
+			/>,
+		);
 	});
 
 // Train command

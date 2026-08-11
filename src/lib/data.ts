@@ -254,6 +254,85 @@ export function validateTrainingData(
 	};
 }
 
+export interface DedupeResult {
+	removedCount: number;
+	/** 1-based positions (in the original file) that were removed. */
+	removedIndexes: number[];
+}
+
+/**
+ * Remove exact-duplicate examples: same messages (role + content, in order).
+ * Deliberately stricter than validateTrainingData's duplicate warning (which
+ * only compares the first user message) — removal must be provably safe, so
+ * two examples that merely share the same input but differ in output or
+ * context message are left alone.
+ */
+export function dedupeExamples(isEval = false): DedupeResult {
+	const examples = loadTrainingData(isEval);
+	const seen = new Set<string>();
+	const kept: TrainingExample[] = [];
+	const removedIndexes: number[] = [];
+
+	examples.forEach((ex, i) => {
+		const key = JSON.stringify(
+			ex.messages.map(m => ({role: m.role, content: m.content})),
+		);
+		if (seen.has(key)) {
+			removedIndexes.push(i + 1);
+			return;
+		}
+		seen.add(key);
+		kept.push(ex);
+	});
+
+	if (removedIndexes.length > 0) {
+		saveTrainingData(kept, isEval);
+	}
+
+	return {removedCount: removedIndexes.length, removedIndexes};
+}
+
+export interface ContextFixResult {
+	fixedCount: number;
+}
+
+/**
+ * Rewrite each example's context message (messages[0]) to match the given
+ * contextMessage, but only when a context message already exists. Never
+ * inserts one where the example starts with a user message, since that
+ * would change the example's shape rather than just fix a mismatch.
+ */
+export function fixContextMessages(
+	contextMessage: ChatMessage,
+	isEval = false,
+): ContextFixResult {
+	const examples = loadTrainingData(isEval);
+	let fixedCount = 0;
+
+	const updated = examples.map(ex => {
+		const first = ex.messages[0];
+		if (!first || first.role === 'user' || first.role === 'assistant') {
+			return ex;
+		}
+		if (first.role === contextMessage.role && first.content === contextMessage.content) {
+			return ex;
+		}
+		fixedCount++;
+		return {
+			messages: [
+				{role: contextMessage.role, content: contextMessage.content},
+				...ex.messages.slice(1),
+			],
+		};
+	});
+
+	if (fixedCount > 0) {
+		saveTrainingData(updated, isEval);
+	}
+
+	return {fixedCount};
+}
+
 export interface ImportResult {
 	imported: number;
 	skipped: number;
@@ -527,6 +606,88 @@ export function importData(
 		default:
 			return {
 				imported: 0,
+				skipped: 0,
+				errors: [`Unsupported file format: ${ext}`],
+			};
+	}
+}
+
+export interface ExportResult {
+	exported: number;
+	skipped: number;
+	errors: string[];
+}
+
+export function exportToJSONL(filePath: string, isEval = false): ExportResult {
+	const examples = loadTrainingData(isEval);
+	const content = examples.map(ex => JSON.stringify(ex)).join('\n');
+	writeFileSync(filePath, examples.length > 0 ? `${content}\n` : '');
+	return {exported: examples.length, skipped: 0, errors: []};
+}
+
+export function exportToJSON(filePath: string, isEval = false): ExportResult {
+	const examples = loadTrainingData(isEval);
+	writeFileSync(filePath, `${JSON.stringify(examples, null, 2)}\n`);
+	return {exported: examples.length, skipped: 0, errors: []};
+}
+
+function csvEscape(value: string): string {
+	if (/[",\r\n]/.test(value)) {
+		return `"${value.replace(/"/g, '""')}"`;
+	}
+	return value;
+}
+
+/**
+ * CSV can only represent a single input/output pair per row, with no room
+ * for a context message. Multi-turn examples are skipped (not truncated) so
+ * that exporting then re-importing never silently drops turns.
+ */
+export function exportToCSV(filePath: string, isEval = false): ExportResult {
+	const examples = loadTrainingData(isEval);
+	const rows: string[] = ['input,output'];
+	let exported = 0;
+	let skipped = 0;
+	const errors: string[] = [];
+
+	examples.forEach((ex, i) => {
+		if (countTurns(ex) > 1) {
+			skipped++;
+			errors.push(
+				`Example ${i + 1}: multi-turn example cannot be represented in CSV, skipped`,
+			);
+			return;
+		}
+
+		const user = ex.messages.find(m => m.role === 'user');
+		const assistant = ex.messages.find(m => m.role === 'assistant');
+		if (!user?.content || !assistant?.content) {
+			skipped++;
+			errors.push(`Example ${i + 1}: missing user or assistant message, skipped`);
+			return;
+		}
+
+		rows.push(`${csvEscape(user.content)},${csvEscape(assistant.content)}`);
+		exported++;
+	});
+
+	writeFileSync(filePath, `${rows.join('\n')}\n`);
+	return {exported, skipped, errors};
+}
+
+export function exportData(filePath: string, isEval = false): ExportResult {
+	const ext = filePath.toLowerCase().split('.').pop();
+
+	switch (ext) {
+		case 'csv':
+			return exportToCSV(filePath, isEval);
+		case 'jsonl':
+			return exportToJSONL(filePath, isEval);
+		case 'json':
+			return exportToJSON(filePath, isEval);
+		default:
+			return {
+				exported: 0,
 				skipped: 0,
 				errors: [`Unsupported file format: ${ext}`],
 			};

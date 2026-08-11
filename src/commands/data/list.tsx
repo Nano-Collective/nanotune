@@ -1,9 +1,17 @@
-import {StatusMessage} from '@inkjs/ui';
+import {StatusMessage, TextInput} from '@inkjs/ui';
 import {Box, Text, useApp} from 'ink';
 import {useState} from 'react';
 import {DataTable, Header, useKeyInput} from '../../components/index.js';
 import {configExists} from '../../lib/config.js';
-import {countTurns, deleteExample, loadTrainingData} from '../../lib/data.js';
+import {
+	countTurns,
+	deleteExample,
+	loadTrainingData,
+	updateTrainingExample,
+} from '../../lib/data.js';
+import type {ChatMessage} from '../../types/index.js';
+
+type EditField = 'input' | 'output';
 
 const PAGE_SIZE = 10;
 
@@ -19,11 +27,84 @@ export function DataListCommand() {
 	} | null>(null);
 	const [hasConfig] = useState(() => configExists());
 
+	const [editIndex, setEditIndex] = useState<number | null>(null);
+	const [editField, setEditField] = useState<EditField>('input');
+	const [editInput, setEditInput] = useState('');
+	const [editOutput, setEditOutput] = useState('');
+	const [editError, setEditError] = useState<string | null>(null);
+
 	const totalPages = Math.ceil(data.length / PAGE_SIZE);
 	const startIndex = page * PAGE_SIZE;
 	const pageData = data.slice(startIndex, startIndex + PAGE_SIZE);
 
+	const saveEdit = (userInput: string, assistantOutput: string) => {
+		if (editIndex === null) return;
+		try {
+			const original = data[editIndex];
+			const messages = original.messages;
+			const firstUserIdx = messages.findIndex(m => m.role === 'user');
+			const firstAssistantIdx = messages.findIndex(
+				(m, i) => m.role === 'assistant' && i > firstUserIdx,
+			);
+			const prefix = firstUserIdx >= 0 ? messages.slice(0, firstUserIdx) : [];
+			const suffix =
+				firstAssistantIdx >= 0
+					? messages.slice(firstAssistantIdx + 1)
+					: messages.slice(2);
+
+			const updated: {messages: ChatMessage[]} = {
+				messages: [
+					...prefix,
+					{role: 'user', content: userInput},
+					{role: 'assistant', content: assistantOutput},
+					...suffix,
+				],
+			};
+			updateTrainingExample(editIndex, updated);
+			setData(loadTrainingData());
+			setExpandedIndex(null);
+			setEditIndex(null);
+			setEditError(null);
+			setMessage({type: 'success', text: 'Example updated'});
+			setTimeout(() => setMessage(null), 2000);
+		} catch (err) {
+			setEditError(err instanceof Error ? err.message : 'Update failed');
+		}
+	};
+
+	const handleEditInputSubmit = (value: string) => {
+		if (value.trim()) {
+			setEditInput(value.trim());
+			setEditField('output');
+		}
+	};
+
+	const handleEditOutputSubmit = (value: string) => {
+		if (!value.trim()) {
+			setEditError('Output cannot be empty');
+			return;
+		}
+		setEditOutput(value.trim());
+		saveEdit(editInput, value.trim());
+	};
+
+	useKeyInput((_input, key) => {
+		if (editIndex === null) return;
+
+		if (key.escape) {
+			setEditIndex(null);
+			setEditError(null);
+			return;
+		}
+
+		if (key.tab) {
+			setEditField(f => (f === 'input' ? 'output' : 'input'));
+		}
+	});
+
 	useKeyInput((input, key) => {
+		if (editIndex !== null) return;
+
 		if (key.escape || input === 'q') {
 			exit();
 		}
@@ -87,6 +168,21 @@ export function DataListCommand() {
 				}
 			}
 		}
+
+		if (input === 'e') {
+			const globalIndex = startIndex + selectedIndex;
+			if (globalIndex < data.length) {
+				const ex = data[globalIndex];
+				const userMsg = ex.messages.find(m => m.role === 'user');
+				const assistantMsg = ex.messages.find(m => m.role === 'assistant');
+				setEditIndex(globalIndex);
+				setEditInput(userMsg?.content ?? '');
+				setEditOutput(assistantMsg?.content ?? '');
+				setEditField('input');
+				setEditError(null);
+				setExpandedIndex(null);
+			}
+		}
 	});
 
 	if (!hasConfig) {
@@ -114,6 +210,66 @@ export function DataListCommand() {
 
 	const expandedExample =
 		expandedIndex !== null ? pageData[expandedIndex] : null;
+
+	const editingExample = editIndex !== null ? data[editIndex] : null;
+	const editExtraTurns = editingExample ? countTurns(editingExample) - 1 : 0;
+
+	if (editingExample && editIndex !== null) {
+		return (
+			<Box flexDirection="column" padding={1}>
+				<Header title={`Editing Example #${editIndex + 1}`} />
+
+				{editError && (
+					<Box marginBottom={1}>
+						<StatusMessage variant="error">{editError}</StatusMessage>
+					</Box>
+				)}
+
+				{editExtraTurns > 0 && (
+					<Box marginBottom={1}>
+						<Text dimColor>
+							{editExtraTurns} additional turn{editExtraTurns > 1 ? 's' : ''}{' '}
+							preserved, not edited here.
+						</Text>
+					</Box>
+				)}
+
+				<Box flexDirection="column" marginBottom={1}>
+					<Text color={editField === 'input' ? 'yellow' : 'white'}>
+						User input:
+					</Text>
+					<Box borderStyle="round" paddingX={1}>
+						{editField === 'input' ? (
+							<TextInput
+								defaultValue={editInput}
+								onSubmit={handleEditInputSubmit}
+							/>
+						) : (
+							<Text>{editInput || <Text dimColor>Empty</Text>}</Text>
+						)}
+					</Box>
+				</Box>
+
+				<Box flexDirection="column" marginBottom={1}>
+					<Text color={editField === 'output' ? 'yellow' : 'white'}>
+						Expected output:
+					</Text>
+					<Box borderStyle="round" paddingX={1}>
+						{editField === 'output' ? (
+							<TextInput
+								defaultValue={editOutput}
+								onSubmit={handleEditOutputSubmit}
+							/>
+						) : (
+							<Text>{editOutput || <Text dimColor>Empty</Text>}</Text>
+						)}
+					</Box>
+				</Box>
+
+				<Text dimColor>[Enter] Submit [Tab] Switch field [Esc] Cancel</Text>
+			</Box>
+		);
+	}
 
 	return (
 		<Box flexDirection="column" padding={1}>
@@ -179,8 +335,8 @@ export function DataListCommand() {
 
 					<Text> </Text>
 					<Text dimColor>
-						[Up/Down] Navigate [Left/Right] Page [Enter] Expand/collapse [d]
-						Delete [q] Quit
+						[Up/Down] Navigate [Left/Right] Page [Enter] Expand/collapse [e]
+						Edit [d] Delete [q] Quit
 					</Text>
 				</Box>
 			)}
