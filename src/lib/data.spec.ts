@@ -221,6 +221,32 @@ test.serial("importFromCSV imports valid rows with context message role", (t) =>
   t.is(data[0].messages[2].content, "ls");
 });
 
+test.serial("importFromCSV keeps a first row that merely mentions input", (t) => {
+  const csvPath = join(TEST_DIR, "keyword.csv");
+  writeFileSync(
+    csvPath,
+    '"explain the input parameter","it configures the stream"\n"second row","second output"\n',
+  );
+
+  const result = importFromCSV(csvPath, SYSTEM_CTX);
+  t.is(result.imported, 2);
+  t.is(result.skipped, 0);
+
+  const data = loadTrainingData();
+  t.is(data[0].messages[1].content, "explain the input parameter");
+});
+
+test.serial("importFromCSV still skips a real header row", (t) => {
+  const csvPath = join(TEST_DIR, "header.csv");
+  writeFileSync(csvPath, 'Input , Output\n"list files","ls"\n');
+
+  const result = importFromCSV(csvPath, SYSTEM_CTX);
+  t.is(result.imported, 1);
+
+  const data = loadTrainingData();
+  t.is(data[0].messages[1].content, "list files");
+});
+
 test.serial("importFromCSV skips invalid lines", (t) => {
   const csvPath = join(TEST_DIR, "bad.csv");
   writeFileSync(csvPath, "\"good\",\"data\"\nthis has no comma separation at all really\n");

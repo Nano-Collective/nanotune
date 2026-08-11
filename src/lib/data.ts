@@ -361,11 +361,11 @@ export function importFromCSV(
 		return {imported, skipped, errors};
 	}
 
-	// Skip header if first row looks like one
-	const firstRowLower = rows[0].map(c => c.toLowerCase());
+	// Skip header if first row looks like one. Match the column names exactly:
+	// a substring match drops real rows that happen to mention input or output.
+	const firstRowLower = rows[0].map(c => c.trim().toLowerCase());
 	const hasHeader =
-		firstRowLower.some(c => c.includes('input')) ||
-		firstRowLower.some(c => c.includes('output'));
+		firstRowLower[0] === 'input' || firstRowLower[1] === 'output';
 	const startIndex = hasHeader ? 1 : 0;
 
 	for (let i = startIndex; i < rows.length; i++) {
