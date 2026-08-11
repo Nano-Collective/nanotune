@@ -8,7 +8,12 @@ import {
 } from 'node:fs';
 import {join} from 'node:path';
 import {z} from 'zod';
-import {type ChatMessage, type Config, ConfigSchema} from '../types/index.js';
+import {
+	type BenchmarkResult,
+	type ChatMessage,
+	type Config,
+	ConfigSchema,
+} from '../types/index.js';
 
 const CONFIG_DIR = '.nanotune';
 const CONFIG_FILE = 'config.json';
@@ -217,6 +222,85 @@ export function findLatestGGUF(): string | null {
 		.map(f => ({name: f, path: join(modelsDir, f)}))
 		.sort((a, b) => statSync(b.path).mtimeMs - statSync(a.path).mtimeMs);
 	return sorted[0].path;
+}
+
+export interface BenchmarkFileInfo {
+	path: string;
+	filename: string;
+	mtime: Date;
+}
+
+/**
+ * List saved benchmark run files (`benchmark-*.json`) in the project's
+ * benchmarks directory, newest first by mtime. Sorting by mtime (rather than
+ * filename) keeps this correct even if benchmark filenames stop sharing a
+ * single timestamp shape.
+ */
+export function listBenchmarks(): BenchmarkFileInfo[] {
+	const benchmarksDir = getBenchmarksDir();
+	if (!existsSync(benchmarksDir)) {
+		return [];
+	}
+	return readdirSync(benchmarksDir)
+		.filter(f => f.endsWith('.json') && f.startsWith('benchmark'))
+		.map(filename => {
+			const path = join(benchmarksDir, filename);
+			return {path, filename, mtime: statSync(path).mtime};
+		})
+		.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+}
+
+/**
+ * Find the most recently modified saved benchmark run. Returns `null` if the
+ * benchmarks directory is missing or contains no runs.
+ */
+export function findLatestBenchmark(): string | null {
+	const benchmarks = listBenchmarks();
+	return benchmarks.length > 0 ? benchmarks[0].path : null;
+}
+
+/**
+ * Load and parse a saved benchmark run. Accepts a literal path or a value
+ * resolved via {@link resolveBenchmarkPath}.
+ */
+export function loadBenchmark(pathOrName: string): BenchmarkResult {
+	const path = resolveBenchmarkPath(pathOrName);
+	const content = readFileSync(path, 'utf-8');
+	return JSON.parse(content) as BenchmarkResult;
+}
+
+/**
+ * Resolve a user-supplied benchmark reference to a file path. Tries, in
+ * order: the literal path (relative to cwd or absolute), the bare filename
+ * under the benchmarks directory, that filename with `.json` appended, and
+ * finally `benchmark-<input>.json` (so a copy-pasted timestamp works).
+ * Throws with the list of available runs if nothing matches.
+ */
+export function resolveBenchmarkPath(input: string): string {
+	const benchmarksDir = getBenchmarksDir();
+	const candidates = [
+		input,
+		join(benchmarksDir, input),
+		join(benchmarksDir, `${input}.json`),
+	];
+	if (!input.startsWith('benchmark')) {
+		candidates.push(join(benchmarksDir, `benchmark-${input}.json`));
+	}
+
+	for (const candidate of candidates) {
+		if (existsSync(candidate)) {
+			return candidate;
+		}
+	}
+
+	const available = listBenchmarks()
+		.map(b => b.filename)
+		.join(', ');
+	throw new Error(
+		`Could not find a benchmark run matching "${input}".${
+			available ? ` Available runs: ${available}` : ' No benchmark runs found.'
+		}`,
+	);
 }
 
 export function resolveContextMessage(config: Config): ChatMessage {

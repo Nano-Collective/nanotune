@@ -160,10 +160,14 @@ program
 	});
 
 // Benchmark command
-program
+const benchmarkCommand = program
 	.command('benchmark')
 	.description('Run benchmarks against a test dataset')
 	.option('-m, --model <path>', 'Path to model file')
+	.option(
+		'--base',
+		'Benchmark the base (pre-fine-tuning) model as a control, caching the quantized GGUF for reuse',
+	)
 	.option('-d, --dataset <path>', 'Path to benchmark dataset')
 	.option('-t, --timeout <ms>', 'Timeout per test in milliseconds')
 	.option(
@@ -190,6 +194,16 @@ program
 	.action(async options => {
 		const {BenchmarkCommand} = await import('./commands/benchmark.js');
 		render(<BenchmarkCommand options={options} />);
+	});
+
+benchmarkCommand
+	.command('compare [fileA] [fileB]')
+	.description('Compare two saved benchmark runs')
+	.action(async (fileA?: string, fileB?: string) => {
+		const {BenchmarkCompareCommand} = await import(
+			'./commands/benchmark/compare.js'
+		);
+		render(<BenchmarkCompareCommand fileA={fileA} fileB={fileB} />);
 	});
 
 // Chat command
