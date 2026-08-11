@@ -247,6 +247,18 @@ test.serial("importFromCSV still skips a real header row", (t) => {
   t.is(data[0].messages[1].content, "list files");
 });
 
+test.serial("importFromCSV does not treat a partial header match as a header", (t) => {
+  const csvPath = join(TEST_DIR, "partial-header.csv");
+  writeFileSync(csvPath, 'input,"not a header"\n"x","y"\n');
+
+  const result = importFromCSV(csvPath, SYSTEM_CTX);
+  t.is(result.imported, 2);
+  t.is(result.skipped, 0);
+
+  const data = loadTrainingData();
+  t.is(data[0].messages[1].content, "input");
+});
+
 test.serial("importFromCSV skips invalid lines", (t) => {
   const csvPath = join(TEST_DIR, "bad.csv");
   writeFileSync(csvPath, "\"good\",\"data\"\nthis has no comma separation at all really\n");
