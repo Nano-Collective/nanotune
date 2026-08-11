@@ -1,4 +1,6 @@
 import test from "ava";
+import { execa, type ResultPromise } from "execa";
+import { abortTraining, stopOnAbort } from "./mlx.js";
 
 test("MLX output parsing regex works correctly", (t) => {
   // Test the regex pattern used to parse MLX training output
@@ -70,4 +72,70 @@ test("MLXTrainingOptions structure is correct", (t) => {
   t.is(options.iterations, 150);
   t.is(options.learningRate, 5e-5);
   t.is(options.batchSize, 4);
+});
+
+// ── graceful stop (Ctrl+C) ────────────────────────────────────────────
+
+function fakeSubprocess() {
+  const signals: string[] = [];
+  const subprocess = {
+    kill(signal: string) {
+      signals.push(signal);
+      return true;
+    },
+  } as unknown as ResultPromise;
+  return { subprocess, signals };
+}
+
+test("abortTraining sends SIGINT so MLX can flush its checkpoint", (t) => {
+  const { subprocess, signals } = fakeSubprocess();
+  abortTraining(subprocess);
+  t.deepEqual(signals, ["SIGINT"]);
+});
+
+test("stopOnAbort does nothing until the signal aborts", (t) => {
+  const { subprocess, signals } = fakeSubprocess();
+  const controller = new AbortController();
+  stopOnAbort(subprocess, controller.signal);
+  t.deepEqual(signals, []);
+
+  controller.abort();
+  t.deepEqual(signals, ["SIGINT"]);
+});
+
+test("stopOnAbort stops a signal that is already aborted", (t) => {
+  // An already-aborted signal never fires an `abort` event, so a bare
+  // addEventListener would leave the trainer running forever.
+  const { subprocess, signals } = fakeSubprocess();
+  const controller = new AbortController();
+  controller.abort();
+  stopOnAbort(subprocess, controller.signal);
+  t.deepEqual(signals, ["SIGINT"]);
+});
+
+test("stopOnAbort signals only once", (t) => {
+  const { subprocess, signals } = fakeSubprocess();
+  const controller = new AbortController();
+  stopOnAbort(subprocess, controller.signal);
+  controller.abort();
+  controller.abort();
+  t.deepEqual(signals, ["SIGINT"]);
+});
+
+test("stopOnAbort without a signal never touches the subprocess", (t) => {
+  const { subprocess, signals } = fakeSubprocess();
+  stopOnAbort(subprocess, undefined);
+  t.deepEqual(signals, []);
+});
+
+test("stopOnAbort terminates a real running child process", async (t) => {
+  const child = execa("node", ["-e", "setInterval(() => {}, 1000)"]);
+  t.truthy(child.pid);
+
+  const controller = new AbortController();
+  stopOnAbort(child, controller.signal);
+  controller.abort();
+
+  // The child would run forever, so this only settles because it was killed.
+  t.truthy(await t.throwsAsync(child));
 });

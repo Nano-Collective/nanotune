@@ -2,7 +2,7 @@ import {existsSync} from 'node:fs';
 import {join} from 'node:path';
 import {Spinner, StatusMessage} from '@inkjs/ui';
 import {Box, Text, useApp} from 'ink';
-import {useCallback, useEffect, useState} from 'react';
+import {useCallback, useEffect, useRef, useState} from 'react';
 import {
 	ExitHint,
 	Header,
@@ -43,6 +43,8 @@ type Status =
 	| 'validating'
 	| 'downloading'
 	| 'training'
+	| 'stopping'
+	| 'stopped'
 	| 'done'
 	| 'error';
 
@@ -56,17 +58,38 @@ export function TrainCommand({options}: Props) {
 	const [downloadPercent, setDownloadPercent] = useState<number | null>(null);
 	const [downloadDetail, setDownloadDetail] = useState<string | null>(null);
 	const [elapsed, setElapsed] = useState<string | null>(null);
+	const abortRef = useRef<AbortController | null>(null);
 
+	// Ctrl+C is ours to handle here (the command renders with
+	// `exitOnCtrlC: false`), so mid-training it stops the trainer gracefully
+	// instead of letting Ink tear the app down while MLX is still writing.
+	// A second Ctrl+C gives up on the checkpoint rather than trapping the user
+	// behind a trainer that will not exit.
 	useKeyInput((input, key) => {
+		if (key.ctrl && input === 'c') {
+			if (status === 'training') {
+				abortRef.current?.abort();
+				setStatus('stopping');
+			} else {
+				exit();
+			}
+			return;
+		}
 		if (key.escape && status !== 'training' && status !== 'downloading') {
 			exit();
 		}
-		if ((status === 'done' || status === 'error') && (key.return || input)) {
+		if (
+			(status === 'done' || status === 'stopped' || status === 'error') &&
+			(key.return || input)
+		) {
 			exit();
 		}
 	});
 
-	useAutoExit(status === 'done' || status === 'error', status === 'error');
+	useAutoExit(
+		status === 'done' || status === 'stopped' || status === 'error',
+		status === 'error',
+	);
 
 	const run = useCallback(async () => {
 		try {
@@ -157,7 +180,10 @@ export function TrainCommand({options}: Props) {
 				setElapsed(null);
 			}
 
-			// Start training
+			// Start training. The controller is in place before the status flips
+			// so a Ctrl+C on the very first frame still has something to abort.
+			const controller = new AbortController();
+			abortRef.current = controller;
 			setStatus('training');
 			const startTime = Date.now();
 
@@ -172,6 +198,7 @@ export function TrainCommand({options}: Props) {
 				stepsPerEval: config.training.stepsPerEval,
 				saveEvery: config.training.saveEvery,
 				resume: options.resume,
+				signal: controller.signal,
 			};
 
 			for await (const update of runTraining(trainingOptions)) {
@@ -192,8 +219,12 @@ export function TrainCommand({options}: Props) {
 				}
 			}
 
-			setStatus('done');
+			setStatus(controller.signal.aborted ? 'stopped' : 'done');
 		} catch (err) {
+			if (abortRef.current?.signal.aborted) {
+				setStatus('stopped');
+				return;
+			}
 			setError(err instanceof Error ? err.message : 'Training failed');
 			setStatus('error');
 		}
@@ -299,6 +330,27 @@ export function TrainCommand({options}: Props) {
 
 					<Text> </Text>
 					<Text dimColor>[Ctrl+C] Stop training (checkpoint saved)</Text>
+				</Box>
+			)}
+
+			{status === 'stopping' && (
+				<Box flexDirection="column">
+					<Spinner label="Stopping training, saving checkpoint..." />
+					<Text dimColor>[Ctrl+C] Quit without waiting</Text>
+				</Box>
+			)}
+
+			{status === 'stopped' && (
+				<Box flexDirection="column">
+					<StatusMessage variant="warning">
+						Training stopped. Checkpoint saved.
+					</StatusMessage>
+					<Text> </Text>
+					<Text>
+						Resume with: <Text color="cyan">nanotune train --resume</Text>
+					</Text>
+					<Text> </Text>
+					<ExitHint>Press any key to exit</ExitHint>
 				</Box>
 			)}
 
