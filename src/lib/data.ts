@@ -610,3 +610,22 @@ export function ensureValidationSet(seed?: number): {
 
 	return {trainCount, validCount};
 }
+
+/**
+ * Clamp a paginated list's page/selection to what still exists after items are
+ * removed, so deleting the last row on the last page falls back to the
+ * previous page instead of stranding the user on an empty one.
+ */
+export function clampPagination(
+	total: number,
+	page: number,
+	selectedIndex: number,
+	pageSize: number,
+): {page: number; selectedIndex: number} {
+	const nextPage = Math.min(page, Math.max(0, Math.ceil(total / pageSize) - 1));
+	const pageCount = Math.min(pageSize, total - nextPage * pageSize);
+	return {
+		page: nextPage,
+		selectedIndex: Math.max(0, Math.min(selectedIndex, pageCount - 1)),
+	};
+}
