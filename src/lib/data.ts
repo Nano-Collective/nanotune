@@ -264,6 +264,7 @@ export interface ImportResult {
  * Parse a CSV file into an array of row arrays. Supports:
  *  - Quoted fields with embedded commas, newlines, and escaped quotes ("")
  *  - Unquoted fields
+ *  - A leading UTF-8 BOM, as written by Excel and other spreadsheet tools
  *  - CRLF or LF line endings
  */
 export function parseCSV(content: string): string[][] {
@@ -271,7 +272,7 @@ export function parseCSV(content: string): string[][] {
 	let field = '';
 	let row: string[] = [];
 	let inQuotes = false;
-	let i = 0;
+	let i = content.startsWith('\uFEFF') ? 1 : 0;
 
 	while (i < content.length) {
 		const ch = content[i];
