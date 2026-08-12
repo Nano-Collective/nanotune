@@ -1,4 +1,11 @@
-import {BENCHMARK_PRESETS, type BenchmarkPreset} from '../types/index.js';
+import {mkdirSync, writeFileSync} from 'node:fs';
+import {dirname, join} from 'node:path';
+import {
+	BENCHMARK_PRESETS,
+	type BenchmarkPreset,
+	type ChatMessage,
+} from '../types/index.js';
+import {getChatsDir} from './config.js';
 import type {GenerateOptions, ServerOptions} from './llama-cpp.js';
 
 /** Raw option strings that come off commander; everything is a string until we
@@ -76,6 +83,8 @@ export type SlashCommand =
 	| {kind: 'stats'}
 	| {kind: 'system'; text: string}
 	| {kind: 'system-missing'}
+	| {kind: 'save'; path?: string}
+	| {kind: 'keep'}
 	| {kind: 'unknown'; name: string}
 	| {kind: 'noop'};
 
@@ -113,7 +122,46 @@ export function parseSlashCommand(input: string): SlashCommand {
 			return {kind: 'stats'};
 		case '/system':
 			return arg ? {kind: 'system', text: arg} : {kind: 'system-missing'};
+		case '/save':
+			return arg ? {kind: 'save', path: arg} : {kind: 'save'};
+		case '/keep':
+			return {kind: 'keep'};
 		default:
 			return {kind: 'unknown', name: rawCmd};
 	}
+}
+
+export function lastExchange(
+	history: ChatMessage[],
+): {userInput: string; assistantOutput: string} | null {
+	for (let i = history.length - 1; i >= 0; i--) {
+		if (history[i].role !== 'assistant') {
+			continue;
+		}
+		for (let j = i - 1; j >= 0; j--) {
+			if (history[j].role === 'user') {
+				return {
+					userInput: history[j].content,
+					assistantOutput: history[i].content,
+				};
+			}
+		}
+		return null;
+	}
+	return null;
+}
+
+export function saveTranscript(
+	systemMessage: ChatMessage | null,
+	history: ChatMessage[],
+	filePath?: string,
+): string {
+	const messages = systemMessage?.content
+		? [systemMessage, ...history]
+		: history;
+	const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+	const path = filePath ?? join(getChatsDir(), `${stamp}.json`);
+	mkdirSync(dirname(path), {recursive: true});
+	writeFileSync(path, `${JSON.stringify([{messages}], null, 2)}\n`);
+	return path;
 }

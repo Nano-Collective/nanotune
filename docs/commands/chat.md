@@ -37,6 +37,8 @@ nanotune chat
 | `/help` | Show available commands |
 | `/reset`, `/clear` | Clear conversation history |
 | `/system <text>` | Replace the system message and reset history |
+| `/save [file]` | Save the transcript to JSON (default: `.nanotune/chats/<timestamp>.json`) |
+| `/keep` | Append the last exchange to `train.jsonl` as a training example |
 | `/stats` | Show session token statistics |
 | `/exit`, `/quit` | Leave the chat (`Esc` also exits when idle) |
 
@@ -71,6 +73,47 @@ TTFT 142ms · 38.4 tok/s · 87 tokens
 - **tok/s** — generation throughput
 - **tokens** — tokens generated for that reply
 
+## Saving Your Session
+
+Chat is where you find failure modes — the prompt that drifts, the format the model keeps getting wrong. `/keep` and `/save` turn those moments into training data without leaving the REPL.
+
+`/keep` appends the last user/assistant exchange to `.nanotune/data/train.jsonl` as a training example, using the session's system message as the example's first message — the same shape [`nanotune data add`](data.md) produces, and it confirms inline with the new total example count. A common loop is to tighten the system message, retry the prompt, and keep the reply once it looks right:
+
+```
+> write a haiku about disk usage
+Sure! Here's a haiku about disk usage for you: ...
+
+> /system Reply with the poem and nothing else.
+> write a haiku about disk usage
+Blocks fill quietly / ...
+
+> /keep
+```
+
+`/keep` reports `Nothing to keep yet.` when there is no completed exchange, and `No system message set. Use /system <text> first.` when the session has no system message.
+
+`/save` writes the full transcript — including the system message as its first message — to JSON. With no argument it goes to `.nanotune/chats/<timestamp>.json`, creating the directory if it is missing; `/save runs/terse-bash.json` writes to that path instead, relative to the current directory, creating parent directories. If nothing has been said yet it reports `Nothing to save yet.` and writes no file.
+
+The saved file is an array holding a single object with a `messages` array:
+
+```json
+[
+  {
+    "messages": [
+      {"role": "system", "content": "You are a terse Bash command generator."},
+      {"role": "user", "content": "list files by size"},
+      {"role": "assistant", "content": "ls -lS"}
+    ]
+  }
+]
+```
+
+That is exactly the shape [`nanotune data import`](data.md) accepts, so a saved session replays straight back into training data:
+
+```bash
+nanotune data import .nanotune/chats/2026-08-12T09-41-07-482Z.json
+```
+
 ## Chat Template Handling
 
 `chat` talks to `llama-server`'s OpenAI-compatible `/v1/chat/completions` endpoint, so the chat template baked into the GGUF (ChatML, Llama-3 tags, and so on) is applied automatically. This is the same wire format training uses, which means what you see in `chat` reflects what the model actually learned.
@@ -99,3 +142,4 @@ nanotune chat --preset low
 - [`nanotune export`](export.md) — Producing the GGUF that `chat` loads
 - [`nanotune benchmark`](benchmark.md) — Scoring the model against a test dataset
 - [Benchmarking Guide](../guides/benchmarking.md) — Turning what you find in chat into repeatable tests
+- [`nanotune data`](data.md) — Importing a saved transcript back into your training set
