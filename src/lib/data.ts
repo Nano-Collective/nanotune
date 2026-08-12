@@ -115,6 +115,41 @@ export function updateTrainingExample(
 	}
 }
 
+/**
+ * Replaces the first user/assistant turn in `messages` with new content,
+ * leaving every other message untouched — regardless of shape. Handles
+ * examples missing a user and/or assistant message by inserting rather than
+ * guessing a position, so malformed data is never silently dropped.
+ */
+export function mergeEditedTurn(
+	messages: ChatMessage[],
+	userInput: string,
+	assistantOutput: string,
+): ChatMessage[] {
+	const userIdx = messages.findIndex(m => m.role === 'user');
+	const assistantIdx = messages.findIndex(m => m.role === 'assistant');
+
+	const updated = [...messages];
+	if (userIdx >= 0) updated[userIdx] = {role: 'user', content: userInput};
+	if (assistantIdx >= 0)
+		updated[assistantIdx] = {role: 'assistant', content: assistantOutput};
+
+	if (userIdx === -1 && assistantIdx === -1) {
+		updated.push(
+			{role: 'user', content: userInput},
+			{role: 'assistant', content: assistantOutput},
+		);
+	} else if (userIdx === -1) {
+		updated.splice(assistantIdx, 0, {role: 'user', content: userInput});
+	} else if (assistantIdx === -1) {
+		updated.splice(userIdx + 1, 0, {
+			role: 'assistant',
+			content: assistantOutput,
+		});
+	}
+	return updated;
+}
+
 export function updateExample(
 	index: number,
 	example: {

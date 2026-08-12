@@ -7,6 +7,7 @@ import {
 	countTurns,
 	deleteExample,
 	loadTrainingData,
+	mergeEditedTurn,
 	updateTrainingExample,
 } from '../../lib/data.js';
 import type {ChatMessage} from '../../types/index.js';
@@ -41,24 +42,8 @@ export function DataListCommand() {
 		if (editIndex === null) return;
 		try {
 			const original = data[editIndex];
-			const messages = original.messages;
-			const firstUserIdx = messages.findIndex(m => m.role === 'user');
-			const firstAssistantIdx = messages.findIndex(
-				(m, i) => m.role === 'assistant' && i > firstUserIdx,
-			);
-			const prefix = firstUserIdx >= 0 ? messages.slice(0, firstUserIdx) : [];
-			const suffix =
-				firstAssistantIdx >= 0
-					? messages.slice(firstAssistantIdx + 1)
-					: messages.slice(2);
-
 			const updated: {messages: ChatMessage[]} = {
-				messages: [
-					...prefix,
-					{role: 'user', content: userInput},
-					{role: 'assistant', content: assistantOutput},
-					...suffix,
-				],
+				messages: mergeEditedTurn(original.messages, userInput, assistantOutput),
 			};
 			updateTrainingExample(editIndex, updated);
 			setData(loadTrainingData());

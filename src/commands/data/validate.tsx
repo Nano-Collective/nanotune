@@ -39,11 +39,13 @@ export function DataValidateCommand({fix, rewriteContext}: Props) {
 	let dedupeResult: DedupeResult | null = null;
 	let contextFixResult: ContextFixResult | null = null;
 	if (hasConfig) {
-		if (fix) {
-			dedupeResult = dedupeExamples();
-		}
+		// Rewrite context first: examples that only become identical after
+		// context normalization must still be caught by dedupe in this pass.
 		if (rewriteContext) {
 			contextFixResult = fixContextMessages(resolveContextMessage(loadConfig()));
+		}
+		if (fix) {
+			dedupeResult = dedupeExamples();
 		}
 	}
 

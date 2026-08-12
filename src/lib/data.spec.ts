@@ -19,6 +19,7 @@ import {
   importFromJSONL,
   importData,
   loadTrainingData,
+  mergeEditedTurn,
   parseCSV,
   splitTrainValidation,
   updateExample,
@@ -325,6 +326,23 @@ test.serial("fixContextMessages only rewrites index 0 on a multi-turn example", 
   t.is(data[0].messages[3].content, "turn2 user");
   t.is(data[0].messages[4].content, "turn2 assistant");
 });
+
+test.serial(
+  "running fixContextMessages before dedupeExamples catches duplicates that only match after normalization",
+  (t) => {
+    appendToTrainingData({ contextMessage: DEV_CTX, userInput: "same", assistantOutput: "same-out" });
+    appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "same", assistantOutput: "same-out" });
+
+    // The two examples only become byte-identical once their context
+    // messages are normalized to match config — this is the order
+    // `nanotune data validate --fix --rewrite-context` relies on.
+    fixContextMessages(SYSTEM_CTX);
+    const dedupeResult = dedupeExamples();
+
+    t.is(dedupeResult.removedCount, 1);
+    t.is(loadTrainingData().length, 1);
+  },
+);
 
 // ── importFromCSV ─────────────────────────────────────────────────────
 
@@ -652,6 +670,110 @@ test.serial("updateTrainingExample replaces with multi-turn example", (t) => {
   t.is(data.length, 1);
   t.is(data[0].messages.length, 5);
   t.is(data[0].messages[3].content, "Turn 2");
+});
+
+// ── mergeEditedTurn ────────────────────────────────────────────────────
+
+test("mergeEditedTurn replaces user/assistant in place, preserving context", (t) => {
+  const result = mergeEditedTurn(
+    [
+      { role: "system", content: "ctx" },
+      { role: "user", content: "old-in" },
+      { role: "assistant", content: "old-out" },
+    ],
+    "new-in",
+    "new-out",
+  );
+  t.deepEqual(result, [
+    { role: "system", content: "ctx" },
+    { role: "user", content: "new-in" },
+    { role: "assistant", content: "new-out" },
+  ]);
+});
+
+test("mergeEditedTurn only touches the first turn in a multi-turn example", (t) => {
+  const result = mergeEditedTurn(
+    [
+      { role: "system", content: "ctx" },
+      { role: "user", content: "old-in" },
+      { role: "assistant", content: "old-out" },
+      { role: "user", content: "turn2-in" },
+      { role: "assistant", content: "turn2-out" },
+    ],
+    "new-in",
+    "new-out",
+  );
+  t.deepEqual(result, [
+    { role: "system", content: "ctx" },
+    { role: "user", content: "new-in" },
+    { role: "assistant", content: "new-out" },
+    { role: "user", content: "turn2-in" },
+    { role: "assistant", content: "turn2-out" },
+  ]);
+});
+
+test("mergeEditedTurn inserts a missing assistant message after the user message", (t) => {
+  const result = mergeEditedTurn(
+    [
+      { role: "system", content: "ctx" },
+      { role: "user", content: "old-in" },
+    ],
+    "new-in",
+    "new-out",
+  );
+  t.deepEqual(result, [
+    { role: "system", content: "ctx" },
+    { role: "user", content: "new-in" },
+    { role: "assistant", content: "new-out" },
+  ]);
+});
+
+test("mergeEditedTurn inserts a missing user message before the assistant message", (t) => {
+  const result = mergeEditedTurn(
+    [
+      { role: "system", content: "ctx" },
+      { role: "assistant", content: "old-out" },
+    ],
+    "new-in",
+    "new-out",
+  );
+  t.deepEqual(result, [
+    { role: "system", content: "ctx" },
+    { role: "user", content: "new-in" },
+    { role: "assistant", content: "new-out" },
+  ]);
+});
+
+test("mergeEditedTurn preserves an unrecognized message and appends a new turn when neither role is present", (t) => {
+  const result = mergeEditedTurn(
+    [{ role: "system", content: "stray context-only example" }],
+    "new-in",
+    "new-out",
+  );
+  t.deepEqual(result, [
+    { role: "system", content: "stray context-only example" },
+    { role: "user", content: "new-in" },
+    { role: "assistant", content: "new-out" },
+  ]);
+});
+
+test("mergeEditedTurn preserves multiple non-user/assistant messages untouched", (t) => {
+  const result = mergeEditedTurn(
+    [
+      { role: "system", content: "ctx1" },
+      { role: "developer", content: "ctx2" },
+      { role: "user", content: "old-in" },
+      { role: "assistant", content: "old-out" },
+    ],
+    "new-in",
+    "new-out",
+  );
+  t.deepEqual(result, [
+    { role: "system", content: "ctx1" },
+    { role: "developer", content: "ctx2" },
+    { role: "user", content: "new-in" },
+    { role: "assistant", content: "new-out" },
+  ]);
 });
 
 test.serial("countTurns counts user messages as turns", (t) => {
