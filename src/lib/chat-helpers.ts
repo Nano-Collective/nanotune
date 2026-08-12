@@ -1,4 +1,4 @@
-import {mkdirSync, writeFileSync} from 'node:fs';
+import {existsSync, mkdirSync, writeFileSync} from 'node:fs';
 import {dirname, join} from 'node:path';
 import {
 	BENCHMARK_PRESETS,
@@ -83,7 +83,7 @@ export type SlashCommand =
 	| {kind: 'stats'}
 	| {kind: 'system'; text: string}
 	| {kind: 'system-missing'}
-	| {kind: 'save'; path?: string}
+	| {kind: 'save'; path?: string; force?: true}
 	| {kind: 'keep'}
 	| {kind: 'unknown'; name: string}
 	| {kind: 'noop'};
@@ -122,8 +122,17 @@ export function parseSlashCommand(input: string): SlashCommand {
 			return {kind: 'stats'};
 		case '/system':
 			return arg ? {kind: 'system', text: arg} : {kind: 'system-missing'};
-		case '/save':
-			return arg ? {kind: 'save', path: arg} : {kind: 'save'};
+		case '/save': {
+			const isForce = (part: string) => part === '--force' || part === '-f';
+			const path = rest
+				.filter(part => !isForce(part))
+				.join(' ')
+				.trim();
+			const cmd = path
+				? ({kind: 'save', path} as const)
+				: ({kind: 'save'} as const);
+			return rest.some(isForce) ? {...cmd, force: true} : cmd;
+		}
 		case '/keep':
 			return {kind: 'keep'};
 		default:
@@ -151,16 +160,27 @@ export function lastExchange(
 	return null;
 }
 
+/**
+ * Write the session transcript as JSON. Refuses to clobber an existing file
+ * unless `force` is set — a transcript is history you can't get back once it
+ * is gone.
+ */
 export function saveTranscript(
 	systemMessage: ChatMessage | null,
 	history: ChatMessage[],
 	filePath?: string,
+	force = false,
 ): string {
 	const messages = systemMessage?.content
 		? [systemMessage, ...history]
 		: history;
 	const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 	const path = filePath ?? join(getChatsDir(), `${stamp}.json`);
+	if (!force && existsSync(path)) {
+		throw new Error(
+			`${path} already exists — use "/save ${path} --force" to overwrite it.`,
+		);
+	}
 	mkdirSync(dirname(path), {recursive: true});
 	writeFileSync(path, `${JSON.stringify([{messages}], null, 2)}\n`);
 	return path;

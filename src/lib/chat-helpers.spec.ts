@@ -241,6 +241,23 @@ test("parseSlashCommand /save preserves case of the path", (t) => {
 	});
 });
 
+test("parseSlashCommand recognises --force on /save", (t) => {
+	t.deepEqual(parseSlashCommand("/save runs/session.json --force"), {
+		kind: "save",
+		path: "runs/session.json",
+		force: true,
+	});
+	t.deepEqual(parseSlashCommand("/save -f session.json"), {
+		kind: "save",
+		path: "session.json",
+		force: true,
+	});
+});
+
+test("parseSlashCommand /save --force alone takes no path", (t) => {
+	t.deepEqual(parseSlashCommand("/save --force"), { kind: "save", force: true });
+});
+
 test("parseSlashCommand recognises /keep", (t) => {
 	t.deepEqual(parseSlashCommand("/keep"), { kind: "keep" });
 });
@@ -420,11 +437,27 @@ test.serial("saveTranscript output is importable by nanotune data import", (t) =
 	});
 });
 
-test.serial("saveTranscript overwrites an existing file at the same path", (t) => {
-	inProject("overwrite", () => {
+test.serial("saveTranscript refuses to overwrite an existing file", (t) => {
+	inProject("no-clobber", () => {
+		const path = saveTranscript(SYSTEM, HISTORY, "session.json");
+		const err = t.throws(() =>
+			saveTranscript(SYSTEM, [{ role: "user", content: "only" }], "session.json"),
+		);
+		t.regex(err?.message ?? "", /already exists/);
+		t.deepEqual(readTranscript(path)[0].messages, [SYSTEM, ...HISTORY]);
+	});
+});
+
+test.serial("saveTranscript overwrites an existing file when forced", (t) => {
+	inProject("overwrite-forced", () => {
 		saveTranscript(SYSTEM, HISTORY, "session.json");
 		const saved = readTranscript(
-			saveTranscript(SYSTEM, [{ role: "user", content: "only" }], "session.json"),
+			saveTranscript(
+				SYSTEM,
+				[{ role: "user", content: "only" }],
+				"session.json",
+				true,
+			),
 		);
 		t.is(saved[0].messages.length, 2);
 	});

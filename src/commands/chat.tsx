@@ -62,7 +62,7 @@ const HELP_TEXT = [
 	'  /help          Show this help',
 	'  /reset         Clear conversation history',
 	'  /system <txt>  Replace the system message and reset history',
-	'  /save [file]   Save the transcript to a JSON file',
+	'  /save [file]   Save the transcript to JSON (--force overwrites)',
 	'  /keep          Append the last exchange to train.jsonl',
 	'  /stats         Show session token statistics',
 	'  /exit, /quit   Leave the chat',
@@ -302,7 +302,12 @@ export function ChatCommand({options}: Props) {
 						return;
 					}
 					try {
-						const path = saveTranscript(systemMessage, history, cmd.path);
+						const path = saveTranscript(
+							systemMessage,
+							history,
+							cmd.path,
+							cmd.force,
+						);
 						appendTurn({role: 'info', content: `Transcript saved to ${path}`});
 					} catch (err) {
 						const msg = err instanceof Error ? err.message : 'Write failed';
@@ -314,13 +319,6 @@ export function ChatCommand({options}: Props) {
 					const exchange = lastExchange(history);
 					if (!exchange) {
 						appendTurn({role: 'info', content: 'Nothing to keep yet.'});
-						return;
-					}
-					if (!systemMessage?.content) {
-						appendTurn({
-							role: 'info',
-							content: 'No system message set. Use /system <text> first.',
-						});
 						return;
 					}
 					try {
