@@ -1073,6 +1073,15 @@ test("parseCSV drops only trailing entirely-empty rows", (t) => {
   ]);
 });
 
+test("parseCSV strips a leading UTF-8 BOM", (t) => {
+  // Excel writes a BOM ahead of the first cell; left in place the header
+  // reads "\uFEFFinput" and stops matching a plain "input" header.
+  t.deepEqual(parseCSV("\uFEFFinput,output\na,b"), [
+    ["input", "output"],
+    ["a", "b"],
+  ]);
+});
+
 test("importFromCSV correctly imports a row with an embedded comma", (t) => {
   const csvPath = join(TEST_DIR, "embed.csv");
   // Regression test: the old regex rejected this; the new state-machine
@@ -1086,6 +1095,19 @@ test("importFromCSV correctly imports a row with an embedded comma", (t) => {
   const data = loadTrainingData();
   t.is(data[0].messages[1].content, "please list files, recursively");
   t.is(data[0].messages[2].content, "find .");
+});
+
+test.serial("importFromCSV skips the header row of a BOM-prefixed file", (t) => {
+  const csvPath = join(TEST_DIR, "bom-header.csv");
+  writeFileSync(csvPath, '\uFEFFinput,output\n"list files","ls"\n');
+
+  const result = importFromCSV(csvPath, SYSTEM_CTX);
+  t.is(result.imported, 1);
+  t.is(result.skipped, 0);
+
+  const data = loadTrainingData();
+  t.is(data.length, 1);
+  t.is(data[0].messages[1].content, "list files");
 });
 
 // ── splitTrainValidation seedability ──────────────────────────────────
