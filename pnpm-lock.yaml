@@ -27,7 +27,7 @@ importers:
         version: 2.0.47(zod@4.4.3)
       '@inkjs/ui':
         specifier: ^2.0.0
-        version: 2.0.0(ink@7.1.0(@types/react@19.2.17)(react@19.2.7))
+        version: 2.0.0(ink@7.1.0(@types/react@19.2.18)(react@19.2.8))
       ai:
         specifier: ^7.0.15
         version: 7.0.15(zod@4.4.3)
@@ -39,10 +39,10 @@ importers:
         version: 9.6.1
       ink:
         specifier: ^7.0.3
-        version: 7.1.0(@types/react@19.2.17)(react@19.2.7)
+        version: 7.1.0(@types/react@19.2.18)(react@19.2.8)
       react:
         specifier: ^19.2.4
-        version: 19.2.7
+        version: 19.2.8
       zod:
         specifier: ^4.3.6
         version: 4.4.3
@@ -55,7 +55,7 @@ importers:
         version: 26.1.0
       '@types/react':
         specifier: ^19.2.10
-        version: 19.2.17
+        version: 19.2.18
       ava:
         specifier: ^8.0.1
         version: 8.0.1
@@ -669,8 +669,8 @@ packages:
   '@types/node@26.1.0':
     resolution: {integrity: sha512-O0A1G3xPGy4w7AgQdAQYUlQ+BKk2Oovw8eRpofyp5KdBZULnbe+WqaOVNrm705SHphCiG4XHsACrSmPu1f+Kgw==}
 
-  '@types/react@19.2.17':
-    resolution: {integrity: sha512-MXfmqaVPEVgkBT/aY0aGCkRWWtByiYQXo3xdQ8r5RzuFrPiRn8Gar2tQdXSUQ2GKV3bkXckek89V8wQBY2Q/Aw==}
+  '@types/react@19.2.18':
+    resolution: {integrity: sha512-AnzbBERsrLKtk2XSfTbYRLjQPdy116Sty4q+T+Bp3IC4l6jNBvreVPAHmpq9qhXQM7CXZPjLVmGMw9sy+hxQ3w==}
 
   '@vercel/nft@1.10.2':
     resolution: {integrity: sha512-w+WyX5Ulmj4dtTZrxaulqrjaLZHSbnPzx75SJsTNYmotKsqn1JlLnDJa+lz5hn90HJofhl/2MAtw0mCrgM3qYw==}
@@ -1337,8 +1337,8 @@ packages:
     peerDependencies:
       react: ^19.2.0
 
-  react@19.2.7:
-    resolution: {integrity: sha512-HNe9WslTbXmFK8o8cmwgAeJFSBvt1bPdHCVKtaaV+WlAN36mpT4hcRpwbf3fY56ar2oIXzsBpOAiIRHAdY0OlQ==}
+  react@19.2.8:
+    resolution: {integrity: sha512-PWaYA1L/q9u2u7xYQi+Y3L3Yfnie7XyLeaJICV1MGD6LprsBxcAqGjYyr0eY3p+QdsA+x/Irkt4Qif8D63+Sbw==}
     engines: {node: '>=0.10.0'}
 
   require-directory@2.1.1:
@@ -1817,13 +1817,13 @@ snapshots:
   '@esbuild/win32-x64@0.28.1':
     optional: true
 
-  '@inkjs/ui@2.0.0(ink@7.1.0(@types/react@19.2.17)(react@19.2.7))':
+  '@inkjs/ui@2.0.0(ink@7.1.0(@types/react@19.2.18)(react@19.2.8))':
     dependencies:
       chalk: 5.6.2
       cli-spinners: 3.4.0
       deepmerge: 4.3.1
       figures: 6.1.0
-      ink: 7.1.0(@types/react@19.2.17)(react@19.2.7)
+      ink: 7.1.0(@types/react@19.2.18)(react@19.2.8)
 
   '@isaacs/fs-minipass@4.0.1':
     dependencies:
@@ -2031,7 +2031,7 @@ snapshots:
     dependencies:
       undici-types: 8.3.0
 
-  '@types/react@19.2.17':
+  '@types/react@19.2.18':
     dependencies:
       csstype: 3.2.3
 
@@ -2457,7 +2457,7 @@ snapshots:
 
   indent-string@5.0.0: {}
 
-  ink@7.1.0(@types/react@19.2.17)(react@19.2.7):
+  ink@7.1.0(@types/react@19.2.18)(react@19.2.8):
     dependencies:
       '@alcalzone/ansi-tokenize': 0.3.0
       ansi-escapes: 7.3.0
@@ -2472,8 +2472,8 @@ snapshots:
       indent-string: 5.0.0
       is-in-ci: 2.0.0
       patch-console: 2.0.0
-      react: 19.2.7
-      react-reconciler: 0.33.0(react@19.2.7)
+      react: 19.2.8
+      react-reconciler: 0.33.0(react@19.2.8)
       scheduler: 0.27.0
       signal-exit: 3.0.7
       slice-ansi: 9.0.0
@@ -2486,7 +2486,7 @@ snapshots:
       ws: 8.21.0
       yoga-layout: 3.2.1
     optionalDependencies:
-      '@types/react': 19.2.17
+      '@types/react': 19.2.18
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
@@ -2722,12 +2722,12 @@ snapshots:
 
   queue-microtask@1.2.3: {}
 
-  react-reconciler@0.33.0(react@19.2.7):
+  react-reconciler@0.33.0(react@19.2.8):
     dependencies:
-      react: 19.2.7
+      react: 19.2.8
       scheduler: 0.27.0
 
-  react@19.2.7: {}
+  react@19.2.8: {}
 
   require-directory@2.1.1: {}
 
