@@ -477,11 +477,14 @@ export function importFromCSV(
 		return {imported, skipped, errors};
 	}
 
-	// Skip header if first row looks like one
-	const firstRowLower = rows[0].map(c => c.toLowerCase());
+	// Skip the first row only when it is exactly the two column names. Matching
+	// loosely — by substring, or on either column alone — silently drops real
+	// rows such as `"explain the input parameter","..."` or `"input","a value"`.
+	const firstRowLower = rows[0].map(c => c.trim().toLowerCase());
 	const hasHeader =
-		firstRowLower.some(c => c.includes('input')) ||
-		firstRowLower.some(c => c.includes('output'));
+		firstRowLower.length >= 2 &&
+		firstRowLower[0] === 'input' &&
+		firstRowLower[1] === 'output';
 	const startIndex = hasHeader ? 1 : 0;
 
 	for (let i = startIndex; i < rows.length; i++) {

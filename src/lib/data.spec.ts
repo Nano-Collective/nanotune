@@ -394,6 +394,66 @@ test.serial("importFromCSV imports valid rows with context message role", (t) =>
   t.is(data[0].messages[2].content, "ls");
 });
 
+test.serial("importFromCSV keeps a first row that merely mentions input", (t) => {
+  const csvPath = join(TEST_DIR, "keyword.csv");
+  writeFileSync(
+    csvPath,
+    '"explain the input parameter","it configures the stream"\n"second row","second output"\n',
+  );
+
+  const result = importFromCSV(csvPath, SYSTEM_CTX);
+  t.is(result.imported, 2);
+  t.is(result.skipped, 0);
+
+  const data = loadTrainingData();
+  t.is(data[0].messages[1].content, "explain the input parameter");
+});
+
+test.serial("importFromCSV still skips a real header row", (t) => {
+  const csvPath = join(TEST_DIR, "header.csv");
+  writeFileSync(csvPath, 'Input , Output\n"list files","ls"\n');
+
+  const result = importFromCSV(csvPath, SYSTEM_CTX);
+  t.is(result.imported, 1);
+
+  const data = loadTrainingData();
+  t.is(data[0].messages[1].content, "list files");
+});
+
+test.serial("importFromCSV does not treat a partial header match as a header", (t) => {
+  const csvPath = join(TEST_DIR, "partial-header.csv");
+  writeFileSync(csvPath, 'input,"not a header"\n"x","y"\n');
+
+  const result = importFromCSV(csvPath, SYSTEM_CTX);
+  t.is(result.imported, 2);
+  t.is(result.skipped, 0);
+
+  const data = loadTrainingData();
+  t.is(data[0].messages[1].content, "input");
+  t.is(data[0].messages[2].content, "not a header");
+});
+
+test.serial("importFromCSV reports a one-column first row instead of skipping it", (t) => {
+  const csvPath = join(TEST_DIR, "one-column.csv");
+  writeFileSync(csvPath, "input\n\"list files\",\"ls\"\n");
+
+  const result = importFromCSV(csvPath, SYSTEM_CTX);
+  t.is(result.imported, 1);
+  t.is(result.skipped, 1);
+  t.is(result.errors.length, 1);
+});
+
+test.serial("importFromCSV skips a header row that has extra columns", (t) => {
+  const csvPath = join(TEST_DIR, "wide-header.csv");
+  writeFileSync(csvPath, 'input,output,notes\n"list files","ls","shell"\n');
+
+  const result = importFromCSV(csvPath, SYSTEM_CTX);
+  t.is(result.imported, 1);
+
+  const data = loadTrainingData();
+  t.is(data[0].messages[1].content, "list files");
+});
+
 test.serial("importFromCSV skips invalid lines", (t) => {
   const csvPath = join(TEST_DIR, "bad.csv");
   writeFileSync(csvPath, "\"good\",\"data\"\nthis has no comma separation at all really\n");
