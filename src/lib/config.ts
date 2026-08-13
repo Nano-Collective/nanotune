@@ -36,6 +36,10 @@ export function getBenchmarksDir(): string {
 	return join(getProjectDir(), 'benchmarks');
 }
 
+export function getChatsDir(): string {
+	return join(getProjectDir(), 'chats');
+}
+
 export function configExists(): boolean {
 	return existsSync(getConfigPath());
 }
@@ -62,6 +66,7 @@ const GITIGNORE_CONTENTS = `# Nanotune project artifacts
 adapters/
 models/
 benchmarks/
+chats/
 judge.json
 `;
 

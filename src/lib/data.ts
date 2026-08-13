@@ -66,18 +66,20 @@ export function appendTrainingExample(
 
 export function appendToTrainingData(
 	example: {
-		contextMessage: ChatMessage;
+		/** Omitted, or empty, when the session has no system message — the
+		 *  example is then just the user/assistant pair. */
+		contextMessage?: ChatMessage | null;
 		userInput: string;
 		assistantOutput: string;
 	},
 	isEval = false,
 ): void {
+	const {contextMessage} = example;
 	const trainingExample: TrainingExample = {
 		messages: [
-			{
-				role: example.contextMessage.role,
-				content: example.contextMessage.content,
-			},
+			...(contextMessage?.content
+				? [{role: contextMessage.role, content: contextMessage.content}]
+				: []),
 			{role: 'user', content: example.userInput},
 			{role: 'assistant', content: example.assistantOutput},
 		],

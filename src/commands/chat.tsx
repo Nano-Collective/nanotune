@@ -6,7 +6,9 @@ import {Header, useKeyInput} from '../components/index.js';
 import {
 	buildGenerateOptions,
 	buildServerOptions,
+	lastExchange,
 	parseSlashCommand,
+	saveTranscript,
 } from '../lib/chat-helpers.js';
 import {
 	configExists,
@@ -14,6 +16,7 @@ import {
 	loadConfig,
 	resolveContextMessage,
 } from '../lib/config.js';
+import {appendToTrainingData, countExamples} from '../lib/data.js';
 import {
 	chatCompletion,
 	type ServerHandle,
@@ -59,6 +62,8 @@ const HELP_TEXT = [
 	'  /help          Show this help',
 	'  /reset         Clear conversation history',
 	'  /system <txt>  Replace the system message and reset history',
+	'  /save [file]   Save the transcript to JSON (--force overwrites)',
+	'  /keep          Append the last exchange to train.jsonl',
 	'  /stats         Show session token statistics',
 	'  /exit, /quit   Leave the chat',
 ].join('\n');
@@ -291,6 +296,43 @@ export function ChatCommand({options}: Props) {
 						content: 'Usage: /system <new system message>',
 					});
 					return;
+				case 'save': {
+					if (history.length === 0) {
+						appendTurn({role: 'info', content: 'Nothing to save yet.'});
+						return;
+					}
+					try {
+						const path = saveTranscript(
+							systemMessage,
+							history,
+							cmd.path,
+							cmd.force,
+						);
+						appendTurn({role: 'info', content: `Transcript saved to ${path}`});
+					} catch (err) {
+						const msg = err instanceof Error ? err.message : 'Write failed';
+						appendTurn({role: 'info', content: `Could not save: ${msg}`});
+					}
+					return;
+				}
+				case 'keep': {
+					const exchange = lastExchange(history);
+					if (!exchange) {
+						appendTurn({role: 'info', content: 'Nothing to keep yet.'});
+						return;
+					}
+					try {
+						appendToTrainingData({contextMessage: systemMessage, ...exchange});
+						appendTurn({
+							role: 'info',
+							content: `Kept last exchange (${countExamples()} examples total).`,
+						});
+					} catch (err) {
+						const msg = err instanceof Error ? err.message : 'Write failed';
+						appendTurn({role: 'info', content: `Could not keep: ${msg}`});
+					}
+					return;
+				}
 				case 'stats':
 					appendTurn({
 						role: 'info',
@@ -311,7 +353,7 @@ export function ChatCommand({options}: Props) {
 					return;
 			}
 		},
-		[appendTurn, exit, history.length, sendMessage, systemMessage, totalTokens],
+		[appendTurn, exit, history, sendMessage, systemMessage, totalTokens],
 	);
 
 	useKeyInput((_input, key) => {

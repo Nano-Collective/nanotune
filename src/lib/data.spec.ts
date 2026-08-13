@@ -87,6 +87,39 @@ test.serial("appendToTrainingData writes to eval file when isEval is true", (t) 
   t.is(countExamples(true), 1);
 });
 
+test.serial("appendToTrainingData omits the context message when there is none", (t) => {
+  appendToTrainingData({ userInput: "Hello", assistantOutput: "Hi there!" });
+
+  const data = loadTrainingData();
+  t.is(data.length, 1);
+  t.deepEqual(data[0].messages, [
+    { role: "user", content: "Hello" },
+    { role: "assistant", content: "Hi there!" },
+  ]);
+});
+
+test.serial("appendToTrainingData omits a null or empty context message", (t) => {
+  appendToTrainingData({ contextMessage: null, userInput: "A", assistantOutput: "B" });
+  appendToTrainingData({
+    contextMessage: { role: "system", content: "" },
+    userInput: "C",
+    assistantOutput: "D",
+  });
+
+  const data = loadTrainingData();
+  t.is(data.length, 2);
+  t.deepEqual(data[0].messages.map((m) => m.role), ["user", "assistant"]);
+  t.deepEqual(data[1].messages.map((m) => m.role), ["user", "assistant"]);
+});
+
+test.serial("an example with no context message still validates", (t) => {
+  appendToTrainingData({ userInput: "Hello", assistantOutput: "Hi there!" });
+
+  const result = validateTrainingData(SYSTEM_CTX);
+  t.deepEqual(result.errors, []);
+  t.true(result.valid);
+});
+
 // ── updateExample ─────────────────────────────────────────────────────
 
 test.serial("updateExample replaces an existing example", (t) => {
