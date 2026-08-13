@@ -82,13 +82,23 @@ nanotune data import examples.jsonl
 
 The importer auto-detects format based on file extension and content. Multi-turn examples in JSONL and JSON files are preserved with all their turns intact.
 
-## Viewing Data
+## Exporting Data
+
+```bash
+nanotune data export backup.jsonl
+```
+
+Writes your training data back out in the same formats `data import` accepts (JSONL, CSV, or JSON — selected by the output file's extension). JSONL and JSON exports round-trip exactly, including multi-turn examples and per-example context messages. **CSV can only represent a single input/output pair per example**, so multi-turn examples are skipped (not truncated) during a CSV export and called out in the summary — export to JSONL or JSON instead if you need every example preserved.
+
+## Viewing and Editing Data
 
 ```bash
 nanotune data list
 ```
 
-The data list shows a **Turns** column indicating how many user/assistant exchanges each example contains. Press **Enter** on any row to expand/collapse the full conversation.
+The data list shows a **Turns** column indicating how many user/assistant exchanges each example contains. Press **Enter** on any row to expand/collapse the full conversation, **e** to edit it, or **d** to delete it.
+
+Editing reuses the `data add` input flow, but only the example's first user/assistant turn is editable — additional turns and the context message are preserved unchanged.
 
 ## Validating Data
 
@@ -106,6 +116,12 @@ This checks for:
 - Context message consistency
 - Minimum example count
 - Consecutive same-role messages (broken turn alternation)
+
+Pass `--fix` to remove exact-duplicate examples (identical messages, not just matching input text), or `--rewrite-context` to rewrite mismatched context messages to match your current config:
+
+```bash
+nanotune data validate --fix --rewrite-context
+```
 
 ## Tips
 

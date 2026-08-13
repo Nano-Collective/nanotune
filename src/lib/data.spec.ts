@@ -7,12 +7,19 @@ import {
   appendTrainingExample,
   countExamples,
   countTurns,
+  dedupeExamples,
   deleteExample,
+  exportData,
+  exportToCSV,
+  exportToJSON,
+  exportToJSONL,
+  fixContextMessages,
   importFromCSV,
   importFromJSON,
   importFromJSONL,
   importData,
   loadTrainingData,
+  mergeEditedTurn,
   parseCSV,
   splitTrainValidation,
   updateExample,
@@ -237,6 +244,139 @@ test.serial("validateTrainingData warns when under 50 examples", (t) => {
   t.true(result.warnings.some((w) => w.includes("Recommend at least 50")));
 });
 
+// ── dedupeExamples ────────────────────────────────────────────────────
+
+test.serial("dedupeExamples removes an exact-duplicate example", (t) => {
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "C", assistantOutput: "D" });
+
+  const result = dedupeExamples();
+  t.is(result.removedCount, 1);
+  t.deepEqual(result.removedIndexes, [2]);
+
+  const data = loadTrainingData();
+  t.is(data.length, 2);
+  t.is(data[0].messages[1].content, "A");
+  t.is(data[1].messages[1].content, "C");
+});
+
+test.serial("dedupeExamples does nothing when no duplicates exist", (t) => {
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "C", assistantOutput: "D" });
+
+  const result = dedupeExamples();
+  t.is(result.removedCount, 0);
+  t.deepEqual(result.removedIndexes, []);
+  t.is(loadTrainingData().length, 2);
+});
+
+test.serial("dedupeExamples keeps examples with the same input but different output", (t) => {
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "same", assistantOutput: "A" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "same", assistantOutput: "B" });
+
+  const result = dedupeExamples();
+  t.is(result.removedCount, 0);
+  t.is(loadTrainingData().length, 2);
+});
+
+test.serial("dedupeExamples keeps identical turns with different context messages", (t) => {
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" });
+  appendToTrainingData({ contextMessage: DEV_CTX, userInput: "A", assistantOutput: "B" });
+
+  const result = dedupeExamples();
+  t.is(result.removedCount, 0);
+  t.is(loadTrainingData().length, 2);
+});
+
+test.serial("dedupeExamples operates on valid.jsonl independently when isEval is true", (t) => {
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" }, true);
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" }, true);
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "X", assistantOutput: "Y" });
+
+  const result = dedupeExamples(true);
+  t.is(result.removedCount, 1);
+  t.is(loadTrainingData(true).length, 1);
+  t.is(loadTrainingData(false).length, 1);
+});
+
+// ── fixContextMessages ────────────────────────────────────────────────
+
+test.serial("fixContextMessages rewrites a mismatched context message", (t) => {
+  appendToTrainingData({ contextMessage: DEV_CTX, userInput: "A", assistantOutput: "B" });
+
+  const result = fixContextMessages(SYSTEM_CTX);
+  t.is(result.fixedCount, 1);
+
+  const data = loadTrainingData();
+  t.is(data[0].messages[0].role, "system");
+  t.is(data[0].messages[0].content, "You are helpful.");
+  t.is(data[0].messages[1].content, "A");
+  t.is(data[0].messages[2].content, "B");
+});
+
+test.serial("fixContextMessages does nothing when already matching", (t) => {
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" });
+
+  const result = fixContextMessages(SYSTEM_CTX);
+  t.is(result.fixedCount, 0);
+});
+
+test.serial("fixContextMessages does not insert a context message when none exists", (t) => {
+  const bare: TrainingExample = {
+    messages: [
+      { role: "user", content: "A" },
+      { role: "assistant", content: "B" },
+    ],
+  };
+  writeFileSync(join(DATA_DIR, "train.jsonl"), JSON.stringify(bare) + "\n");
+
+  const result = fixContextMessages(SYSTEM_CTX);
+  t.is(result.fixedCount, 0);
+  t.is(loadTrainingData()[0].messages[0].role, "user");
+});
+
+test.serial("fixContextMessages only rewrites index 0 on a multi-turn example", (t) => {
+  const multiTurn: TrainingExample = {
+    messages: [
+      DEV_CTX,
+      { role: "user", content: "turn1 user" },
+      { role: "assistant", content: "turn1 assistant" },
+      { role: "user", content: "turn2 user" },
+      { role: "assistant", content: "turn2 assistant" },
+    ],
+  };
+  writeFileSync(join(DATA_DIR, "train.jsonl"), JSON.stringify(multiTurn) + "\n");
+
+  const result = fixContextMessages(SYSTEM_CTX);
+  t.is(result.fixedCount, 1);
+
+  const data = loadTrainingData();
+  t.is(data[0].messages.length, 5);
+  t.is(data[0].messages[0].role, "system");
+  t.is(data[0].messages[1].content, "turn1 user");
+  t.is(data[0].messages[2].content, "turn1 assistant");
+  t.is(data[0].messages[3].content, "turn2 user");
+  t.is(data[0].messages[4].content, "turn2 assistant");
+});
+
+test.serial(
+  "running fixContextMessages before dedupeExamples catches duplicates that only match after normalization",
+  (t) => {
+    appendToTrainingData({ contextMessage: DEV_CTX, userInput: "same", assistantOutput: "same-out" });
+    appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "same", assistantOutput: "same-out" });
+
+    // The two examples only become byte-identical once their context
+    // messages are normalized to match config — this is the order
+    // `nanotune data validate --fix --rewrite-context` relies on.
+    fixContextMessages(SYSTEM_CTX);
+    const dedupeResult = dedupeExamples();
+
+    t.is(dedupeResult.removedCount, 1);
+    t.is(loadTrainingData().length, 1);
+  },
+);
+
 // ── importFromCSV ─────────────────────────────────────────────────────
 
 test.serial("importFromCSV imports valid rows with context message role", (t) => {
@@ -377,6 +517,139 @@ test.serial("importData returns error for unsupported format", (t) => {
   t.true(result.errors[0].includes("Unsupported file format"));
 });
 
+// ── exportToJSONL / exportToJSON / exportToCSV / exportData ───────────
+
+test.serial("exportToJSONL round-trips through importFromJSONL", (t) => {
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" });
+  appendToTrainingData({ contextMessage: DEV_CTX, userInput: "C", assistantOutput: "D" });
+
+  const outPath = join(TEST_DIR, "out.jsonl");
+  const exportResult = exportToJSONL(outPath);
+  t.is(exportResult.exported, 2);
+
+  const original = loadTrainingData();
+  rmSync(join(DATA_DIR, "train.jsonl"));
+  const importResult = importFromJSONL(outPath, SYSTEM_CTX);
+  t.is(importResult.imported, 2);
+  t.deepEqual(loadTrainingData(), original);
+});
+
+test.serial("exportToJSON round-trips through importFromJSON", (t) => {
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "C", assistantOutput: "D" });
+
+  const outPath = join(TEST_DIR, "out.json");
+  const exportResult = exportToJSON(outPath);
+  t.is(exportResult.exported, 2);
+
+  const original = loadTrainingData();
+  rmSync(join(DATA_DIR, "train.jsonl"));
+  const importResult = importFromJSON(outPath, SYSTEM_CTX);
+  t.is(importResult.imported, 2);
+  t.deepEqual(loadTrainingData(), original);
+});
+
+test.serial("exportToCSV round-trips single-turn data through importFromCSV", (t) => {
+  appendToTrainingData({ contextMessage: DEV_CTX, userInput: "list files", assistantOutput: "ls" });
+  appendToTrainingData({ contextMessage: DEV_CTX, userInput: "show dir", assistantOutput: "pwd" });
+
+  const outPath = join(TEST_DIR, "out.csv");
+  const exportResult = exportToCSV(outPath);
+  t.is(exportResult.exported, 2);
+  t.is(exportResult.skipped, 0);
+
+  const content = readFileSync(outPath, "utf-8");
+  t.true(content.startsWith("input,output\n"));
+
+  rmSync(join(DATA_DIR, "train.jsonl"));
+  const importResult = importFromCSV(outPath, DEV_CTX);
+  t.is(importResult.imported, 2);
+  const data = loadTrainingData();
+  t.is(data[0].messages[1].content, "list files");
+  t.is(data[0].messages[2].content, "ls");
+  t.is(data[1].messages[1].content, "show dir");
+  t.is(data[1].messages[2].content, "pwd");
+});
+
+test.serial("exportToCSV skips multi-turn examples instead of truncating them", (t) => {
+  const multiTurn: TrainingExample = {
+    messages: [
+      SYSTEM_CTX,
+      { role: "user", content: "turn1" },
+      { role: "assistant", content: "reply1" },
+      { role: "user", content: "turn2" },
+      { role: "assistant", content: "reply2" },
+    ],
+  };
+  appendTrainingExample(multiTurn);
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "single", assistantOutput: "turn" });
+
+  const outPath = join(TEST_DIR, "out.csv");
+  const result = exportToCSV(outPath);
+  t.is(result.exported, 1);
+  t.is(result.skipped, 1);
+  t.true(result.errors[0].includes("multi-turn"));
+});
+
+test.serial("exportToCSV escapes commas, quotes, and newlines and round-trips through parseCSV", (t) => {
+  appendToTrainingData({
+    contextMessage: SYSTEM_CTX,
+    userInput: 'say "hi", then leave\nplease',
+    assistantOutput: "ok",
+  });
+
+  const outPath = join(TEST_DIR, "out.csv");
+  exportToCSV(outPath);
+
+  const content = readFileSync(outPath, "utf-8");
+  const rows = parseCSV(content);
+  t.is(rows[1][0], 'say "hi", then leave\nplease');
+  t.is(rows[1][1], "ok");
+});
+
+test.serial("exportData dispatches to correct writer by extension", (t) => {
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" });
+
+  const jsonlResult = exportData(join(TEST_DIR, "out.jsonl"));
+  t.is(jsonlResult.exported, 1);
+  const jsonResult = exportData(join(TEST_DIR, "out.json"));
+  t.is(jsonResult.exported, 1);
+  const csvResult = exportData(join(TEST_DIR, "out.csv"));
+  t.is(csvResult.exported, 1);
+});
+
+test.serial("exportData returns error for unsupported format", (t) => {
+  const result = exportData(join(TEST_DIR, "out.txt"));
+  t.is(result.exported, 0);
+  t.true(result.errors[0].includes("Unsupported file format"));
+});
+
+test.serial("export writers operate on valid.jsonl independently when isEval is true", (t) => {
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "eval-a", assistantOutput: "eval-b" }, true);
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "train-a", assistantOutput: "train-b" });
+
+  const outPath = join(TEST_DIR, "out-eval.jsonl");
+  const result = exportToJSONL(outPath, true);
+  t.is(result.exported, 1);
+
+  const content = JSON.parse(readFileSync(outPath, "utf-8").trim());
+  t.is(content.messages[1].content, "eval-a");
+});
+
+test.serial("export writers produce a valid, parseable empty file with zero examples", (t) => {
+  const jsonlPath = join(TEST_DIR, "empty.jsonl");
+  exportToJSONL(jsonlPath);
+  t.is(readFileSync(jsonlPath, "utf-8"), "");
+
+  const jsonPath = join(TEST_DIR, "empty.json");
+  exportToJSON(jsonPath);
+  t.deepEqual(JSON.parse(readFileSync(jsonPath, "utf-8")), []);
+
+  const csvPath = join(TEST_DIR, "empty.csv");
+  exportToCSV(csvPath);
+  t.is(readFileSync(csvPath, "utf-8"), "input,output\n");
+});
+
 // ── countExamples / loadTrainingData edge cases ───────────────────────
 
 test.serial("countExamples returns 0 when file does not exist", (t) => {
@@ -430,6 +703,110 @@ test.serial("updateTrainingExample replaces with multi-turn example", (t) => {
   t.is(data.length, 1);
   t.is(data[0].messages.length, 5);
   t.is(data[0].messages[3].content, "Turn 2");
+});
+
+// ── mergeEditedTurn ────────────────────────────────────────────────────
+
+test("mergeEditedTurn replaces user/assistant in place, preserving context", (t) => {
+  const result = mergeEditedTurn(
+    [
+      { role: "system", content: "ctx" },
+      { role: "user", content: "old-in" },
+      { role: "assistant", content: "old-out" },
+    ],
+    "new-in",
+    "new-out",
+  );
+  t.deepEqual(result, [
+    { role: "system", content: "ctx" },
+    { role: "user", content: "new-in" },
+    { role: "assistant", content: "new-out" },
+  ]);
+});
+
+test("mergeEditedTurn only touches the first turn in a multi-turn example", (t) => {
+  const result = mergeEditedTurn(
+    [
+      { role: "system", content: "ctx" },
+      { role: "user", content: "old-in" },
+      { role: "assistant", content: "old-out" },
+      { role: "user", content: "turn2-in" },
+      { role: "assistant", content: "turn2-out" },
+    ],
+    "new-in",
+    "new-out",
+  );
+  t.deepEqual(result, [
+    { role: "system", content: "ctx" },
+    { role: "user", content: "new-in" },
+    { role: "assistant", content: "new-out" },
+    { role: "user", content: "turn2-in" },
+    { role: "assistant", content: "turn2-out" },
+  ]);
+});
+
+test("mergeEditedTurn inserts a missing assistant message after the user message", (t) => {
+  const result = mergeEditedTurn(
+    [
+      { role: "system", content: "ctx" },
+      { role: "user", content: "old-in" },
+    ],
+    "new-in",
+    "new-out",
+  );
+  t.deepEqual(result, [
+    { role: "system", content: "ctx" },
+    { role: "user", content: "new-in" },
+    { role: "assistant", content: "new-out" },
+  ]);
+});
+
+test("mergeEditedTurn inserts a missing user message before the assistant message", (t) => {
+  const result = mergeEditedTurn(
+    [
+      { role: "system", content: "ctx" },
+      { role: "assistant", content: "old-out" },
+    ],
+    "new-in",
+    "new-out",
+  );
+  t.deepEqual(result, [
+    { role: "system", content: "ctx" },
+    { role: "user", content: "new-in" },
+    { role: "assistant", content: "new-out" },
+  ]);
+});
+
+test("mergeEditedTurn preserves an unrecognized message and appends a new turn when neither role is present", (t) => {
+  const result = mergeEditedTurn(
+    [{ role: "system", content: "stray context-only example" }],
+    "new-in",
+    "new-out",
+  );
+  t.deepEqual(result, [
+    { role: "system", content: "stray context-only example" },
+    { role: "user", content: "new-in" },
+    { role: "assistant", content: "new-out" },
+  ]);
+});
+
+test("mergeEditedTurn preserves multiple non-user/assistant messages untouched", (t) => {
+  const result = mergeEditedTurn(
+    [
+      { role: "system", content: "ctx1" },
+      { role: "developer", content: "ctx2" },
+      { role: "user", content: "old-in" },
+      { role: "assistant", content: "old-out" },
+    ],
+    "new-in",
+    "new-out",
+  );
+  t.deepEqual(result, [
+    { role: "system", content: "ctx1" },
+    { role: "developer", content: "ctx2" },
+    { role: "user", content: "new-in" },
+    { role: "assistant", content: "new-out" },
+  ]);
 });
 
 test.serial("countTurns counts user messages as turns", (t) => {
