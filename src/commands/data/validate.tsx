@@ -12,9 +12,21 @@ import {
 	loadConfig,
 	resolveContextMessage,
 } from '../../lib/config.js';
-import {countExamples, validateTrainingData} from '../../lib/data.js';
+import {
+	countExamples,
+	type ContextFixResult,
+	type DedupeResult,
+	dedupeExamples,
+	fixContextMessages,
+	validateTrainingData,
+} from '../../lib/data.js';
 
-export function DataValidateCommand() {
+interface Props {
+	fix?: boolean;
+	rewriteContext?: boolean;
+}
+
+export function DataValidateCommand({fix, rewriteContext}: Props) {
 	const {exit} = useApp();
 	const hasConfig = configExists();
 
@@ -24,6 +36,21 @@ export function DataValidateCommand() {
 		}
 	});
 
+	let dedupeResult: DedupeResult | null = null;
+	let contextFixResult: ContextFixResult | null = null;
+	if (hasConfig) {
+		// Rewrite context first: examples that only become identical after
+		// context normalization must still be caught by dedupe in this pass.
+		if (rewriteContext) {
+			contextFixResult = fixContextMessages(resolveContextMessage(loadConfig()));
+		}
+		if (fix) {
+			dedupeResult = dedupeExamples();
+		}
+	}
+
+	// Re-validate after fixes are applied so the report reflects the data
+	// actually left on disk.
 	const count = hasConfig ? countExamples() : 0;
 	const result = hasConfig
 		? validateTrainingData(resolveContextMessage(loadConfig()))
@@ -54,6 +81,38 @@ export function DataValidateCommand() {
 					{count}
 				</Text>
 			</Box>
+
+			{(dedupeResult || contextFixResult) && (
+				<Box flexDirection="column" marginBottom={1}>
+					<Text bold>Fixes applied:</Text>
+					{dedupeResult && (
+						<Box>
+							<StatusBadge
+								status={dedupeResult.removedCount > 0 ? 'success' : 'pending'}
+							/>
+							<Text>
+								{' '}
+								{dedupeResult.removedCount > 0
+									? `Removed ${dedupeResult.removedCount} exact-duplicate example${dedupeResult.removedCount > 1 ? 's' : ''}`
+									: 'No exact duplicates found'}
+							</Text>
+						</Box>
+					)}
+					{contextFixResult && (
+						<Box>
+							<StatusBadge
+								status={contextFixResult.fixedCount > 0 ? 'success' : 'pending'}
+							/>
+							<Text>
+								{' '}
+								{contextFixResult.fixedCount > 0
+									? `Rewrote context message on ${contextFixResult.fixedCount} example${contextFixResult.fixedCount > 1 ? 's' : ''}`
+									: 'No context-message mismatches to rewrite'}
+							</Text>
+						</Box>
+					)}
+				</Box>
+			)}
 
 			{result.valid ? (
 				<StatusMessage variant="success">Training data is valid!</StatusMessage>

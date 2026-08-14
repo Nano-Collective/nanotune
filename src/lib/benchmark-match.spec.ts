@@ -7,8 +7,8 @@ test("normalizeText collapses runs of whitespace to a single space", (t) => {
   t.is(normalizeText("a   b\t\tc"), "a b c");
 });
 
-test("normalizeText canonicalizes quote characters to double quotes", (t) => {
-  t.is(normalizeText("it's a `test`"), 'it"s a "test"');
+test("normalizeText preserves quote characters", (t) => {
+  t.is(normalizeText("it's a `test`"), "it's a `test`");
 });
 
 test("normalizeText trims leading and trailing whitespace", (t) => {
@@ -134,10 +134,26 @@ test("checkPass defaults to semantic mode when no mode is passed", (t) => {
   t.false(checkPass(["ls -la"], "ls").passed);
 });
 
-test("checkPass semantic ignores quote-style differences via normalizeText", (t) => {
-  // "she said 'hello'" should match acceptable `she said "hello"` because
-  // normalizeText canonicalizes quote characters.
-  t.true(
-    checkPass(['she said "hello"'], "she said 'hello'", "semantic").passed,
-  );
+// ── quote handling (regression) ───────────────────────────────────────
+
+test("checkPass semantic REJECTS a single-quoted answer when double quotes are expected", (t) => {
+  // normalizeText used to flatten ' and ` into ", so any quote style passed.
+  const result = checkPass(['echo "hi"'], "echo 'hi'", "semantic");
+  t.false(result.passed);
+  t.is(result.matchType, null);
+});
+
+test("checkPass semantic REJECTS backticks when double quotes are expected", (t) => {
+  // Backticks are command substitution in bash and a code span in markdown.
+  t.false(checkPass(['echo "hi"'], "echo `hi`", "semantic").passed);
+});
+
+test("checkPass semantic accepts an answer whose quote style matches", (t) => {
+  t.true(checkPass(["echo 'hi'"], "echo 'hi'", "semantic").passed);
+  t.true(checkPass(["echo `hi`"], "echo `hi`", "semantic").passed);
+});
+
+test("checkPass contains is quote-sensitive", (t) => {
+  t.false(checkPass(["'single'"], 'wrapped in "single" here', "contains").passed);
+  t.true(checkPass(["'single'"], "wrapped in 'single' here", "contains").passed);
 });
