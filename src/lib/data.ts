@@ -152,28 +152,6 @@ export function mergeEditedTurn(
 	return updated;
 }
 
-export function updateExample(
-	index: number,
-	example: {
-		contextMessage: ChatMessage;
-		userInput: string;
-		assistantOutput: string;
-	},
-	isEval = false,
-): void {
-	const trainingExample: TrainingExample = {
-		messages: [
-			{
-				role: example.contextMessage.role,
-				content: example.contextMessage.content,
-			},
-			{role: 'user', content: example.userInput},
-			{role: 'assistant', content: example.assistantOutput},
-		],
-	};
-	updateTrainingExample(index, trainingExample, isEval);
-}
-
 /**
  * Count the number of user/assistant turns in an example.
  * A turn is one user+assistant exchange pair.

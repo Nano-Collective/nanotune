@@ -15,14 +15,6 @@ const LLAMA_CPP_BIN_DIR = join(LLAMA_CPP_DIR, 'bin');
 const GITHUB_API_LATEST =
 	'https://api.github.com/repos/ggerganov/llama.cpp/releases/latest';
 
-export function getLlamaCppPath(): string {
-	return LLAMA_CPP_DIR;
-}
-
-export function getLlamaCppBinDir(): string {
-	return LLAMA_CPP_BIN_DIR;
-}
-
 export async function checkLlamaCppInstalled(): Promise<boolean> {
 	const quantizePath = join(LLAMA_CPP_BIN_DIR, 'llama-quantize');
 	const convertScript = join(LLAMA_CPP_DIR, 'convert_hf_to_gguf.py');
@@ -307,11 +299,10 @@ export async function* exportModel(
 }
 
 /**
- * Combined server + generation options accepted by the one-shot
- * `runGGUFInference` helper. New code should prefer the split `ServerOptions`
- * (for `startLlamaServer`) and `GenerateOptions` (for `chatCompletion`)
- * directly; this exists so callers that bundle everything into one object
- * still have a single type to import.
+ * Combined server + generation options, for callers that bundle both sets into
+ * one object. Prefer the split `ServerOptions` (for `startLlamaServer`) and
+ * `GenerateOptions` (for `chatCompletion`) directly — every caller in the repo
+ * does, so this is currently referenced only by its type tests.
  */
 export type InferenceOptions = ServerOptions & GenerateOptions;
 
@@ -326,60 +317,6 @@ export interface InferenceResult {
 	tokensPerSecond?: number;
 	/** Total tokens generated */
 	tokensGenerated?: number;
-}
-
-export interface ParsedStderr {
-	ttftMs?: number;
-	generationTimeMs?: number;
-	tokensPerSecond?: number;
-	tokensGenerated?: number;
-}
-
-/**
- * Parse llama.cpp stderr output for timing metrics.
- *
- * llama.cpp outputs lines like:
- *   llama_perf_context_print: prompt eval time =   567.89 ms /  50 tokens (  11.36 ms per token,   88.05 tokens per second)
- *   llama_perf_context_print:        eval time =  1234.56 ms /  99 runs   (  12.47 ms per token,   80.19 tokens per second)
- *   llama_perf_context_print:       total time =  1802.45 ms / 149 tokens
- */
-export function parseLlamaCppStderr(stderr: string): ParsedStderr {
-	const result: ParsedStderr = {};
-
-	// TTFT: extract from "prompt eval time = <X> ms"
-	const promptEvalMatch = stderr.match(/prompt eval time\s*=\s*([\d.]+)\s*ms/);
-	if (promptEvalMatch) {
-		result.ttftMs = Math.round(Number.parseFloat(promptEvalMatch[1]));
-	}
-
-	// Generation tokens/sec: extract from eval time line (not prompt eval)
-	// Match "eval time = ... (<X> tokens per second)" but NOT "prompt eval time"
-	const evalTpsMatch = stderr.match(
-		/(?<!prompt\s)eval time\s*=\s*([\d.]+)\s*ms\s*\/\s*(\d+)\s*(?:runs|tokens)\s*\([^)]*?([\d.]+)\s*tokens per second\)/,
-	);
-	if (evalTpsMatch) {
-		result.generationTimeMs = Math.round(Number.parseFloat(evalTpsMatch[1]));
-		result.tokensGenerated = Number.parseInt(evalTpsMatch[2], 10);
-		result.tokensPerSecond = Number.parseFloat(evalTpsMatch[3]);
-	}
-
-	// Fallback: older llama.cpp versions that output "tok/s"
-	if (result.tokensPerSecond === undefined) {
-		const tpsMatch = stderr.match(/([\d.]+)\s*tok\/s/);
-		if (tpsMatch) {
-			result.tokensPerSecond = Number.parseFloat(tpsMatch[1]);
-		}
-	}
-
-	// Fallback: older format "N tokens generated"
-	if (result.tokensGenerated === undefined) {
-		const tokensMatch = stderr.match(/(\d+)\s+tokens\s+generated/i);
-		if (tokensMatch) {
-			result.tokensGenerated = Number.parseInt(tokensMatch[1], 10);
-		}
-	}
-
-	return result;
 }
 
 async function findFreePort(): Promise<number> {
@@ -636,22 +573,4 @@ export async function chatCompletion(
 
 	const data = (await response.json()) as ChatCompletionResponse;
 	return parseChatCompletionResponse(data);
-}
-
-/**
- * One-shot convenience: start a server, run one chat completion, stop the
- * server. Prefer `startLlamaServer` + `chatCompletion` when you have more
- * than one request to make.
- */
-export async function runGGUFInference(
-	modelPath: string,
-	messages: ChatMessage[],
-	options: ServerOptions & GenerateOptions = {},
-): Promise<InferenceResult> {
-	const handle = await startLlamaServer(modelPath, options);
-	try {
-		return await chatCompletion(handle, messages, options);
-	} finally {
-		await stopLlamaServer(handle);
-	}
 }

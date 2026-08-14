@@ -22,7 +22,6 @@ import {
   mergeEditedTurn,
   parseCSV,
   splitTrainValidation,
-  updateExample,
   updateTrainingExample,
   validateTrainingData,
 } from "./data.js";
@@ -125,31 +124,6 @@ test.serial("an example with no context message still validates", (t) => {
   const result = validateTrainingData(SYSTEM_CTX);
   t.deepEqual(result.errors, []);
   t.true(result.valid);
-});
-
-// ── updateExample ─────────────────────────────────────────────────────
-
-test.serial("updateExample replaces an existing example", (t) => {
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "old", assistantOutput: "old-out" });
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "keep", assistantOutput: "keep-out" });
-
-  updateExample(0, { contextMessage: DEV_CTX, userInput: "new", assistantOutput: "new-out" });
-
-  const data = loadTrainingData();
-  t.is(data.length, 2);
-  t.is(data[0].messages[0].role, "developer");
-  t.is(data[0].messages[1].content, "new");
-  t.is(data[1].messages[1].content, "keep");
-});
-
-test.serial("updateExample does nothing for out-of-bounds index", (t) => {
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" });
-
-  updateExample(5, { contextMessage: SYSTEM_CTX, userInput: "X", assistantOutput: "Y" });
-
-  const data = loadTrainingData();
-  t.is(data.length, 1);
-  t.is(data[0].messages[1].content, "A");
 });
 
 // ── deleteExample ─────────────────────────────────────────────────────

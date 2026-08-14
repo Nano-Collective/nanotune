@@ -75,6 +75,11 @@ export async function installMLX(): Promise<void> {
 	}
 }
 
+/**
+ * @public Deliberately uncalled. Kept for `nanotune doctor` (#65), which is
+ * what will surface a toolchain check to the user. Note `llamaCpp` is
+ * hardcoded false — llama.cpp is checked separately in llama-cpp.ts.
+ */
 export async function checkDependencies(): Promise<DependencyStatus> {
 	const python = await checkPython();
 	const mlx = python.installed ? await checkMLXInstalled() : false;
@@ -370,6 +375,12 @@ export async function fuseAdapters(
 	]);
 }
 
+/**
+ * @public Deliberately uncalled. Kept for #84, which will wire it to a real
+ * SIGINT handler in `train`. Today Ctrl+C only works because the terminal
+ * delivers SIGINT to the whole process group, so the "checkpoint saved" hint
+ * is unverified — that is the bug #84 tracks.
+ */
 export function abortTraining(subprocess: ResultPromise): void {
 	subprocess.kill('SIGINT');
 }
