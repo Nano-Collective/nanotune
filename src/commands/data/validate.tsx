@@ -13,8 +13,8 @@ import {
 	resolveContextMessage,
 } from '../../lib/config.js';
 import {
-	countExamples,
 	type ContextFixResult,
+	countExamples,
 	type DedupeResult,
 	dedupeExamples,
 	fixContextMessages,
@@ -42,7 +42,9 @@ export function DataValidateCommand({fix, rewriteContext}: Props) {
 		// Rewrite context first: examples that only become identical after
 		// context normalization must still be caught by dedupe in this pass.
 		if (rewriteContext) {
-			contextFixResult = fixContextMessages(resolveContextMessage(loadConfig()));
+			contextFixResult = fixContextMessages(
+				resolveContextMessage(loadConfig()),
+			);
 		}
 		if (fix) {
 			dedupeResult = dedupeExamples();

@@ -71,7 +71,10 @@ dataCommand
 dataCommand
 	.command('export <file>')
 	.description('Export training data to file (JSONL, CSV, or JSON)')
-	.option('-y, --yes', 'Skip the overwrite confirmation prompt (for scripts and CI)')
+	.option(
+		'-y, --yes',
+		'Skip the overwrite confirmation prompt (for scripts and CI)',
+	)
 	.action(async (file: string, options: {yes?: boolean}) => {
 		const {DataExportCommand} = await import('./commands/data/export.js');
 		// Without a TTY there is no way to answer the overwrite prompt, so require --yes.
