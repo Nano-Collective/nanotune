@@ -351,7 +351,10 @@ export function fixContextMessages(
 		if (!first || first.role === 'user' || first.role === 'assistant') {
 			return ex;
 		}
-		if (first.role === contextMessage.role && first.content === contextMessage.content) {
+		if (
+			first.role === contextMessage.role &&
+			first.content === contextMessage.content
+		) {
 			return ex;
 		}
 		fixedCount++;
@@ -704,7 +707,9 @@ export function exportToCSV(filePath: string, isEval = false): ExportResult {
 		const assistant = ex.messages.find(m => m.role === 'assistant');
 		if (!user?.content || !assistant?.content) {
 			skipped++;
-			errors.push(`Example ${i + 1}: missing user or assistant message, skipped`);
+			errors.push(
+				`Example ${i + 1}: missing user or assistant message, skipped`,
+			);
 			return;
 		}
 
@@ -811,4 +816,23 @@ export function ensureValidationSet(seed?: number): {
 	}
 
 	return {trainCount, validCount};
+}
+
+/**
+ * Clamp a paginated list's page/selection to what still exists after items are
+ * removed, so deleting the last row on the last page falls back to the
+ * previous page instead of stranding the user on an empty one.
+ */
+export function clampPagination(
+	total: number,
+	page: number,
+	selectedIndex: number,
+	pageSize: number,
+): {page: number; selectedIndex: number} {
+	const nextPage = Math.min(page, Math.max(0, Math.ceil(total / pageSize) - 1));
+	const pageCount = Math.min(pageSize, total - nextPage * pageSize);
+	return {
+		page: nextPage,
+		selectedIndex: Math.max(0, Math.min(selectedIndex, pageCount - 1)),
+	};
 }

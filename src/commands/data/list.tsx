@@ -4,6 +4,7 @@ import {useState} from 'react';
 import {DataTable, Header, useKeyInput} from '../../components/index.js';
 import {configExists} from '../../lib/config.js';
 import {
+	clampPagination,
 	countTurns,
 	deleteExample,
 	loadTrainingData,
@@ -43,7 +44,11 @@ export function DataListCommand() {
 		try {
 			const original = data[editIndex];
 			const updated: {messages: ChatMessage[]} = {
-				messages: mergeEditedTurn(original.messages, userInput, assistantOutput),
+				messages: mergeEditedTurn(
+					original.messages,
+					userInput,
+					assistantOutput,
+				),
 			};
 			updateTrainingExample(editIndex, updated);
 			setData(loadTrainingData());
@@ -136,15 +141,20 @@ export function DataListCommand() {
 			if (globalIndex < data.length) {
 				try {
 					deleteExample(globalIndex);
-					setData(loadTrainingData());
+					const remaining = loadTrainingData();
+					setData(remaining);
 					setExpandedIndex(null);
 					setMessage({type: 'success', text: 'Example deleted'});
 					setTimeout(() => setMessage(null), 2000);
 
-					// Adjust selection if needed
-					if (selectedIndex >= pageData.length - 1 && selectedIndex > 0) {
-						setSelectedIndex(selectedIndex - 1);
-					}
+					const next = clampPagination(
+						remaining.length,
+						page,
+						selectedIndex,
+						PAGE_SIZE,
+					);
+					setPage(next.page);
+					setSelectedIndex(next.selectedIndex);
 				} catch (err) {
 					setMessage({
 						type: 'error',
