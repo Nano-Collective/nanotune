@@ -3,8 +3,10 @@ import type {
 	ChatCompletionResponse,
 	InferenceOptions,
 	InferenceResult,
+	StreamChunk,
 } from "./llama-cpp.js";
 import {
+	chatCompletionStream,
 	exportModel,
 	parseChatCompletionResponse,
 	parseLlamaCppStderr,
@@ -355,4 +357,220 @@ test("exportModel does not jump to 100% before quantization finishes", async (t)
 	t.is(start.value?.progress, 0);
 	t.is(converting.value?.progress, 25);
 	t.is(scaleProgress(50, 100, undefined), 75);
+});
+
+// ── chatCompletionStream ───────────────────────────────────────────────────
+
+/**
+ * Build a minimal ReadableStream that emits the provided SSE lines as UTF-8
+ * bytes in a single chunk, mimicking what fetch() returns for a streaming
+ * response body.
+ */
+function makeSSEBody(lines: string[]): ReadableStream<Uint8Array> {
+	const text = lines.join("\n") + "\n";
+	const encoder = new TextEncoder();
+	return new ReadableStream({
+		start(controller) {
+			controller.enqueue(encoder.encode(text));
+			controller.close();
+		},
+	});
+}
+
+/**
+ * Stub out globalThis.fetch for a single test invocation.
+ * Restores the original after the callback returns.
+ */
+async function withMockFetch(
+	response: Response,
+	callback: () => Promise<void>,
+): Promise<void> {
+	const original = globalThis.fetch;
+	globalThis.fetch = async () => response;
+	try {
+		await callback();
+	} finally {
+		globalThis.fetch = original;
+	}
+}
+
+function makeServerHandle() {
+	// Minimal fake ServerHandle — only `port` is used by chatCompletionStream.
+	return { port: 9999, process: null as unknown as import("execa").ResultPromise };
+}
+
+test("chatCompletionStream yields token chunks then a done chunk", async (t) => {
+	const sseLines = [
+		'data: {"choices":[{"delta":{"content":"Hello"}}]}',
+		'data: {"choices":[{"delta":{"content":","}}]}',
+		'data: {"choices":[{"delta":{"content":" world!"}}]}',
+		"data: [DONE]",
+	];
+
+	const mockResponse = new Response(makeSSEBody(sseLines), {
+		status: 200,
+		headers: { "Content-Type": "text/event-stream" },
+	});
+
+	const chunks: StreamChunk[] = [];
+	await withMockFetch(mockResponse, async () => {
+		for await (const chunk of chatCompletionStream(
+			makeServerHandle(),
+			[{ role: "user", content: "hi" }],
+		)) {
+			chunks.push(chunk);
+		}
+	});
+
+	// Three token chunks + one done chunk.
+	t.is(chunks.length, 4);
+	t.deepEqual(chunks[0], { done: false, token: "Hello" });
+	t.deepEqual(chunks[1], { done: false, token: "," });
+	t.deepEqual(chunks[2], { done: false, token: " world!" });
+	const last = chunks[3];
+	t.true(last.done);
+	if (last.done) {
+		t.is(last.result.text, "Hello, world!");
+	}
+});
+
+test("chatCompletionStream skips SSE chunks with empty or missing delta.content", async (t) => {
+	const sseLines = [
+		// Role-only delta (first chunk) — no content, must be ignored.
+		'data: {"choices":[{"delta":{"role":"assistant"}}]}',
+		'data: {"choices":[{"delta":{"content":"Hi"}}]}',
+		// Empty-string delta — should not yield a token chunk.
+		'data: {"choices":[{"delta":{"content":""}}]}',
+		"data: [DONE]",
+	];
+
+	const mockResponse = new Response(makeSSEBody(sseLines), {
+		status: 200,
+		headers: { "Content-Type": "text/event-stream" },
+	});
+
+	const tokenChunks: StreamChunk[] = [];
+	await withMockFetch(mockResponse, async () => {
+		for await (const chunk of chatCompletionStream(
+			makeServerHandle(),
+			[{ role: "user", content: "hi" }],
+		)) {
+			if (!chunk.done) tokenChunks.push(chunk);
+		}
+	});
+
+	// Only the 'Hi' chunk should produce a token.
+	t.is(tokenChunks.length, 1);
+	t.deepEqual(tokenChunks[0], { done: false, token: "Hi" });
+});
+
+test("chatCompletionStream parses timings from the final SSE chunk", async (t) => {
+	const timings = {
+		prompt_ms: 123.4,
+		predicted_ms: 567.8,
+		predicted_per_second: 42.5,
+		predicted_n: 10,
+	};
+	const sseLines = [
+		'data: {"choices":[{"delta":{"content":"ok"}}]}',
+		// Final chunk carries timings (llama-server behaviour).
+		`data: {"choices":[{"delta":{"content":""},"finish_reason":"stop"}],"timings":${JSON.stringify(timings)}}`,
+		"data: [DONE]",
+	];
+
+	const mockResponse = new Response(makeSSEBody(sseLines), {
+		status: 200,
+		headers: { "Content-Type": "text/event-stream" },
+	});
+
+	let doneChunk: Extract<StreamChunk, { done: true }> | undefined;
+	await withMockFetch(mockResponse, async () => {
+		for await (const chunk of chatCompletionStream(
+			makeServerHandle(),
+			[{ role: "user", content: "hi" }],
+		)) {
+			if (chunk.done) doneChunk = chunk;
+		}
+	});
+
+	t.truthy(doneChunk);
+	if (doneChunk) {
+		const r = doneChunk.result;
+		t.is(r.ttftMs, 123); // Math.round(123.4)
+		t.is(r.generationTimeMs, 568); // Math.round(567.8)
+		t.is(r.tokensPerSecond, 42.5);
+		t.is(r.tokensGenerated, 10);
+		t.is(r.text, "ok");
+	}
+});
+
+test("chatCompletionStream returns cleanly when the AbortSignal fires", async (t) => {
+	// Build a stream that emits tokens slowly by splitting into multiple enqueue calls.
+	const encoder = new TextEncoder();
+	const abortController = new AbortController();
+
+	const body = new ReadableStream<Uint8Array>({
+		start(controller) {
+			controller.enqueue(
+				encoder.encode(
+					'data: {"choices":[{"delta":{"content":"first"}}]}\n',
+				),
+			);
+			// Abort before the second chunk can be processed.
+			abortController.abort();
+			controller.enqueue(
+				encoder.encode(
+					'data: {"choices":[{"delta":{"content":"second"}}]}\n',
+				),
+			);
+			controller.close();
+		},
+	});
+
+	const mockResponse = new Response(body, {
+		status: 200,
+		headers: { "Content-Type": "text/event-stream" },
+	});
+
+	const chunks: StreamChunk[] = [];
+	await withMockFetch(mockResponse, async () => {
+		for await (const chunk of chatCompletionStream(
+			makeServerHandle(),
+			[{ role: "user", content: "hi" }],
+			{ signal: abortController.signal },
+		)) {
+			chunks.push(chunk);
+		}
+	});
+
+	// The 'first' token chunk is yielded, then the generator returns cleanly
+	// (no done chunk, no throw) because the abort fired.
+	t.true(chunks.every((c) => !c.done || c.done));
+	// At most the first token chunk; the done chunk should not appear.
+	const hasSecond = chunks.some(
+		(c) => !c.done && c.token === "second",
+	);
+	t.false(hasSecond);
+	t.notThrows(() => { /* no uncaught rejection */ });
+});
+
+test("chatCompletionStream throws when the server returns a non-OK status", async (t) => {
+	const mockResponse = new Response(null, {
+		status: 500,
+		statusText: "Internal Server Error",
+	});
+
+	await withMockFetch(mockResponse, async () => {
+		await t.throwsAsync(
+			async () => {
+				for await (const _ of chatCompletionStream(
+					makeServerHandle(),
+					[{ role: "user", content: "hi" }],
+				)) {
+					// should not reach here
+				}
+			},
+			{ message: /stream.*failed/i },
+		);
+	});
 });

@@ -18,7 +18,7 @@ import {
 } from '../lib/config.js';
 import {appendToTrainingData, countExamples} from '../lib/data.js';
 import {
-	chatCompletion,
+	chatCompletionStream,
 	type ServerHandle,
 	startLlamaServer,
 	stopLlamaServer,
@@ -81,6 +81,9 @@ export function ChatCommand({options}: Props) {
 
 	const serverHandleRef = useRef<ServerHandle | null>(null);
 	const turnIdRef = useRef(0);
+	const abortControllerRef = useRef<AbortController | null>(null);
+	/** Tokens accumulated for the assistant turn currently being streamed. */
+	const [streamingContent, setStreamingContent] = useState<string>('');
 
 	// Destructure once so the memo deps below are primitives (stable across
 	// renders) — referencing `options.x` directly inside useMemo would make the
@@ -222,6 +225,10 @@ export function ChatCommand({options}: Props) {
 			setHistory(nextHistory);
 			appendTurn({role: 'user', content: text});
 			setStatus('generating');
+			setStreamingContent('');
+
+			const controller = new AbortController();
+			abortControllerRef.current = controller;
 
 			try {
 				const messages: ChatMessage[] = [];
@@ -230,33 +237,57 @@ export function ChatCommand({options}: Props) {
 				}
 				messages.push(...nextHistory);
 
-				const result = await chatCompletion(handle, messages, generateOptions);
+				let accumulated = '';
 
-				const assistantMsg: ChatMessage = {
-					role: 'assistant',
-					content: result.text,
-				};
-				setHistory(prev => [...prev, assistantMsg]);
-				appendTurn({
-					role: 'assistant',
-					content: result.text,
-					stats: {
-						tokensPerSecond: result.tokensPerSecond,
-						ttftMs: result.ttftMs,
-						tokensGenerated: result.tokensGenerated,
-					},
+				const stream = chatCompletionStream(handle, messages, {
+					...generateOptions,
+					signal: controller.signal,
 				});
-				if (result.tokensGenerated) {
-					setTotalTokens(prev => prev + (result.tokensGenerated ?? 0));
+
+				for await (const chunk of stream) {
+					if (chunk.done) {
+						// Final chunk — commit the completed turn.
+						const result = chunk.result;
+						const assistantMsg: ChatMessage = {
+							role: 'assistant',
+							content: result.text,
+						};
+						setHistory(prev => [...prev, assistantMsg]);
+						appendTurn({
+							role: 'assistant',
+							content: result.text,
+							stats: {
+								tokensPerSecond: result.tokensPerSecond,
+								ttftMs: result.ttftMs,
+								tokensGenerated: result.tokensGenerated,
+							},
+						});
+						if (result.tokensGenerated) {
+							setTotalTokens(prev => prev + (result.tokensGenerated ?? 0));
+						}
+					} else {
+						// Token chunk — update live preview.
+						accumulated += chunk.token;
+						setStreamingContent(accumulated);
+					}
 				}
+
+				setStreamingContent('');
 				setStatus('ready');
 			} catch (err) {
-				const msg = err instanceof Error ? err.message : 'Generation failed';
-				appendTurn({role: 'info', content: `Error: ${msg}`});
+				setStreamingContent('');
+				// AbortError means the user pressed Esc — not an error worth reporting.
+				const isAbort = err instanceof Error && err.name === 'AbortError';
+				if (!isAbort) {
+					const msg = err instanceof Error ? err.message : 'Generation failed';
+					appendTurn({role: 'info', content: `Error: ${msg}`});
+				}
 				// Roll the user turn back out of the model-visible history so the
 				// next attempt starts clean.
 				setHistory(history);
 				setStatus('ready');
+			} finally {
+				abortControllerRef.current = null;
 			}
 		},
 		[appendTurn, generateOptions, history, systemMessage],
@@ -357,10 +388,13 @@ export function ChatCommand({options}: Props) {
 	);
 
 	useKeyInput((_input, key) => {
-		// Esc exits when not actively generating (so users don't kill a long gen
-		// by accident — they can still Ctrl-C if needed).
-		if (key.escape && status !== 'generating') {
-			exit();
+		if (key.escape) {
+			if (status === 'generating') {
+				// Abort the in-flight request; sendMessage's catch block handles cleanup.
+				abortControllerRef.current?.abort();
+			} else {
+				exit();
+			}
 		}
 	});
 
@@ -398,7 +432,7 @@ export function ChatCommand({options}: Props) {
 
 			{status === 'generating' && (
 				<Box marginTop={1}>
-					<Spinner label="Generating..." />
+					<StreamingTurnView content={streamingContent} />
 				</Box>
 			)}
 
@@ -468,6 +502,26 @@ function TurnView({turn}: {turn: DisplayTurn}) {
 			</Text>
 			<Text>{turn.content}</Text>
 			{statLine && <Text dimColor>{statLine}</Text>}
+		</Box>
+	);
+}
+
+/**
+ * Rendered in place of the spinner while tokens are streaming in. Shows the
+ * partial text assembled so far, plus a blinking-cursor sentinel (▍) so the
+ * user can see the model is actively generating.
+ */
+function StreamingTurnView({content}: {content: string}) {
+	return (
+		<Box flexDirection="column">
+			<Text color="green" bold>
+				Model:
+			</Text>
+			<Text>
+				{content}
+				<Text color="green">▍</Text>
+			</Text>
+			<Text dimColor>[Esc] Cancel generation</Text>
 		</Box>
 	);
 }
