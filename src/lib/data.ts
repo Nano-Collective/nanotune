@@ -351,7 +351,10 @@ export function fixContextMessages(
 		if (!first || first.role === 'user' || first.role === 'assistant') {
 			return ex;
 		}
-		if (first.role === contextMessage.role && first.content === contextMessage.content) {
+		if (
+			first.role === contextMessage.role &&
+			first.content === contextMessage.content
+		) {
 			return ex;
 		}
 		fixedCount++;
@@ -704,7 +707,9 @@ export function exportToCSV(filePath: string, isEval = false): ExportResult {
 		const assistant = ex.messages.find(m => m.role === 'assistant');
 		if (!user?.content || !assistant?.content) {
 			skipped++;
-			errors.push(`Example ${i + 1}: missing user or assistant message, skipped`);
+			errors.push(
+				`Example ${i + 1}: missing user or assistant message, skipped`,
+			);
 			return;
 		}
 
