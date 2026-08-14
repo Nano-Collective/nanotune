@@ -424,6 +424,9 @@ interface LlamaServerTimings {
 export interface ChatCompletionResponse {
 	choices?: Array<{
 		message?: {role?: string; content?: string};
+		/** Streaming delta object present in SSE chunks. */
+		delta?: {role?: string; content?: string};
+		finish_reason?: string | null;
 	}>;
 	timings?: LlamaServerTimings;
 	usage?: {
@@ -432,6 +435,17 @@ export interface ChatCompletionResponse {
 		total_tokens?: number;
 	};
 }
+
+/**
+ * A single item yielded by `chatCompletionStream`.
+ *
+ * - `{done: false, token}` — a new piece of generated text just arrived.
+ * - `{done: true, result}` — generation finished; `result` contains the full
+ *   assembled text and per-turn timing stats (TTFT, tok/s, token count).
+ */
+export type StreamChunk =
+	| {done: false; token: string}
+	| {done: true; result: InferenceResult};
 
 /**
  * Parse a llama-server `/v1/chat/completions` response into our InferenceResult.
@@ -636,6 +650,142 @@ export async function chatCompletion(
 
 	const data = (await response.json()) as ChatCompletionResponse;
 	return parseChatCompletionResponse(data);
+}
+
+/**
+ * Streaming variant of `chatCompletion`. Sends `"stream": true` to the
+ * llama-server `/v1/chat/completions` SSE endpoint and yields tokens as they
+ * arrive, finishing with a `{done: true, result}` chunk that carries the same
+ * timing stats that the non-streaming response would have returned.
+ *
+ * The caller must iterate the generator with `for await … of`. Passing an
+ * `AbortSignal` via `options.signal` cancels the in-flight request cleanly;
+ * the generator will return (not throw) after the signal fires.
+ *
+ * NOTE: `chatCompletion` is deliberately left unchanged — the benchmark
+ * command relies on it and does not need streaming.
+ */
+export async function* chatCompletionStream(
+	handle: ServerHandle,
+	messages: ChatMessage[],
+	options: GenerateOptions = {},
+): AsyncGenerator<StreamChunk> {
+	const {
+		maxTokens = 100,
+		temperature = 0.8,
+		topP = 0.9,
+		seed,
+		signal,
+	} = options;
+
+	const body: Record<string, unknown> = {
+		messages,
+		max_tokens: maxTokens,
+		temperature,
+		top_p: topP,
+		stream: true,
+	};
+	if (seed !== undefined) {
+		body.seed = seed;
+	}
+
+	const response = await fetch(
+		`http://127.0.0.1:${handle.port}/v1/chat/completions`,
+		{
+			method: 'POST',
+			headers: {'Content-Type': 'application/json'},
+			body: JSON.stringify(body),
+			signal,
+		},
+	);
+
+	if (!response.ok) {
+		throw new Error(
+			`llama-server /v1/chat/completions (stream) failed: ${response.statusText}`,
+		);
+	}
+
+	if (!response.body) {
+		throw new Error(
+			'llama-server returned no response body for streaming request',
+		);
+	}
+
+	// Accumulate the full text and carry the final timings here.
+	let fullText = '';
+	let lastTimings: LlamaServerTimings | undefined;
+	let lastUsage: ChatCompletionResponse['usage'];
+
+	// Buffer for incomplete SSE lines that span chunk boundaries.
+	let lineBuffer = '';
+
+	const decoder = new TextDecoder();
+
+	for await (const rawBytes of response.body as unknown as AsyncIterable<Uint8Array>) {
+		// Abort signal fired between chunks — exit cleanly.
+		if (signal?.aborted) {
+			return;
+		}
+
+		lineBuffer += decoder.decode(rawBytes, {stream: true});
+
+		// Process all complete lines in the buffer.
+		const lines = lineBuffer.split('\n');
+		// Keep the last (potentially incomplete) segment in the buffer.
+		lineBuffer = lines.pop() ?? '';
+
+		for (const line of lines) {
+			const trimmed = line.trim();
+
+			// SSE comment or blank line — skip.
+			if (!trimmed || trimmed.startsWith(':')) continue;
+
+			// Every SSE event line starts with "data: ".
+			if (!trimmed.startsWith('data: ')) continue;
+
+			const payload = trimmed.slice('data: '.length).trim();
+
+			// End-of-stream sentinel.
+			if (payload === '[DONE]') continue;
+
+			let chunk: ChatCompletionResponse;
+			try {
+				chunk = JSON.parse(payload) as ChatCompletionResponse;
+			} catch {
+				// Malformed JSON in an SSE line — skip rather than crash.
+				continue;
+			}
+
+			// Capture timings from any chunk that carries them (llama-server
+			// attaches them to the final chunk).
+			if (chunk.timings) lastTimings = chunk.timings;
+			if (chunk.usage) lastUsage = chunk.usage;
+
+			const delta = chunk.choices?.[0]?.delta?.content;
+			if (delta) {
+				fullText += delta;
+				yield {done: false, token: delta};
+			}
+		}
+	}
+
+	// Flush any remaining bytes from the decoder.
+	lineBuffer += decoder.decode();
+
+	// Build the final InferenceResult — same shape as parseChatCompletionResponse.
+	const result: InferenceResult = {
+		text: fullText.trim(),
+		ttftMs: lastTimings?.prompt_ms
+			? Math.round(lastTimings.prompt_ms)
+			: undefined,
+		generationTimeMs: lastTimings?.predicted_ms
+			? Math.round(lastTimings.predicted_ms)
+			: undefined,
+		tokensPerSecond: lastTimings?.predicted_per_second,
+		tokensGenerated: lastTimings?.predicted_n ?? lastUsage?.completion_tokens,
+	};
+
+	yield {done: true, result};
 }
 
 /**
