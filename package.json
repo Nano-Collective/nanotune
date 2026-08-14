@@ -6,6 +6,13 @@
 	"bin": {
 		"nanotune": "./dist/cli.js"
 	},
+	"files": [
+		"dist",
+		"!dist/**/*.spec.*",
+		"README.md",
+		"LICENSE.md",
+		"CHANGELOG.md"
+	],
 	"scripts": {
 		"build": "tsc",
 		"dev": "tsx src/cli.tsx",
@@ -69,8 +76,8 @@
 		"@ai-sdk/openai-compatible": "^2.0.30",
 		"@inkjs/ui": "^2.0.0",
 		"ai": "^7.0.15",
-		"commander": "^14.0.3",
-		"execa": "^9.6.1",
+		"commander": "^15.0.0",
+		"execa": "^10.0.1",
 		"ink": "^7.0.3",
 		"react": "^19.2.4",
 		"zod": "^4.3.6"
@@ -80,7 +87,7 @@
 		"@types/node": "^26.0.0",
 		"@types/react": "^19.2.10",
 		"ava": "^8.0.1",
-		"c8": "^11.0.0",
+		"c8": "^12.0.0",
 		"ink-testing-library": "^4.0.0",
 		"knip": "^6.12.2",
 		"tsx": "^4.21.0",
