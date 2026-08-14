@@ -1,3 +1,29 @@
+# 1.7.0
+
+## Benchmarks are reproducible by default
+
+`nanotune benchmark` defaulted to `temperature: 0.8` with no seed and a single sample per test, so running the same suite twice against the same model produced different pass rates. For a tool whose output is a score, that made every number ambiguous — a 3-point move could be a real regression or just sampling noise.
+
+Benchmarks now default to `temperature: 0` with a fixed seed of `42`. Two consecutive runs with default flags produce identical results.
+
+> **Existing benchmark numbers will move.** Scores recorded before this release were sampled at temperature 0.8; re-running the same suite will produce a different — and from now on stable — figure. Re-baseline any pass rates you're tracking.
+
+Sampling is still available for anyone who wants it:
+
+```bash
+nanotune benchmark --temperature 0.8
+```
+
+### `--samples <n>`
+
+New flag runs each test n times and records the per-test pass rate and variance in both reports, rather than reporting a single coin flip:
+
+```bash
+nanotune benchmark --temperature 0.8 --samples 5
+```
+
+A test passes when the majority of its samples pass. Each sample uses `seed + sample_index`, so runs stay reproducible while the samples differ from one another.
+
 # 1.6.0
 
 ## Nanotune works without a terminal
