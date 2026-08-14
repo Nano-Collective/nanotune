@@ -83,6 +83,14 @@ function generateMarkdownReport(
 	lines.push('');
 	lines.push(`**Date:** ${new Date(result.timestamp).toLocaleString()}`);
 	lines.push(`**Model:** ${result.model.split('/').pop()}`);
+	if (result.config) {
+		lines.push('');
+		lines.push('## Configuration');
+		lines.push('');
+		lines.push(`- **Temperature:** ${result.config.temperature}`);
+		lines.push(`- **Seed:** ${result.config.seed}`);
+		lines.push(`- **Samples per test:** ${result.config.samples}`);
+	}
 	lines.push('');
 
 	// Summary
@@ -332,6 +340,16 @@ export function BenchmarkCommand({options}: Props) {
 				seed: options.seed,
 				samples: options.samples,
 			});
+
+			// Validate sampling configuration
+			if (sampling.samples > 1 && sampling.temperature === 0) {
+				setError(
+					'Cannot use --samples with temperature 0 (greedy decoding produces identical outputs). Use --temperature 0.1 or higher for sampling.',
+				);
+				setStatus('error');
+				return;
+			}
+
 			let serverOptions: ServerOptions;
 			let generateOptions: GenerateOptions;
 
@@ -460,6 +478,7 @@ export function BenchmarkCommand({options}: Props) {
 							}, timeout);
 
 							let sampleResponse = '';
+							let sampleFailed = false;
 							try {
 								const inferenceResult = await chatCompletion(
 									serverHandle,
@@ -480,16 +499,26 @@ export function BenchmarkCommand({options}: Props) {
 									tokensPerSecond = inferenceResult.tokensPerSecond;
 								}
 							} catch (err) {
-								if (controller.signal.aborted) {
-									throw new Error('Timeout');
+								// Timeout or other errors: treat this sample as failed and continue.
+								// This ensures partial results aren't thrown away when one sample
+								// times out in a multi-sample run.
+								sampleFailed = true;
+								if (sample === 0) {
+									latencyMs = Date.now() - startTime;
+									response =
+										err instanceof Error
+											? `Error: ${err.message}`
+											: 'Unknown error';
 								}
-								throw err;
 							} finally {
 								clearTimeout(timeoutId);
 							}
 
 							let samplePassed: boolean;
-							if (test.match === 'llm-judge' && judgeConfig) {
+							if (sampleFailed) {
+								// Sample failed due to timeout or error, mark as failed
+								samplePassed = false;
+							} else if (test.match === 'llm-judge' && judgeConfig) {
 								// Use LLM judge for evaluation
 								const criteria = resolveCriteria(test.criteria);
 								const threshold = test.passThreshold ?? 7;
@@ -633,6 +662,11 @@ export function BenchmarkCommand({options}: Props) {
 			const finalResult: BenchmarkResult = {
 				model: modelPath,
 				timestamp: new Date().toISOString(),
+				config: {
+					temperature: sampling.temperature,
+					seed: sampling.seed,
+					samples: sampling.samples,
+				},
 				summary: {
 					total: totalTests,
 					passed: totalPassed,

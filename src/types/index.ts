@@ -160,6 +160,12 @@ export interface BenchmarkTestResult {
 export interface BenchmarkResult {
 	model: string;
 	timestamp: string;
+	/** Benchmark configuration used for this run */
+	config?: {
+		temperature: number;
+		seed: number;
+		samples: number;
+	};
 	summary: {
 		total: number;
 		passed: number;

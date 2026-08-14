@@ -98,7 +98,7 @@ export function summarizeSamples(passes: boolean[]): {
 	}
 	const passRate = passes.filter(Boolean).length / passes.length;
 	return {
-		passed: passRate >= 0.5,
+		passed: passRate > 0.5, // Strict majority: more than half must pass
 		passRate,
 		variance: passRate * (1 - passRate),
 	};

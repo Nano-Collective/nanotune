@@ -205,6 +205,12 @@ test("summarizeSamples treats a majority of passes as a pass", (t) => {
   t.false(summarizeSamples([true, false, false]).passed);
 });
 
+test("summarizeSamples treats an exact tie (2 of 4) as a failure", (t) => {
+  const summary = summarizeSamples([true, false, true, false]);
+  t.false(summary.passed); // 50% is not a majority
+  t.is(summary.passRate, 0.5);
+});
+
 test("summarizeSamples reduces to the single outcome for one sample", (t) => {
   t.true(summarizeSamples([true]).passed);
   t.is(summarizeSamples([true]).passRate, 1);
