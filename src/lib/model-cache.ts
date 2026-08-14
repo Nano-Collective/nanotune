@@ -1,3 +1,4 @@
+import {existsSync, readdirSync, rmSync} from 'node:fs';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
 import type {QuantizationType} from '../types/index.js';
@@ -29,4 +30,22 @@ export function getBaseModelCachePath(
 		'base-cache',
 		`${sanitizeModelId(baseModel)}-${quantization}.gguf`,
 	);
+}
+
+/**
+ * Remove leftover `.tmp-<pid>.gguf` cache files (and their `-f16.gguf`
+ * conversion intermediates, which share the same `.tmp-<pid>` stem) from a
+ * previous export that was interrupted before its `finally` cleanup could
+ * run — e.g. a killed process on SIGINT. Safe to call unconditionally before
+ * starting a new export; a no-op if the directory doesn't exist yet.
+ */
+export function sweepStaleCacheArtifacts(cacheDir: string): void {
+	if (!existsSync(cacheDir)) {
+		return;
+	}
+	for (const name of readdirSync(cacheDir)) {
+		if (name.includes('.tmp-') && name.endsWith('.gguf')) {
+			rmSync(join(cacheDir, name), {force: true});
+		}
+	}
 }

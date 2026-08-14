@@ -189,6 +189,9 @@ export function StatusCommand() {
 							{latestBenchmark.summary.passed}/{latestBenchmark.summary.total} (
 							{Math.round(latestBenchmark.summary.passRate * 100)}%)
 						</Text>
+						{latestBenchmark.isBase && (
+							<Text dimColor> (base model, control)</Text>
+						)}
 						<Text dimColor>
 							{' '}
 							- {new Date(latestBenchmark.timestamp).toLocaleDateString()}

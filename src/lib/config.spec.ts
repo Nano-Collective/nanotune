@@ -10,6 +10,8 @@ import { ConfigSchema } from "../types/index.js";
 import {
   createDefaultConfig,
   findLatestGGUF,
+  listBenchmarks,
+  resolveBenchmarkPath,
   resolveContextMessage,
 } from "./config.js";
 
@@ -305,6 +307,122 @@ test.serial("findLatestGGUF ignores non-.gguf siblings", (t) => {
     t.is(findLatestGGUF(), ggufFile);
   } finally {
     teardownGGUFTest();
+  }
+});
+
+// ── listBenchmarks / resolveBenchmarkPath ────────────────────────────
+
+const BENCH_TEST_DIR = join(ORIG_CWD, ".test-config-benchmarks");
+const BENCH_DIR = join(BENCH_TEST_DIR, ".nanotune", "benchmarks");
+
+function setupBenchTest() {
+  rmSync(BENCH_TEST_DIR, { recursive: true, force: true });
+  mkdirSync(BENCH_TEST_DIR, { recursive: true });
+  process.chdir(BENCH_TEST_DIR);
+}
+
+function teardownBenchTest() {
+  process.chdir(ORIG_CWD);
+  rmSync(BENCH_TEST_DIR, { recursive: true, force: true });
+}
+
+test.serial("listBenchmarks returns an empty array when the benchmarks directory is missing", (t) => {
+  setupBenchTest();
+  try {
+    t.deepEqual(listBenchmarks(), []);
+  } finally {
+    teardownBenchTest();
+  }
+});
+
+test.serial("listBenchmarks sorts by mtime, not filename, and ignores compare-* files", (t) => {
+  setupBenchTest();
+  try {
+    mkdirSync(BENCH_DIR, { recursive: true });
+    // Deliberately give the lexicographically-later filename the older mtime,
+    // so a naive filename sort would get this backwards.
+    const older = join(BENCH_DIR, "benchmark-z-older.json");
+    const newer = join(BENCH_DIR, "benchmark-a-newer.json");
+    const compareFile = join(BENCH_DIR, "compare-should-be-excluded.json");
+    writeFileSync(older, "{}");
+    writeFileSync(newer, "{}");
+    writeFileSync(compareFile, "{}");
+
+    const past = new Date(Date.now() - 60_000);
+    utimesSync(older, past, past);
+
+    const listed = listBenchmarks();
+    t.is(listed.length, 2);
+    t.is(listed[0].filename, "benchmark-a-newer.json");
+    t.is(listed[1].filename, "benchmark-z-older.json");
+  } finally {
+    teardownBenchTest();
+  }
+});
+
+test.serial("resolveBenchmarkPath resolves a literal path", (t) => {
+  setupBenchTest();
+  try {
+    mkdirSync(BENCH_DIR, { recursive: true });
+    const literal = join(BENCH_DIR, "benchmark-literal.json");
+    writeFileSync(literal, "{}");
+    t.is(resolveBenchmarkPath(literal), literal);
+  } finally {
+    teardownBenchTest();
+  }
+});
+
+test.serial("resolveBenchmarkPath resolves a bare filename under the benchmarks dir", (t) => {
+  setupBenchTest();
+  try {
+    mkdirSync(BENCH_DIR, { recursive: true });
+    const target = join(BENCH_DIR, "benchmark-bare.json");
+    writeFileSync(target, "{}");
+    t.is(resolveBenchmarkPath("benchmark-bare.json"), target);
+  } finally {
+    teardownBenchTest();
+  }
+});
+
+test.serial("resolveBenchmarkPath appends .json when missing", (t) => {
+  setupBenchTest();
+  try {
+    mkdirSync(BENCH_DIR, { recursive: true });
+    const target = join(BENCH_DIR, "benchmark-noext.json");
+    writeFileSync(target, "{}");
+    t.is(resolveBenchmarkPath("benchmark-noext"), target);
+  } finally {
+    teardownBenchTest();
+  }
+});
+
+test.serial("resolveBenchmarkPath resolves a bare timestamp via the benchmark- prefix", (t) => {
+  setupBenchTest();
+  try {
+    mkdirSync(BENCH_DIR, { recursive: true });
+    const target = join(BENCH_DIR, "benchmark-2026-01-01T00-00-00-000Z.json");
+    writeFileSync(target, "{}");
+    t.is(
+      resolveBenchmarkPath("2026-01-01T00-00-00-000Z"),
+      target,
+    );
+  } finally {
+    teardownBenchTest();
+  }
+});
+
+test.serial("resolveBenchmarkPath throws with the list of available runs when nothing matches", (t) => {
+  setupBenchTest();
+  try {
+    mkdirSync(BENCH_DIR, { recursive: true });
+    const existing = join(BENCH_DIR, "benchmark-exists.json");
+    writeFileSync(existing, "{}");
+
+    const err = t.throws(() => resolveBenchmarkPath("does-not-exist"));
+    t.truthy(err);
+    t.true(err?.message.includes("benchmark-exists.json"));
+  } finally {
+    teardownBenchTest();
   }
 });
 
