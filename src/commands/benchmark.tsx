@@ -48,7 +48,10 @@ import {
 	stopLlamaServer,
 } from '../lib/llama-cpp.js';
 import {ensureModelDownloaded} from '../lib/mlx.js';
-import {getBaseModelCachePath} from '../lib/model-cache.js';
+import {
+	getBaseModelCachePath,
+	sweepStaleCacheArtifacts,
+} from '../lib/model-cache.js';
 import {assertSupportedPlatform} from '../lib/platform.js';
 import {
 	BENCHMARK_PRESETS,
@@ -57,7 +60,6 @@ import {
 	type BenchmarkTest,
 	type BenchmarkTestResult,
 	type JudgeProviderConfig,
-	type QuantizationType,
 } from '../types/index.js';
 
 interface Props {
@@ -301,7 +303,7 @@ export function BenchmarkCommand({options}: Props) {
 				// download/convert/quantize run.
 				assertSupportedPlatform();
 
-				const quantization = config.export.quantization as QuantizationType;
+				const quantization = config.export.quantization;
 				const cachePath = getBaseModelCachePath(config.baseModel, quantization);
 
 				if (!existsSync(cachePath)) {
@@ -337,7 +339,9 @@ export function BenchmarkCommand({options}: Props) {
 						})(),
 					]);
 					if (!snapshotPath) {
-						throw new Error('Could not resolve the downloaded base model path.');
+						throw new Error(
+							'Could not resolve the downloaded base model path.',
+						);
 					}
 
 					// Export to a temp path and rename into place atomically.
@@ -346,6 +350,9 @@ export function BenchmarkCommand({options}: Props) {
 					// file landed directly at cachePath, every future run would
 					// silently treat that corrupt file as a valid cache hit.
 					mkdirSync(dirname(cachePath), {recursive: true});
+					// Clean up .tmp-<pid>.gguf / -f16.gguf leftovers from a previous
+					// run that was interrupted before its own cleanup could run.
+					sweepStaleCacheArtifacts(dirname(cachePath));
 					const tempCachePath = cachePath.replace(
 						/\.gguf$/,
 						`.tmp-${process.pid}.gguf`,
@@ -778,11 +785,7 @@ export function BenchmarkCommand({options}: Props) {
 			<Header title="Benchmark" />
 
 			{status === 'loading' && (
-				<Box flexDirection="column">
-					<Spinner
-						label={prepStep ?? 'Loading benchmark data...'}
-					/>
-				</Box>
+				<Spinner label={prepStep ?? 'Loading benchmark data...'} />
 			)}
 
 			{status === 'running' && (

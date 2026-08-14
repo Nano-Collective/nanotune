@@ -23,6 +23,7 @@ export interface BenchmarkComparison {
 		passed: number;
 		total: number;
 		passRate: number;
+		isBase?: boolean;
 	};
 	after: {
 		model: string;
@@ -30,6 +31,7 @@ export interface BenchmarkComparison {
 		passed: number;
 		total: number;
 		passRate: number;
+		isBase?: boolean;
 	};
 	overallDelta: number;
 	categories: CategoryDelta[];
@@ -61,6 +63,7 @@ export function compareBenchmarks(
 			passed: before.summary.passed,
 			total: before.summary.total,
 			passRate: before.summary.passRate,
+			isBase: before.isBase,
 		},
 		after: {
 			model: after.model,
@@ -68,6 +71,7 @@ export function compareBenchmarks(
 			passed: after.summary.passed,
 			total: after.summary.total,
 			passRate: after.summary.passRate,
+			isBase: after.isBase,
 		},
 		overallDelta: after.summary.passRate - before.summary.passRate,
 		categories,
@@ -120,6 +124,15 @@ function diffTests(
 			onlyInBefore.push(id);
 			continue;
 		}
+		if (beforeTest.prompt !== afterTest.prompt) {
+			// Same id, different prompt — `tests.json` was edited between runs,
+			// so this isn't the same test. Reporting a pass/fail flip here would
+			// be comparing two unrelated tests; treat it like a dropped id on
+			// one side and an added id on the other instead.
+			onlyInBefore.push(id);
+			onlyInAfter.push(id);
+			continue;
+		}
 		if (beforeTest.passed !== afterTest.passed) {
 			flips.push({
 				id,
@@ -155,6 +168,16 @@ export function formatDelta(delta: number): string {
 	return pct > 0 ? `+${pct}%` : `${pct}%`;
 }
 
+/**
+ * Color for a delta value, using the same rounding as {@link formatDelta} so
+ * a delta that displays as "±0%" never renders green or red.
+ */
+export function deltaColor(delta: number): 'green' | 'red' | undefined {
+	const pct = Math.round(delta * 100);
+	if (pct === 0) return undefined;
+	return pct > 0 ? 'green' : 'red';
+}
+
 export function generateComparisonMarkdown(
 	comparison: BenchmarkComparison,
 ): string {
@@ -162,10 +185,10 @@ export function generateComparisonMarkdown(
 
 	lines.push('# Benchmark Comparison', '');
 	lines.push(
-		`**Before:** ${comparison.before.model} — ${comparison.before.passed}/${comparison.before.total} (${formatPercent(comparison.before.passRate)}) — ${new Date(comparison.before.timestamp).toLocaleString()}`,
+		`**Before:** ${comparison.before.model}${comparison.before.isBase ? ' (base, control)' : ''} — ${comparison.before.passed}/${comparison.before.total} (${formatPercent(comparison.before.passRate)}) — ${new Date(comparison.before.timestamp).toLocaleString()}`,
 	);
 	lines.push(
-		`**After:** ${comparison.after.model} — ${comparison.after.passed}/${comparison.after.total} (${formatPercent(comparison.after.passRate)}) — ${new Date(comparison.after.timestamp).toLocaleString()}`,
+		`**After:** ${comparison.after.model}${comparison.after.isBase ? ' (base, control)' : ''} — ${comparison.after.passed}/${comparison.after.total} (${formatPercent(comparison.after.passRate)}) — ${new Date(comparison.after.timestamp).toLocaleString()}`,
 	);
 	lines.push('');
 	lines.push(`**Overall Delta:** ${formatDelta(comparison.overallDelta)}`);

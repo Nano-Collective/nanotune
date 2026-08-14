@@ -1,6 +1,10 @@
 import test from "ava";
 import type { BenchmarkResult, BenchmarkTestResult } from "../types/index.js";
-import { compareBenchmarks, generateComparisonMarkdown } from "./benchmark-compare.js";
+import {
+  compareBenchmarks,
+  deltaColor,
+  generateComparisonMarkdown,
+} from "./benchmark-compare.js";
 
 function testResult(
   overrides: Partial<BenchmarkTestResult> & Pick<BenchmarkTestResult, "id" | "passed">,
@@ -174,6 +178,63 @@ test("compareBenchmarks reports ids present in only one run without throwing", (
   t.is(comparison.flips.length, 0);
 });
 
+test("compareBenchmarks does not report a false flip when a reused id's prompt changed", (t) => {
+  // tests.json was edited between runs: id 5 used to be a different prompt.
+  // Reporting this as a "flip" would compare two unrelated tests.
+  const before = benchmarkResult({
+    results: [testResult({ id: 5, passed: true, prompt: "list all files" })],
+  });
+  const after = benchmarkResult({
+    results: [testResult({ id: 5, passed: false, prompt: "show current directory" })],
+  });
+
+  const comparison = compareBenchmarks(before, after);
+  t.is(comparison.flips.length, 0);
+  t.deepEqual(comparison.onlyInBefore, [5]);
+  t.deepEqual(comparison.onlyInAfter, [5]);
+});
+
+test("compareBenchmarks still reports a real flip when the prompt is unchanged", (t) => {
+  const before = benchmarkResult({
+    results: [testResult({ id: 5, passed: true, prompt: "list all files" })],
+  });
+  const after = benchmarkResult({
+    results: [testResult({ id: 5, passed: false, prompt: "list all files" })],
+  });
+
+  const comparison = compareBenchmarks(before, after);
+  t.is(comparison.flips.length, 1);
+  t.is(comparison.onlyInBefore.length, 0);
+  t.is(comparison.onlyInAfter.length, 0);
+});
+
+// ── isBase pass-through ──────────────────────────────────────────────
+
+test("compareBenchmarks carries isBase through to before/after", (t) => {
+  const before = benchmarkResult({
+    isBase: true,
+    results: [testResult({ id: 1, passed: true })],
+  });
+  const after = benchmarkResult({
+    isBase: false,
+    results: [testResult({ id: 1, passed: true })],
+  });
+
+  const comparison = compareBenchmarks(before, after);
+  t.true(comparison.before.isBase);
+  t.false(comparison.after.isBase);
+});
+
+// ── deltaColor ────────────────────────────────────────────────────────
+
+test("deltaColor matches the rounded sign, not the raw sign", (t) => {
+  t.is(deltaColor(0.004), undefined); // rounds to ±0%
+  t.is(deltaColor(-0.004), undefined); // rounds to ±0%
+  t.is(deltaColor(0.5), "green");
+  t.is(deltaColor(-0.5), "red");
+  t.is(deltaColor(0), undefined);
+});
+
 // ── markdown report ──────────────────────────────────────────────────
 
 test("generateComparisonMarkdown includes overall delta, category table, and flips", (t) => {
@@ -193,6 +254,21 @@ test("generateComparisonMarkdown includes overall delta, category table, and fli
   t.true(markdown.includes("math"));
   t.true(markdown.includes("Regressed"));
   t.true(markdown.includes("#1"));
+});
+
+test("generateComparisonMarkdown labels a base-model run", (t) => {
+  const before = benchmarkResult({
+    model: "base-model",
+    isBase: true,
+    results: [testResult({ id: 1, passed: true })],
+  });
+  const after = benchmarkResult({
+    model: "fine-tuned-model",
+    results: [testResult({ id: 1, passed: true })],
+  });
+
+  const markdown = generateComparisonMarkdown(compareBenchmarks(before, after));
+  t.true(markdown.includes("base-model (base, control)"));
 });
 
 test("generateComparisonMarkdown notes when no tests flipped", (t) => {

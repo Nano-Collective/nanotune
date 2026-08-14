@@ -19,6 +19,7 @@ import {
 import {
 	type BenchmarkComparison,
 	compareBenchmarks,
+	deltaColor,
 	formatDelta,
 	formatPercent,
 	generateComparisonMarkdown,
@@ -43,7 +44,7 @@ type Status = 'loading' | 'done' | 'error';
  * earlier state" regardless of which one the caller happened to resolve
  * first.
  */
-function orderByMtime(
+export function orderByMtime(
 	pathX: string,
 	pathY: string,
 ): {beforePath: string; afterPath: string} {
@@ -61,7 +62,7 @@ function orderByMtime(
  *   if the named run IS the latest).
  * - 0 args: the two most recent runs.
  */
-function resolveComparisonPair(
+export function resolveComparisonPair(
 	fileA?: string,
 	fileB?: string,
 ): {beforePath: string; afterPath: string} {
@@ -181,6 +182,7 @@ export function BenchmarkCompareCommand({fileA, fileB}: Props) {
 			<Text>
 				Before:{' '}
 				<Text color="cyan">{comparison.before.model.split('/').pop()}</Text>{' '}
+				{comparison.before.isBase && <Text dimColor>(base, control) </Text>}
 				<Text dimColor>
 					({comparison.before.passed}/{comparison.before.total},{' '}
 					{formatPercent(comparison.before.passRate)})
@@ -189,6 +191,7 @@ export function BenchmarkCompareCommand({fileA, fileB}: Props) {
 			<Text>
 				After:{' '}
 				<Text color="cyan">{comparison.after.model.split('/').pop()}</Text>{' '}
+				{comparison.after.isBase && <Text dimColor>(base, control) </Text>}
 				<Text dimColor>
 					({comparison.after.passed}/{comparison.after.total},{' '}
 					{formatPercent(comparison.after.passRate)})
@@ -197,16 +200,7 @@ export function BenchmarkCompareCommand({fileA, fileB}: Props) {
 			<Text> </Text>
 			<Text>
 				Overall Delta:{' '}
-				<Text
-					bold
-					color={
-						comparison.overallDelta > 0
-							? 'green'
-							: comparison.overallDelta < 0
-								? 'red'
-								: undefined
-					}
-				>
+				<Text bold color={deltaColor(comparison.overallDelta)}>
 					{formatDelta(comparison.overallDelta)}
 				</Text>
 			</Text>
