@@ -16,6 +16,12 @@ export interface MLXTrainingOptions {
 	stepsPerEval: number;
 	saveEvery: number;
 	resume?: boolean;
+	/**
+	 * Optional AbortSignal for stopping a run early. Aborting sends SIGINT so
+	 * MLX writes its checkpoint before exiting; the generator then returns
+	 * normally, since a user-requested stop is not a training failure.
+	 */
+	signal?: AbortSignal;
 }
 
 export async function checkPython(): Promise<{
@@ -299,6 +305,8 @@ export async function* runTraining(
 		buffer: false,
 	});
 
+	stopOnAbort(subprocess, options.signal);
+
 	const stdout = subprocess.stdout;
 	const stderr = subprocess.stderr;
 	if (!stdout) {
@@ -315,31 +323,46 @@ export async function* runTraining(
 
 	let buffer = '';
 
-	for await (const chunk of stdout) {
-		buffer += chunk.toString();
-		const lines = buffer.split('\n');
-		buffer = lines.pop() || '';
+	// The for-await can throw ABORT_ERR if the process exits mid-stream, which
+	// is exactly what a SIGINT stop looks like. Let the subprocess result below
+	// decide whether that was a stop or a real failure.
+	try {
+		for await (const chunk of stdout) {
+			buffer += chunk.toString();
+			const lines = buffer.split('\n');
+			buffer = lines.pop() || '';
 
-		for (const line of lines) {
-			// Parse: "Iter 10: Train loss 1.234, Val loss 1.456"
-			// or: "Iter 10 (15.2 it/s): Train loss 1.234"
-			const match = line.match(
-				/Iter\s+(\d+)(?:\s*\([^)]+\))?:\s*Train loss\s+([\d.]+)(?:,\s*Val loss\s+([\d.]+))?/i,
-			);
-			if (match) {
-				yield {
-					iteration: Number.parseInt(match[1], 10),
-					totalIterations: options.iterations,
-					trainLoss: Number.parseFloat(match[2]),
-					valLoss: match[3] ? Number.parseFloat(match[3]) : undefined,
-				};
+			for (const line of lines) {
+				// Parse: "Iter 10: Train loss 1.234, Val loss 1.456"
+				// or: "Iter 10 (15.2 it/s): Train loss 1.234"
+				const match = line.match(
+					/Iter\s+(\d+)(?:\s*\([^)]+\))?:\s*Train loss\s+([\d.]+)(?:,\s*Val loss\s+([\d.]+))?/i,
+				);
+				if (match) {
+					yield {
+						iteration: Number.parseInt(match[1], 10),
+						totalIterations: options.iterations,
+						trainLoss: Number.parseFloat(match[2]),
+						valLoss: match[3] ? Number.parseFloat(match[3]) : undefined,
+					};
+				}
 			}
+		}
+	} catch (err) {
+		if (err instanceof Error && err.name === 'AbortError') {
+		} else {
+			throw err;
 		}
 	}
 
 	try {
 		await subprocess;
 	} catch (err) {
+		// A stop we asked for: MLX has flushed its checkpoint, so return
+		// normally instead of reporting the interrupted run as a failure.
+		if (options.signal?.aborted) {
+			return;
+		}
 		// Include stderr in the error message for better debugging
 		const errorMessage = err instanceof Error ? err.message : 'Training failed';
 		const stderrTrimmed = stderrOutput.trim();
@@ -370,6 +393,34 @@ export async function fuseAdapters(
 	]);
 }
 
+/**
+ * Stop `subprocess` as soon as `signal` aborts. Split out from `runTraining`
+ * so the wiring — including a signal that is already aborted, which never
+ * fires an `abort` event — is testable without spawning a trainer.
+ */
+export function stopOnAbort(
+	subprocess: ResultPromise,
+	signal?: AbortSignal,
+): void {
+	if (!signal) {
+		return;
+	}
+	if (signal.aborted) {
+		abortTraining(subprocess);
+		return;
+	}
+	signal.addEventListener('abort', () => abortTraining(subprocess), {
+		once: true,
+	});
+}
+
 export function abortTraining(subprocess: ResultPromise): void {
 	subprocess.kill('SIGINT');
+}
+
+export function shouldTreatAsStop(
+	signal?: AbortSignal,
+	error?: unknown,
+): boolean {
+	return signal?.aborted === true;
 }
