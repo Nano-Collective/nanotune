@@ -1,6 +1,6 @@
 import test from "ava";
 import { execa, type ResultPromise } from "execa";
-import { abortTraining, stopOnAbort } from "./mlx.js";
+import { abortTraining, shouldTreatAsStop, stopOnAbort } from "./mlx.js";
 
 test("MLX output parsing regex works correctly", (t) => {
   // Test the regex pattern used to parse MLX training output
@@ -138,4 +138,23 @@ test("stopOnAbort terminates a real running child process", async (t) => {
 
   // The child would run forever, so this only settles because it was killed.
   t.truthy(await t.throwsAsync(child));
+});
+
+test("shouldTreatAsStop returns true when signal is aborted", (t) => {
+  const controller = new AbortController();
+  controller.abort();
+  t.true(shouldTreatAsStop(controller.signal, new Error("test")));
+});
+
+test("shouldTreatAsStop returns false when signal is not aborted", (t) => {
+  const controller = new AbortController();
+  t.false(shouldTreatAsStop(controller.signal, new Error("test")));
+});
+
+test("shouldTreatAsStop returns false when signal is undefined", (t) => {
+  t.false(shouldTreatAsStop(undefined, new Error("test")));
+});
+
+test("shouldTreatAsStop returns false when signal is null", (t) => {
+  t.false(shouldTreatAsStop(undefined, null));
 });

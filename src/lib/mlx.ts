@@ -348,8 +348,11 @@ export async function* runTraining(
 				}
 			}
 		}
-	} catch {
-		// Stream aborted — process exited, handled below
+	} catch (err) {
+		if (err instanceof Error && err.name === 'AbortError') {
+		} else {
+			throw err;
+		}
 	}
 
 	try {
@@ -413,4 +416,11 @@ export function stopOnAbort(
 
 export function abortTraining(subprocess: ResultPromise): void {
 	subprocess.kill('SIGINT');
+}
+
+export function shouldTreatAsStop(
+	signal?: AbortSignal,
+	error?: unknown,
+): boolean {
+	return signal?.aborted === true;
 }

@@ -24,6 +24,7 @@ import {
 	installMLX,
 	type MLXTrainingOptions,
 	runTraining,
+	shouldTreatAsStop,
 } from '../lib/mlx.js';
 import {assertSupportedPlatform} from '../lib/platform.js';
 import type {TrainingProgress} from '../types/index.js';
@@ -70,6 +71,8 @@ export function TrainCommand({options}: Props) {
 			if (status === 'training') {
 				abortRef.current?.abort();
 				setStatus('stopping');
+			} else if (status === 'stopping') {
+				process.exit(130);
 			} else {
 				exit();
 			}
@@ -90,6 +93,12 @@ export function TrainCommand({options}: Props) {
 		status === 'done' || status === 'stopped' || status === 'error',
 		status === 'error',
 	);
+
+	useEffect(() => {
+		if (status === 'stopped') {
+			process.exitCode = 130;
+		}
+	}, [status]);
 
 	const run = useCallback(async () => {
 		try {
@@ -221,7 +230,7 @@ export function TrainCommand({options}: Props) {
 
 			setStatus(controller.signal.aborted ? 'stopped' : 'done');
 		} catch (err) {
-			if (abortRef.current?.signal.aborted) {
+			if (shouldTreatAsStop(abortRef.current?.signal, err)) {
 				setStatus('stopped');
 				return;
 			}
@@ -329,26 +338,46 @@ export function TrainCommand({options}: Props) {
 					</Box>
 
 					<Text> </Text>
-					<Text dimColor>[Ctrl+C] Stop training (checkpoint saved)</Text>
+					<Text dimColor>[Ctrl+C] Stop training</Text>
 				</Box>
 			)}
 
 			{status === 'stopping' && (
 				<Box flexDirection="column">
-					<Spinner label="Stopping training, saving checkpoint..." />
+					<Spinner label="Stopping training..." />
 					<Text dimColor>[Ctrl+C] Quit without waiting</Text>
 				</Box>
 			)}
 
 			{status === 'stopped' && (
 				<Box flexDirection="column">
-					<StatusMessage variant="warning">
-						Training stopped. Checkpoint saved.
-					</StatusMessage>
+					<StatusMessage variant="warning">Training stopped</StatusMessage>
 					<Text> </Text>
-					<Text>
-						Resume with: <Text color="cyan">nanotune train --resume</Text>
-					</Text>
+					{progress &&
+						(() => {
+							const saveEvery = options.iterations
+								? config.training.saveEvery
+								: config.training.saveEvery;
+							const lastSaved =
+								Math.floor(progress.iteration / saveEvery) * saveEvery;
+							return lastSaved > 0 ? (
+								<>
+									<Text>
+										Checkpoint saved at iteration{' '}
+										<Text color="cyan">{lastSaved}</Text>
+									</Text>
+									<Text> </Text>
+									<Text>
+										Resume with:{' '}
+										<Text color="cyan">nanotune train --resume</Text>
+									</Text>
+								</>
+							) : (
+								<Text>
+									No checkpoint saved (stopped before iteration {saveEvery})
+								</Text>
+							);
+						})()}
 					<Text> </Text>
 					<ExitHint>Press any key to exit</ExitHint>
 				</Box>
