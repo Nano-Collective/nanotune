@@ -342,9 +342,22 @@ export function TrainCommand({options}: Props) {
 				</Box>
 			)}
 
-			{status === 'stopping' && (
+			{status === 'stopping' && progress && (
 				<Box flexDirection="column">
-					<Spinner label="Stopping training..." />
+					{(() => {
+						const saveEvery = config.training.saveEvery;
+						const lastSaved =
+							Math.floor(progress.iteration / saveEvery) * saveEvery;
+						return (
+							<Spinner
+								label={
+									lastSaved > 0
+										? `Stopping training (last checkpoint: iteration ${lastSaved})...`
+										: 'Stopping training (no checkpoint saved yet)...'
+								}
+							/>
+						);
+					})()}
 					<Text dimColor>[Ctrl+C] Quit without waiting</Text>
 				</Box>
 			)}
@@ -355,9 +368,7 @@ export function TrainCommand({options}: Props) {
 					<Text> </Text>
 					{progress &&
 						(() => {
-							const saveEvery = options.iterations
-								? config.training.saveEvery
-								: config.training.saveEvery;
+							const saveEvery = config.training.saveEvery;
 							const lastSaved =
 								Math.floor(progress.iteration / saveEvery) * saveEvery;
 							return lastSaved > 0 ? (
