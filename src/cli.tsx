@@ -109,15 +109,23 @@ dataCommand
 		'--rewrite-context',
 		"Rewrite each example's context message to match the current config",
 	)
-	.action(async (options: {fix?: boolean; rewriteContext?: boolean}) => {
-		const {DataValidateCommand} = await import('./commands/data/validate.js');
-		render(
-			<DataValidateCommand
-				fix={options.fix}
-				rewriteContext={options.rewriteContext}
-			/>,
-		);
-	});
+	.option('-e, --eval', 'Validate the validation set instead of training data')
+	.action(
+		async (options: {
+			fix?: boolean;
+			rewriteContext?: boolean;
+			eval?: boolean;
+		}) => {
+			const {DataValidateCommand} = await import('./commands/data/validate.js');
+			render(
+				<DataValidateCommand
+					fix={options.fix}
+					rewriteContext={options.rewriteContext}
+					isEval={options.eval}
+				/>,
+			);
+		},
+	);
 
 // Train command
 program

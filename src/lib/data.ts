@@ -196,17 +196,20 @@ export interface ValidationResult {
 
 export function validateTrainingData(
 	contextMessage: ChatMessage,
+	isEval = false,
 ): ValidationResult {
 	const errors: string[] = [];
 	const warnings: string[] = [];
-	const examples = loadTrainingData();
+	const examples = loadTrainingData(isEval);
 
 	if (examples.length === 0) {
-		errors.push('No training data found');
+		errors.push(isEval ? 'No validation data found' : 'No training data found');
 		return {valid: false, errors, warnings};
 	}
 
-	if (examples.length < 50) {
+	// A validation set is a slice of the training data, so the 50-example floor
+	// does not apply to it - warning about it would be noise on a correct split.
+	if (!isEval && examples.length < 50) {
 		warnings.push(
 			`Only ${examples.length} examples found. Recommend at least 50 for good results.`,
 		);
@@ -820,8 +823,12 @@ export function ensureValidationSet(seed?: number): {
 	const trainCount = countExamples(false);
 
 	if (validCount === 0 && trainCount > 0) {
-		// No validation set - create one by splitting
-		return {...splitTrainValidation(0.1, seed), didSplit: true};
+		// No validation set - create one by splitting.
+		const result = splitTrainValidation(0.1, seed);
+		// A single example cannot be split, so valid.jsonl stays empty and the
+		// next call lands here again. Reporting didSplit for that no-op would
+		// repeat "Split 1 examples into 1 train / 0 validation." on every run.
+		return {...result, didSplit: result.validCount > 0};
 	}
 
 	return {trainCount, validCount, didSplit: false};
