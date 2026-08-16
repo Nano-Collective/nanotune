@@ -13,8 +13,8 @@ import {
 	resolveContextMessage,
 } from '../../lib/config.js';
 import {
-	countExamples,
 	type ContextFixResult,
+	countExamples,
 	type DedupeResult,
 	dedupeExamples,
 	fixContextMessages,

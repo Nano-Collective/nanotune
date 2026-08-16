@@ -49,7 +49,11 @@ export function DataListCommand({isEval = false}: Props) {
 		try {
 			const original = data[editIndex];
 			const updated: {messages: ChatMessage[]} = {
-				messages: mergeEditedTurn(original.messages, userInput, assistantOutput),
+				messages: mergeEditedTurn(
+					original.messages,
+					userInput,
+					assistantOutput,
+				),
 			};
 			updateTrainingExample(editIndex, updated);
 			setData(loadTrainingData());
