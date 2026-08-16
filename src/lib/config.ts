@@ -85,6 +85,11 @@ function suggestKey(unknownKey: string, validKeys: string[]): string | null {
 	return best;
 }
 
+// Unwraps the optional/default wrappers ConfigSchema uses to reach the object
+// shape underneath. Anything else — arrays of objects, `.nullable()`, unions —
+// returns null, and that subtree goes unchecked rather than mis-reported.
+// Nothing in ConfigSchema hits that today; if a nested object ever gains one of
+// those wrappers, teach this function about it or its unknown keys go unwarned.
 function shapeOf(schema: z.ZodType): Record<string, z.ZodType> | null {
 	if (schema instanceof z.ZodObject) {
 		return schema.shape as Record<string, z.ZodType>;
@@ -114,7 +119,7 @@ function collectUnknownKeys(
 	const validKeys = Object.keys(shape);
 	for (const [key, child] of Object.entries(value)) {
 		const fullPath = path ? `${path}.${key}` : key;
-		const known = shape[key];
+		const known = Object.hasOwn(shape, key) ? shape[key] : undefined;
 		if (!known) {
 			const suggestion = suggestKey(key, validKeys);
 			warnings.push(

@@ -11,6 +11,7 @@ import {
   createDefaultConfig,
   findLatestGGUF,
   findUnknownConfigKeys,
+  loadConfig,
   resolveContextMessage,
 } from "./config.js";
 
@@ -403,4 +404,65 @@ test("ConfigSchema still loads a config with unknown keys", (t) => {
 
   t.is(config.name, "test-project");
   t.is(config.training.numLayers, 16);
+});
+
+test("findUnknownConfigKeys reports keys that shadow Object.prototype", (t) => {
+  const warnings = findUnknownConfigKeys({
+    ...KNOWN_KEYS_CONFIG,
+    training: { ...KNOWN_KEYS_CONFIG.training, toString: "noop" },
+  });
+
+  t.deepEqual(warnings, [
+    'unknown key "training.toString" in config.json — ignored.',
+  ]);
+});
+
+test("findUnknownConfigKeys reports a __proto__ key parsed out of JSON", (t) => {
+  // JSON.parse gives __proto__ an own enumerable slot; a literal would not.
+  const raw = JSON.parse(
+    `{"__proto__": {"polluted": true}, ${JSON.stringify(KNOWN_KEYS_CONFIG).slice(1)}`,
+  );
+
+  t.deepEqual(findUnknownConfigKeys(raw), [
+    'unknown key "__proto__" in config.json — ignored.',
+  ]);
+});
+
+// ── loadConfig warnings ───────────────────────────────────────────────
+
+const WARN_TEST_DIR = join(ORIG_CWD, ".test-config-warnings");
+
+test.serial("loadConfig prints each unknown key once across loads", (t) => {
+  rmSync(WARN_TEST_DIR, { recursive: true, force: true });
+  mkdirSync(join(WARN_TEST_DIR, ".nanotune"), { recursive: true });
+  writeFileSync(
+    join(WARN_TEST_DIR, ".nanotune", "config.json"),
+    JSON.stringify({
+      ...KNOWN_KEYS_CONFIG,
+      training: { ...KNOWN_KEYS_CONFIG.training, loraLayers: 32 },
+    }),
+  );
+  process.chdir(WARN_TEST_DIR);
+
+  const printed: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    printed.push(args.join(" "));
+  };
+
+  try {
+    const first = loadConfig();
+    // A second load must not repeat the warning — warnedKeys dedupes it.
+    const second = loadConfig();
+
+    t.deepEqual(printed, [
+      'Warning: unknown key "training.loraLayers" in config.json — ignored. Did you mean "numLayers"?',
+    ]);
+    t.false("loraLayers" in first.training);
+    t.is(second.training.numLayers, 16);
+  } finally {
+    console.warn = originalWarn;
+    process.chdir(ORIG_CWD);
+    rmSync(WARN_TEST_DIR, { recursive: true, force: true });
+  }
 });
