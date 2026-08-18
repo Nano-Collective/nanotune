@@ -32,6 +32,10 @@ interface Props {
 	options: {
 		iterations?: string;
 		lr?: string;
+		batchSize?: string;
+		numLayers?: string;
+		stepsPerEval?: string;
+		saveEvery?: string;
 		resume?: boolean;
 		dryRun?: boolean;
 	};
@@ -126,6 +130,36 @@ export function TrainCommand({options}: Props) {
 			const learningRate = options.lr
 				? Number.parseFloat(options.lr)
 				: config.training.learningRate;
+			const batchSize = options.batchSize
+				? Number.parseInt(options.batchSize, 10)
+				: config.training.batchSize;
+			const numLayers = options.numLayers
+				? Number.parseInt(options.numLayers, 10)
+				: config.training.numLayers;
+			const stepsPerEval = options.stepsPerEval
+				? Number.parseInt(options.stepsPerEval, 10)
+				: config.training.stepsPerEval;
+			const saveEvery = options.saveEvery
+				? Number.parseInt(options.saveEvery, 10)
+				: config.training.saveEvery;
+
+			// Fail fast on unparseable numeric flags rather than letting NaN
+			// reach mlx_lm as a literal "NaN" argument with an opaque error.
+			const numericOverrides: Array<[flag: string, value: number]> = [
+				['-i, --iterations', iterations],
+				['--lr', learningRate],
+				['--batch-size', batchSize],
+				['--num-layers', numLayers],
+				['--steps-per-eval', stepsPerEval],
+				['--save-every', saveEvery],
+			];
+			for (const [flag, value] of numericOverrides) {
+				if (!Number.isFinite(value)) {
+					setError(`Invalid value for ${flag}: must be a number.`);
+					setStatus('error');
+					return;
+				}
+			}
 
 			// Dry run check
 			if (options.dryRun) {
@@ -167,10 +201,10 @@ export function TrainCommand({options}: Props) {
 				adapterPath: getAdaptersDir(),
 				iterations,
 				learningRate,
-				batchSize: config.training.batchSize,
-				numLayers: config.training.numLayers,
-				stepsPerEval: config.training.stepsPerEval,
-				saveEvery: config.training.saveEvery,
+				batchSize,
+				numLayers,
+				stepsPerEval,
+				saveEvery,
 				resume: options.resume,
 			};
 
@@ -197,7 +231,16 @@ export function TrainCommand({options}: Props) {
 			setError(err instanceof Error ? err.message : 'Training failed');
 			setStatus('error');
 		}
-	}, [options.iterations, options.lr, options.resume, options.dryRun]);
+	}, [
+		options.iterations,
+		options.lr,
+		options.batchSize,
+		options.numLayers,
+		options.stepsPerEval,
+		options.saveEvery,
+		options.resume,
+		options.dryRun,
+	]);
 
 	useEffect(() => {
 		run();
