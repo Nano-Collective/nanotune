@@ -26,12 +26,35 @@ import {
 	runTraining,
 } from '../lib/mlx.js';
 import {assertSupportedPlatform} from '../lib/platform.js';
+import {TrainingConfigSchema} from '../types/index.js';
 import type {TrainingProgress} from '../types/index.js';
+
+// Maps TrainingConfigSchema field names to the CLI flag that overrides them,
+// so schema validation errors can point at the flag the user actually typed.
+const TRAINING_FLAG_NAMES: Record<string, string> = {
+	iterations: '-i, --iterations',
+	learningRate: '--lr',
+	fineTuneType: '--fine-tune-type',
+	loraRank: '--lora-rank',
+	loraAlpha: '--lora-alpha',
+	loraDropout: '--lora-dropout',
+	maxSeqLength: '--max-seq-length',
+	valBatches: '--val-batches',
+	seed: '--seed',
+};
 
 interface Props {
 	options: {
 		iterations?: string;
 		lr?: string;
+		fineTuneType?: string;
+		loraRank?: string;
+		loraAlpha?: string;
+		loraDropout?: string;
+		maxSeqLength?: string;
+		gradCheckpoint?: boolean;
+		valBatches?: string;
+		seed?: string;
 		resume?: boolean;
 		dryRun?: boolean;
 	};
@@ -94,6 +117,64 @@ export function TrainCommand({options}: Props) {
 				}
 			}
 
+			// Load config
+			const config = loadConfig();
+
+			// Override with CLI options
+			const iterations = options.iterations
+				? Number.parseInt(options.iterations, 10)
+				: config.training.iterations;
+			const learningRate = options.lr
+				? Number.parseFloat(options.lr)
+				: config.training.learningRate;
+			const fineTuneType = options.fineTuneType ?? config.training.fineTuneType;
+			const loraRank = options.loraRank
+				? Number.parseInt(options.loraRank, 10)
+				: config.training.loraRank;
+			const loraAlpha = options.loraAlpha
+				? Number.parseFloat(options.loraAlpha)
+				: config.training.loraAlpha;
+			const loraDropout = options.loraDropout
+				? Number.parseFloat(options.loraDropout)
+				: config.training.loraDropout;
+			const maxSeqLength = options.maxSeqLength
+				? Number.parseInt(options.maxSeqLength, 10)
+				: config.training.maxSeqLength;
+			const gradCheckpoint = options.gradCheckpoint ?? config.training.gradCheckpoint;
+			const valBatches = options.valBatches
+				? Number.parseInt(options.valBatches, 10)
+				: config.training.valBatches;
+			const seed = options.seed
+				? Number.parseInt(options.seed, 10)
+				: config.training.seed;
+
+			// Fail fast — before the slow MLX install/data-validation steps —
+			// on invalid values rather than letting them reach mlx_lm as NaN
+			// or an out-of-range number. TrainingConfigSchema is the single
+			// source of truth for valid ranges/enum values (also enforced on
+			// config.json itself via loadConfig() above).
+			const validation = TrainingConfigSchema.safeParse({
+				...config.training,
+				iterations,
+				learningRate,
+				fineTuneType,
+				loraRank,
+				loraAlpha,
+				loraDropout,
+				maxSeqLength,
+				gradCheckpoint,
+				valBatches,
+				seed,
+			});
+			if (!validation.success) {
+				const issue = validation.error.issues[0];
+				const field = String(issue.path[0]);
+				const flag = TRAINING_FLAG_NAMES[field] ?? field;
+				setError(`Invalid value for ${flag}: ${issue.message}`);
+				setStatus('error');
+				return;
+			}
+
 			// Check MLX
 			setStatus('checking');
 			const hasMLX = await checkMLXInstalled();
@@ -115,17 +196,6 @@ export function TrainCommand({options}: Props) {
 
 			// Ensure we have a validation set (MLX requires it)
 			ensureValidationSet();
-
-			// Load config
-			const config = loadConfig();
-
-			// Override with CLI options
-			const iterations = options.iterations
-				? Number.parseInt(options.iterations, 10)
-				: config.training.iterations;
-			const learningRate = options.lr
-				? Number.parseFloat(options.lr)
-				: config.training.learningRate;
 
 			// Dry run check
 			if (options.dryRun) {
@@ -172,6 +242,14 @@ export function TrainCommand({options}: Props) {
 				stepsPerEval: config.training.stepsPerEval,
 				saveEvery: config.training.saveEvery,
 				resume: options.resume,
+				fineTuneType: fineTuneType as 'lora' | 'dora' | 'full',
+				loraRank,
+				loraAlpha,
+				loraDropout,
+				maxSeqLength,
+				gradCheckpoint,
+				valBatches,
+				seed,
 			};
 
 			for await (const update of runTraining(trainingOptions)) {
@@ -197,7 +275,20 @@ export function TrainCommand({options}: Props) {
 			setError(err instanceof Error ? err.message : 'Training failed');
 			setStatus('error');
 		}
-	}, [options.iterations, options.lr, options.resume, options.dryRun]);
+	}, [
+		options.iterations,
+		options.lr,
+		options.fineTuneType,
+		options.loraRank,
+		options.loraAlpha,
+		options.loraDropout,
+		options.maxSeqLength,
+		options.gradCheckpoint,
+		options.valBatches,
+		options.seed,
+		options.resume,
+		options.dryRun,
+	]);
 
 	useEffect(() => {
 		run();

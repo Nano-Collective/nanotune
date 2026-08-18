@@ -6,7 +6,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import test from "ava";
-import { ConfigSchema } from "../types/index.js";
+import { ConfigSchema, TrainingConfigSchema } from "../types/index.js";
 import {
   createDefaultConfig,
   findLatestGGUF,
@@ -134,6 +134,26 @@ test("ConfigSchema rejects invalid quantization type", (t) => {
   t.false(result.success);
 });
 
+test("TrainingConfigSchema rejects a non-positive loraRank", (t) => {
+  const result = TrainingConfigSchema.safeParse({ loraRank: 0 });
+  t.false(result.success);
+});
+
+test("TrainingConfigSchema rejects a negative valBatches", (t) => {
+  const result = TrainingConfigSchema.safeParse({ valBatches: -1 });
+  t.false(result.success);
+});
+
+test("TrainingConfigSchema rejects loraDropout of 1 or more", (t) => {
+  t.false(TrainingConfigSchema.safeParse({ loraDropout: 1 }).success);
+  t.true(TrainingConfigSchema.safeParse({ loraDropout: 0.99 }).success);
+});
+
+test("TrainingConfigSchema rejects an unknown fineTuneType", (t) => {
+  const result = TrainingConfigSchema.safeParse({ fineTuneType: "bogus" });
+  t.false(result.success);
+});
+
 test("createDefaultConfig returns valid config", (t) => {
   const config = createDefaultConfig(
     "my-project",
@@ -157,6 +177,14 @@ test("createDefaultConfig sets correct defaults", (t) => {
   t.is(config.training.learningRate, 5e-5);
   t.is(config.training.batchSize, 4);
   t.is(config.training.numLayers, 16);
+  t.is(config.training.fineTuneType, "lora");
+  t.is(config.training.loraRank, 8);
+  t.is(config.training.loraAlpha, 20);
+  t.is(config.training.loraDropout, 0);
+  t.is(config.training.maxSeqLength, 2048);
+  t.is(config.training.gradCheckpoint, false);
+  t.is(config.training.valBatches, 25);
+  t.is(config.training.seed, 0);
 });
 
 test("resolveContextMessage prefers contextMessage over systemPrompt", (t) => {
@@ -173,6 +201,14 @@ test("resolveContextMessage prefers contextMessage over systemPrompt", (t) => {
       numLayers: 16,
       stepsPerEval: 50,
       saveEvery: 50,
+      fineTuneType: "lora" as const,
+      loraRank: 8,
+      loraAlpha: 20,
+      loraDropout: 0,
+      maxSeqLength: 2048,
+      gradCheckpoint: false,
+      valBatches: 25,
+      seed: 0,
     },
     export: {
       quantization: "q4_k_m" as const,
@@ -198,6 +234,14 @@ test("resolveContextMessage falls back to systemPrompt", (t) => {
       numLayers: 16,
       stepsPerEval: 50,
       saveEvery: 50,
+      fineTuneType: "lora" as const,
+      loraRank: 8,
+      loraAlpha: 20,
+      loraDropout: 0,
+      maxSeqLength: 2048,
+      gradCheckpoint: false,
+      valBatches: 25,
+      seed: 0,
     },
     export: {
       quantization: "q4_k_m" as const,

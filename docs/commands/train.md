@@ -20,6 +20,14 @@ nanotune train
 |------|-------------|
 | `-i, --iterations <n>` | Override iteration count |
 | `--lr <rate>` | Override learning rate |
+| `--fine-tune-type <type>` | Fine-tuning type: `lora`, `dora`, or `full` |
+| `--lora-rank <n>` | LoRA rank |
+| `--lora-alpha <n>` | LoRA alpha (scaling factor) |
+| `--lora-dropout <n>` | LoRA dropout |
+| `--max-seq-length <n>` | Maximum sequence length |
+| `--grad-checkpoint` | Enable gradient checkpointing |
+| `--val-batches <n>` | Number of validation batches |
+| `--seed <n>` | Random seed for training |
 | `--resume` | Resume from last checkpoint |
 | `--dry-run` | Validate config without training |
 
@@ -34,6 +42,12 @@ nanotune train -i 200
 
 # Override learning rate
 nanotune train --lr 1e-4
+
+# Use DoRA instead of LoRA, with a higher rank
+nanotune train --fine-tune-type dora --lora-rank 16 --lora-alpha 32
+
+# Enable gradient checkpointing and set a fixed seed for reproducibility
+nanotune train --grad-checkpoint --seed 42
 
 # Resume from last checkpoint
 nanotune train --resume

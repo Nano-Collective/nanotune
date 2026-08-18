@@ -10,6 +10,8 @@ export const ChatMessageSchema = z.object({
 	content: z.string(),
 });
 
+export const FINE_TUNE_TYPES = ['lora', 'dora', 'full'] as const;
+
 export const TrainingConfigSchema = z.object({
 	iterations: z.number().default(150),
 	learningRate: z.number().default(5e-5),
@@ -17,6 +19,14 @@ export const TrainingConfigSchema = z.object({
 	numLayers: z.number().default(16),
 	stepsPerEval: z.number().default(50),
 	saveEvery: z.number().default(50),
+	fineTuneType: z.enum(FINE_TUNE_TYPES).default('lora'),
+	loraRank: z.number().positive().default(8),
+	loraAlpha: z.number().positive().default(20),
+	loraDropout: z.number().min(0).lt(1).default(0),
+	maxSeqLength: z.number().positive().default(2048),
+	gradCheckpoint: z.boolean().default(false),
+	valBatches: z.number().nonnegative().default(25),
+	seed: z.number().nonnegative().default(0),
 });
 
 export const ExportConfigSchema = z.object({
