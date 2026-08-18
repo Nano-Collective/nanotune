@@ -1,4 +1,5 @@
 import test from "ava";
+import { buildLoraConfigYaml } from "./mlx.js";
 
 test("MLX output parsing regex works correctly", (t) => {
   // Test the regex pattern used to parse MLX training output
@@ -64,10 +65,30 @@ test("MLXTrainingOptions structure is correct", (t) => {
     stepsPerEval: 50,
     saveEvery: 50,
     resume: false,
+    fineTuneType: "lora" as const,
+    loraRank: 8,
+    loraAlpha: 20,
+    loraDropout: 0,
+    maxSeqLength: 2048,
+    gradCheckpoint: false,
+    valBatches: 25,
+    seed: 0,
   };
 
   t.is(options.model, "Qwen/Qwen2.5-Coder-1.5B-Instruct");
   t.is(options.iterations, 150);
   t.is(options.learningRate, 5e-5);
   t.is(options.batchSize, 4);
+  t.is(options.fineTuneType, "lora");
+  t.is(options.loraRank, 8);
+});
+
+test("buildLoraConfigYaml produces the expected lora_parameters block", (t) => {
+  const yaml = buildLoraConfigYaml(8, 20, 0);
+  t.is(yaml, "lora_parameters:\n  rank: 8\n  scale: 20\n  dropout: 0\n");
+});
+
+test("buildLoraConfigYaml reflects overridden values", (t) => {
+  const yaml = buildLoraConfigYaml(16, 32, 0.05);
+  t.is(yaml, "lora_parameters:\n  rank: 16\n  scale: 32\n  dropout: 0.05\n");
 });

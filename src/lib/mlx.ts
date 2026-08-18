@@ -1,3 +1,6 @@
+import {mkdtempSync, rmSync, writeFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {execa, type ResultPromise} from 'execa';
 import type {
 	DependencyStatus,
@@ -16,6 +19,26 @@ export interface MLXTrainingOptions {
 	stepsPerEval: number;
 	saveEvery: number;
 	resume?: boolean;
+	fineTuneType: 'lora' | 'dora' | 'full';
+	loraRank: number;
+	loraAlpha: number;
+	loraDropout: number;
+	maxSeqLength: number;
+	gradCheckpoint: boolean;
+	valBatches: number;
+	seed: number;
+}
+
+// mlx_lm has no flat CLI flags for LoRA rank/scale/dropout — they're only
+// settable via a YAML config's `lora_parameters` block, passed with -c/--config.
+// (mlx_lm calls the field `scale`; Nanotune's schema/CLI call it `alpha` to
+// match common LoRA terminology and issue #72's wording.)
+export function buildLoraConfigYaml(
+	rank: number,
+	alpha: number,
+	dropout: number,
+): string {
+	return `lora_parameters:\n  rank: ${rank}\n  scale: ${alpha}\n  dropout: ${dropout}\n`;
 }
 
 export async function checkPython(): Promise<{
@@ -284,6 +307,14 @@ export async function* runTraining(
 		String(options.stepsPerEval),
 		'--save-every',
 		String(options.saveEvery),
+		'--fine-tune-type',
+		options.fineTuneType,
+		'--max-seq-length',
+		String(options.maxSeqLength),
+		'--val-batches',
+		String(options.valBatches),
+		'--seed',
+		String(options.seed),
 	];
 
 	if (options.resume) {
@@ -293,63 +324,89 @@ export async function* runTraining(
 		);
 	}
 
-	const subprocess = execa('python3', args, {
-		stdout: 'pipe',
-		stderr: 'pipe',
-		buffer: false,
-	});
-
-	const stdout = subprocess.stdout;
-	const stderr = subprocess.stderr;
-	if (!stdout) {
-		throw new Error('Failed to get stdout from training process');
+	if (options.gradCheckpoint) {
+		args.push('--grad-checkpoint');
 	}
 
-	// Collect stderr for error reporting
-	let stderrOutput = '';
-	if (stderr) {
-		stderr.on('data', (chunk: Buffer) => {
-			stderrOutput += chunk.toString();
-		});
-	}
-
-	let buffer = '';
-
-	for await (const chunk of stdout) {
-		buffer += chunk.toString();
-		const lines = buffer.split('\n');
-		buffer = lines.pop() || '';
-
-		for (const line of lines) {
-			// Parse: "Iter 10: Train loss 1.234, Val loss 1.456"
-			// or: "Iter 10 (15.2 it/s): Train loss 1.234"
-			const match = line.match(
-				/Iter\s+(\d+)(?:\s*\([^)]+\))?:\s*Train loss\s+([\d.]+)(?:,\s*Val loss\s+([\d.]+))?/i,
+	// LoRA rank/alpha/dropout have no flat CLI flags, so write them to a
+	// temp YAML config and pass -c/--config alongside the explicit flags
+	// above (mlx_lm merges the two, with explicit flags taking priority).
+	// Directory creation happens inside the try so a failed write still gets
+	// cleaned up in the finally below rather than leaking a temp dir.
+	let loraConfigDir: string | null = null;
+	try {
+		if (options.fineTuneType !== 'full') {
+			loraConfigDir = mkdtempSync(join(tmpdir(), 'nanotune-lora-'));
+			const loraConfigPath = join(loraConfigDir, 'lora.yaml');
+			writeFileSync(
+				loraConfigPath,
+				buildLoraConfigYaml(options.loraRank, options.loraAlpha, options.loraDropout),
 			);
-			if (match) {
-				yield {
-					iteration: Number.parseInt(match[1], 10),
-					totalIterations: options.iterations,
-					trainLoss: Number.parseFloat(match[2]),
-					valLoss: match[3] ? Number.parseFloat(match[3]) : undefined,
-				};
+			args.push('-c', loraConfigPath);
+		}
+
+		const subprocess = execa('python3', args, {
+			stdout: 'pipe',
+			stderr: 'pipe',
+			buffer: false,
+		});
+
+		const stdout = subprocess.stdout;
+		const stderr = subprocess.stderr;
+		if (!stdout) {
+			throw new Error('Failed to get stdout from training process');
+		}
+
+		// Collect stderr for error reporting
+		let stderrOutput = '';
+		if (stderr) {
+			stderr.on('data', (chunk: Buffer) => {
+				stderrOutput += chunk.toString();
+			});
+		}
+
+		let buffer = '';
+
+		for await (const chunk of stdout) {
+			buffer += chunk.toString();
+			const lines = buffer.split('\n');
+			buffer = lines.pop() || '';
+
+			for (const line of lines) {
+				// Parse: "Iter 10: Train loss 1.234, Val loss 1.456"
+				// or: "Iter 10 (15.2 it/s): Train loss 1.234"
+				const match = line.match(
+					/Iter\s+(\d+)(?:\s*\([^)]+\))?:\s*Train loss\s+([\d.]+)(?:,\s*Val loss\s+([\d.]+))?/i,
+				);
+				if (match) {
+					yield {
+						iteration: Number.parseInt(match[1], 10),
+						totalIterations: options.iterations,
+						trainLoss: Number.parseFloat(match[2]),
+						valLoss: match[3] ? Number.parseFloat(match[3]) : undefined,
+					};
+				}
 			}
 		}
-	}
 
-	try {
-		await subprocess;
-	} catch (err) {
-		// Include stderr in the error message for better debugging
-		const errorMessage = err instanceof Error ? err.message : 'Training failed';
-		const stderrTrimmed = stderrOutput.trim();
-		if (stderrTrimmed) {
-			// Extract the most relevant part of the error (last few lines usually have the actual error)
-			const stderrLines = stderrTrimmed.split('\n');
-			const relevantLines = stderrLines.slice(-10).join('\n');
-			throw new Error(`${errorMessage}\n\nDetails:\n${relevantLines}`);
+		try {
+			await subprocess;
+		} catch (err) {
+			// Include stderr in the error message for better debugging
+			const errorMessage = err instanceof Error ? err.message : 'Training failed';
+			const stderrTrimmed = stderrOutput.trim();
+			if (stderrTrimmed) {
+				// Extract the most relevant part of the error (last few lines usually have the actual error)
+				const stderrLines = stderrTrimmed.split('\n');
+				const relevantLines = stderrLines.slice(-10).join('\n');
+				throw new Error(`${errorMessage}\n\nDetails:\n${relevantLines}`);
+			}
+			throw err;
 		}
-		throw err;
+	} finally {
+		if (loraConfigDir) {
+			rmSync(loraConfigDir, {recursive: true, force: true});
+		}
 	}
 }
 
