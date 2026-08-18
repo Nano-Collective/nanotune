@@ -117,6 +117,10 @@ program
 	.description('Train the model with LoRA fine-tuning')
 	.option('-i, --iterations <n>', 'Number of training iterations')
 	.option('--lr <rate>', 'Learning rate')
+	.option('--batch-size <n>', 'Batch size')
+	.option('--num-layers <n>', 'Number of layers to fine-tune')
+	.option('--steps-per-eval <n>', 'Run validation every N steps')
+	.option('--save-every <n>', 'Save a checkpoint every N steps')
 	.option('--resume', 'Resume from last checkpoint')
 	.option('--dry-run', 'Validate config without training')
 	.action(async options => {
