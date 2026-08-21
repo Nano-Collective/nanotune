@@ -1,4 +1,12 @@
-import {mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync} from 'node:fs';
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'ava';
@@ -247,6 +255,80 @@ test.serial('saveJudgeConfig - tightens permissions on a pre-existing file', t =
 		});
 
 		t.is(statSync(path).mode & 0o777, 0o600);
+	} finally {
+		process.chdir(originalCwd);
+		rmSync(dir, {recursive: true, force: true});
+	}
+});
+
+test.serial('saveJudgeConfig - is 0600 even under a permissive umask', t => {
+	const originalCwd = process.cwd();
+	// umask 0 is the only setting under which a dropped `mode` becomes visible
+	// in the finished file: without it the temp is created 0666 and rename
+	// carries that straight onto judge.json.
+	const originalUmask = process.umask(0o000);
+	const dir = mkdtempSync(join(tmpdir(), 'nanotune-judge-'));
+	try {
+		process.chdir(dir);
+		mkdirSync(join(dir, '.nanotune'), {recursive: true});
+
+		saveJudgeConfig({
+			name: 'Test',
+			baseUrl: 'https://example.invalid/v1',
+			apiKey: 'sk-secret',
+			model: 'test-model',
+		});
+
+		t.is(statSync(getJudgeConfigPath()).mode & 0o777, 0o600);
+	} finally {
+		process.chdir(originalCwd);
+		process.umask(originalUmask);
+		rmSync(dir, {recursive: true, force: true});
+	}
+});
+
+test.serial('saveJudgeConfig - leaves no temp file behind', t => {
+	const originalCwd = process.cwd();
+	const dir = mkdtempSync(join(tmpdir(), 'nanotune-judge-'));
+	try {
+		process.chdir(dir);
+		mkdirSync(join(dir, '.nanotune'), {recursive: true});
+
+		saveJudgeConfig({
+			name: 'Test',
+			baseUrl: 'https://example.invalid/v1',
+			model: 'test-model',
+		});
+
+		t.false(existsSync(`${getJudgeConfigPath()}.tmp`));
+	} finally {
+		process.chdir(originalCwd);
+		rmSync(dir, {recursive: true, force: true});
+	}
+});
+
+test.serial('saveJudgeConfig - recovers from a stale temp file', t => {
+	const originalCwd = process.cwd();
+	const dir = mkdtempSync(join(tmpdir(), 'nanotune-judge-'));
+	try {
+		process.chdir(dir);
+		mkdirSync(join(dir, '.nanotune'), {recursive: true});
+
+		// A process killed between write and rename leaves this behind. The
+		// exclusive create would fail with EEXIST forever if it were not
+		// cleared first.
+		const path = join(dir, '.nanotune', 'judge.json');
+		writeFileSync(`${path}.tmp`, '{"stale":true}', {mode: 0o600});
+
+		t.notThrows(() =>
+			saveJudgeConfig({
+				name: 'Test',
+				baseUrl: 'https://example.invalid/v1',
+				model: 'test-model',
+			}),
+		);
+		t.is(statSync(path).mode & 0o777, 0o600);
+		t.is(JSON.parse(readFileSync(path, 'utf-8')).name, 'Test');
 	} finally {
 		process.chdir(originalCwd);
 		rmSync(dir, {recursive: true, force: true});
