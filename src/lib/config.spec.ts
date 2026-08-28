@@ -10,6 +10,8 @@ import { ConfigSchema } from "../types/index.js";
 import {
   createDefaultConfig,
   findLatestGGUF,
+  findUnknownConfigKeys,
+  loadConfig,
   resolveContextMessage,
 } from "./config.js";
 
@@ -308,3 +310,159 @@ test.serial("findLatestGGUF ignores non-.gguf siblings", (t) => {
   }
 });
 
+
+// ── findUnknownConfigKeys ─────────────────────────────────────────────
+
+const KNOWN_KEYS_CONFIG = {
+  name: "test-project",
+  version: "1.0.0",
+  baseModel: "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+  contextMessage: { role: "system", content: "You are a helpful assistant." },
+  training: {
+    iterations: 150,
+    learningRate: 5e-5,
+    batchSize: 4,
+    numLayers: 16,
+    stepsPerEval: 50,
+    saveEvery: 50,
+  },
+  export: {
+    quantization: "q4_k_m",
+    outputName: "test",
+  },
+};
+
+test("findUnknownConfigKeys returns nothing for a valid config", (t) => {
+  t.deepEqual(findUnknownConfigKeys(KNOWN_KEYS_CONFIG), []);
+});
+
+test("findUnknownConfigKeys names an unknown nested key and suggests the closest field", (t) => {
+  const warnings = findUnknownConfigKeys({
+    ...KNOWN_KEYS_CONFIG,
+    training: { ...KNOWN_KEYS_CONFIG.training, loraLayers: 16 },
+  });
+
+  t.deepEqual(warnings, [
+    'unknown key "training.loraLayers" in config.json — ignored. Did you mean "numLayers"?',
+  ]);
+});
+
+test("findUnknownConfigKeys omits the suggestion when no valid field is close", (t) => {
+  const warnings = findUnknownConfigKeys({
+    ...KNOWN_KEYS_CONFIG,
+    training: { ...KNOWN_KEYS_CONFIG.training, loraRank: 8 },
+  });
+
+  t.deepEqual(warnings, [
+    'unknown key "training.loraRank" in config.json — ignored.',
+  ]);
+});
+
+test("findUnknownConfigKeys names unknown top-level keys", (t) => {
+  const warnings = findUnknownConfigKeys({
+    ...KNOWN_KEYS_CONFIG,
+    basemodel: "Qwen/Qwen2.5-Coder-0.5B-Instruct",
+  });
+
+  t.deepEqual(warnings, [
+    'unknown key "basemodel" in config.json — ignored. Did you mean "baseModel"?',
+  ]);
+});
+
+test("findUnknownConfigKeys walks every nested object", (t) => {
+  const warnings = findUnknownConfigKeys({
+    ...KNOWN_KEYS_CONFIG,
+    contextMessage: { ...KNOWN_KEYS_CONFIG.contextMessage, text: "legacy" },
+    export: { ...KNOWN_KEYS_CONFIG.export, outputname: "test" },
+  });
+
+  t.deepEqual(warnings, [
+    'unknown key "contextMessage.text" in config.json — ignored.',
+    'unknown key "export.outputname" in config.json — ignored. Did you mean "outputName"?',
+  ]);
+});
+
+test("findUnknownConfigKeys reports every unknown key", (t) => {
+  const warnings = findUnknownConfigKeys({
+    ...KNOWN_KEYS_CONFIG,
+    training: { ...KNOWN_KEYS_CONFIG.training, loraLayers: 16, loraRank: 8 },
+  });
+
+  t.is(warnings.length, 2);
+});
+
+test("findUnknownConfigKeys ignores a config that is not an object", (t) => {
+  t.deepEqual(findUnknownConfigKeys(null), []);
+  t.deepEqual(findUnknownConfigKeys([1, 2, 3]), []);
+});
+
+test("ConfigSchema still loads a config with unknown keys", (t) => {
+  const config = ConfigSchema.parse({
+    ...KNOWN_KEYS_CONFIG,
+    training: { ...KNOWN_KEYS_CONFIG.training, loraLayers: 8 },
+  });
+
+  t.is(config.name, "test-project");
+  t.is(config.training.numLayers, 16);
+});
+
+test("findUnknownConfigKeys reports keys that shadow Object.prototype", (t) => {
+  const warnings = findUnknownConfigKeys({
+    ...KNOWN_KEYS_CONFIG,
+    training: { ...KNOWN_KEYS_CONFIG.training, toString: "noop" },
+  });
+
+  t.deepEqual(warnings, [
+    'unknown key "training.toString" in config.json — ignored.',
+  ]);
+});
+
+test("findUnknownConfigKeys reports a __proto__ key parsed out of JSON", (t) => {
+  // JSON.parse gives __proto__ an own enumerable slot; a literal would not.
+  const raw = JSON.parse(
+    `{"__proto__": {"polluted": true}, ${JSON.stringify(KNOWN_KEYS_CONFIG).slice(1)}`,
+  );
+
+  t.deepEqual(findUnknownConfigKeys(raw), [
+    'unknown key "__proto__" in config.json — ignored.',
+  ]);
+});
+
+// ── loadConfig warnings ───────────────────────────────────────────────
+
+const WARN_TEST_DIR = join(ORIG_CWD, ".test-config-warnings");
+
+test.serial("loadConfig prints each unknown key once across loads", (t) => {
+  rmSync(WARN_TEST_DIR, { recursive: true, force: true });
+  mkdirSync(join(WARN_TEST_DIR, ".nanotune"), { recursive: true });
+  writeFileSync(
+    join(WARN_TEST_DIR, ".nanotune", "config.json"),
+    JSON.stringify({
+      ...KNOWN_KEYS_CONFIG,
+      training: { ...KNOWN_KEYS_CONFIG.training, loraLayers: 32 },
+    }),
+  );
+  process.chdir(WARN_TEST_DIR);
+
+  const printed: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    printed.push(args.join(" "));
+  };
+
+  try {
+    const first = loadConfig();
+    // A second load must not repeat the warning — warnedKeys dedupes it.
+    const second = loadConfig();
+
+    t.deepEqual(printed, [
+      'Warning: unknown key "training.loraLayers" in config.json — ignored. Did you mean "numLayers"?',
+    ]);
+    t.false("loraLayers" in first.training);
+    t.is(second.training.numLayers, 16);
+  } finally {
+    console.warn = originalWarn;
+    process.chdir(ORIG_CWD);
+    rmSync(WARN_TEST_DIR, { recursive: true, force: true });
+  }
+});
