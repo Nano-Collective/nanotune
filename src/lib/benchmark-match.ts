@@ -4,10 +4,9 @@ import type {MatchMode} from '../types/index.js';
  * Normalize text for comparison:
  * - trim whitespace
  * - collapse runs of whitespace to a single space
- * - canonicalize different quote characters to `"`
  */
 export function normalizeText(text: string): string {
-	return text.trim().replace(/\s+/g, ' ').replace(/["'`]/g, '"');
+	return text.trim().replace(/\s+/g, ' ');
 }
 
 /**

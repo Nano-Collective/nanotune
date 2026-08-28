@@ -35,6 +35,7 @@ interface Props {
 		lr?: string;
 		resume?: boolean;
 		dryRun?: boolean;
+		seed?: string;
 	};
 }
 
@@ -59,6 +60,12 @@ export function TrainCommand({options}: Props) {
 	const [downloadPercent, setDownloadPercent] = useState<number | null>(null);
 	const [downloadDetail, setDownloadDetail] = useState<string | null>(null);
 	const [elapsed, setElapsed] = useState<string | null>(null);
+	const [split, setSplit] = useState<{
+		trainCount: number;
+		validCount: number;
+		didSplit: boolean;
+	} | null>(null);
+	const [seedIgnored, setSeedIgnored] = useState(false);
 	const abortRef = useRef<AbortController | null>(null);
 
 	// Ctrl+C is ours to handle here (the command renders with
@@ -102,6 +109,25 @@ export function TrainCommand({options}: Props) {
 
 	const run = useCallback(async () => {
 		try {
+			// Parse the seed before any work happens. Number.parseInt would turn
+			// a typo into NaN and mulberry32 would coerce that to 0, producing a
+			// confidently deterministic split under a seed the user never asked
+			// for; `--seed 3.7` would silently truncate the same way. Number()
+			// rejects both, but reads blank input as 0, so that is screened out
+			// first. Testing against undefined rather than truthiness keeps
+			// `--seed 0` a real seed.
+			let seed: number | undefined;
+			if (options.seed !== undefined) {
+				const raw = options.seed.trim();
+				const parsed = raw === '' ? Number.NaN : Number(raw);
+				if (!Number.isInteger(parsed)) {
+					setError(`Invalid --seed "${options.seed}": expected an integer.`);
+					setStatus('error');
+					return;
+				}
+				seed = parsed;
+			}
+
 			// Fail fast on unsupported hardware. Without this the run dies much
 			// later inside `pip install mlx-lm` with an opaque resolver error.
 			assertSupportedPlatform();
@@ -145,9 +171,6 @@ export function TrainCommand({options}: Props) {
 				return;
 			}
 
-			// Ensure we have a validation set (MLX requires it)
-			ensureValidationSet();
-
 			// Load config
 			const config = loadConfig();
 
@@ -159,10 +182,22 @@ export function TrainCommand({options}: Props) {
 				? Number.parseFloat(options.lr)
 				: config.training.learningRate;
 
-			// Dry run check
+			// Dry run check. This returns before the split so that a command
+			// documented as "validate config without training" leaves train.jsonl
+			// and valid.jsonl exactly as it found them.
 			if (options.dryRun) {
 				setStatus('done');
 				return;
+			}
+
+			// Ensure we have a validation set (MLX requires it).
+			const split = ensureValidationSet(seed);
+			setSplit(split);
+			// The split only happens when there is no validation set yet, so a
+			// seed handed to an already-split project changes nothing. Saying so
+			// beats letting the user believe they re-rolled the split.
+			if (seed !== undefined && !split.didSplit) {
+				setSeedIgnored(true);
 			}
 
 			// Download model if not cached
@@ -237,7 +272,13 @@ export function TrainCommand({options}: Props) {
 			setError(err instanceof Error ? err.message : 'Training failed');
 			setStatus('error');
 		}
-	}, [options.iterations, options.lr, options.resume, options.dryRun]);
+	}, [
+		options.iterations,
+		options.lr,
+		options.resume,
+		options.dryRun,
+		options.seed,
+	]);
 
 	useEffect(() => {
 		run();
@@ -255,7 +296,10 @@ export function TrainCommand({options}: Props) {
 	}
 
 	const config = loadConfig();
-	const exampleCount = countExamples();
+	// This component re-renders on every training update, so prefer the counts
+	// the split already returned over re-reading both files each time.
+	const exampleCount = split ? split.trainCount : countExamples();
+	const validCount = split ? split.validCount : countExamples(true);
 
 	return (
 		<Box flexDirection="column" padding={1}>
@@ -266,8 +310,22 @@ export function TrainCommand({options}: Props) {
 					Model: <Text color="cyan">{config.baseModel}</Text>
 				</Text>
 				<Text>
-					Examples: <Text color="cyan">{exampleCount}</Text>
+					Examples: <Text color="cyan">{exampleCount}</Text> train
+					{' | '}
+					<Text color="cyan">{validCount}</Text> validation
 				</Text>
+				{split?.didSplit && (
+					<Text color="yellow">
+						Split {split.trainCount + split.validCount} examples into{' '}
+						{split.trainCount} train / {split.validCount} validation.
+					</Text>
+				)}
+				{seedIgnored && (
+					<Text color="yellow">
+						Existing validation set found - --seed ignored. Delete valid.jsonl
+						to re-split.
+					</Text>
+				)}
 				<Text>
 					Iterations:{' '}
 					<Text color="cyan">

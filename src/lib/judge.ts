@@ -59,13 +59,21 @@ export function loadJudgeConfig(): JudgeProviderConfig {
 	return substituteEnvVars(raw);
 }
 
+/**
+ * Write judge.json at 0600 — `apiKey` may hold a literal secret, not just the
+ * `${ENV_VAR}` form.
+ *
+ * The two 0600s below are not duplicates: each covers a case the other cannot.
+ * Drop the `mode` and a fresh config is created 0644, receives the key, and is
+ * tightened only afterwards — too late for a process that already opened it,
+ * since chmod cannot revoke an open descriptor.
+ */
 export function saveJudgeConfig(config: JudgeProviderConfig): void {
 	const path = getJudgeConfigPath();
-	// 0600 — this file can hold a literal API key (users who don't use the
-	// ${ENV_VAR} form), so keep it readable only by its owner.
+	// New file: open(2) honours `mode` only when it creates the file.
 	writeFileSync(path, JSON.stringify(config, null, 2), {mode: 0o600});
-	// writeFileSync only applies `mode` when it creates the file, so re-chmod
-	// to also fix up configs written by earlier versions.
+	// Existing file: open(2) ignored `mode` above. Also repairs the 0644
+	// configs written by 1.5.0 and earlier.
 	chmodSync(path, 0o600);
 }
 

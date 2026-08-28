@@ -75,6 +75,7 @@ export function StatusCommand() {
 
 	// Training data info
 	const exampleCount = countExamples();
+	const validCount = countExamples(true);
 	const trainFile = join(dataDir, 'train.jsonl');
 	const trainModified = existsSync(trainFile)
 		? formatRelativeTime(statSync(trainFile).mtime)
@@ -147,7 +148,10 @@ export function StatusCommand() {
 				<Text> </Text>
 				<Text bold>Training Data:</Text>
 				<Text>
-					{'  '}Examples: <Text color="cyan">{exampleCount}</Text>
+					{'  '}Training Examples: <Text color="cyan">{exampleCount}</Text>
+				</Text>
+				<Text>
+					{'  '}Validation Examples: <Text color="cyan">{validCount}</Text>
 				</Text>
 				{trainModified && (
 					<Text dimColor>

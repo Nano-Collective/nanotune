@@ -22,6 +22,12 @@ nanotune train
 | `--lr <rate>` | Override learning rate |
 | `--resume` | Resume from last checkpoint |
 | `--dry-run` | Validate config without training |
+| `--seed <n>` | Integer seed for a reproducible train/validation split |
+
+`--seed` only affects the run that actually creates the split. Once `valid.jsonl`
+exists the split is left alone, so passing a seed to an already-split project
+does nothing and `train` says so — delete `valid.jsonl` first to re-split. A
+non-integer seed is rejected rather than silently coerced.
 
 ## Examples
 
