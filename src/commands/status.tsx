@@ -12,8 +12,11 @@ import {
 import {
 	configExists,
 	findLatestBenchmark,
+	formatFileSize,
 	getAdaptersDir,
 	getDataDir,
+	getDirectorySize,
+	getFusedModelDir,
 	getModelsDir,
 	loadBenchmark,
 	loadConfig,
@@ -34,14 +37,6 @@ function formatRelativeTime(date: Date): string {
 	if (diffMinutes > 0)
 		return `${diffMinutes} minute${diffMinutes > 1 ? 's' : ''} ago`;
 	return 'just now';
-}
-
-function formatFileSize(bytes: number): string {
-	if (bytes < 1024) return `${bytes} B`;
-	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-	if (bytes < 1024 * 1024 * 1024)
-		return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-	return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
 export function StatusCommand() {
@@ -103,6 +98,13 @@ export function StatusCommand() {
 				})
 				.sort((a, b) => b.modified.getTime() - a.modified.getTime())
 		: [];
+
+	// Fused model cache
+	const fusedDir = getFusedModelDir();
+	const fusedExists = existsSync(fusedDir);
+	const fusedSize = fusedExists
+		? formatFileSize(getDirectorySize(fusedDir))
+		: null;
 
 	// Latest benchmark
 	let latestBenchmark: BenchmarkResult | null = null;
@@ -178,6 +180,12 @@ export function StatusCommand() {
 					))
 				) : (
 					<Text dimColor>{'  '}No exported models yet</Text>
+				)}
+				{fusedExists && (
+					<Text dimColor>
+						{'  '}Fused model cache: {fusedSize} (run{' '}
+						<Text color="cyan">nanotune clean</Text> to remove)
+					</Text>
 				)}
 
 				<Text> </Text>

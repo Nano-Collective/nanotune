@@ -62,6 +62,38 @@ export function getChatsDir(): string {
 	return join(getProjectDir(), 'chats');
 }
 
+export function getFusedModelDir(): string {
+	return join(getModelsDir(), 'fused');
+}
+
+/**
+ * Recursively sum the size of every file under `dirPath`. Returns 0 if the
+ * directory doesn't exist. Used to report the size of the fused/ model
+ * cache, which is a directory of HF-format model files rather than a
+ * single file.
+ */
+export function getDirectorySize(dirPath: string): number {
+	if (!existsSync(dirPath)) {
+		return 0;
+	}
+	let total = 0;
+	for (const entry of readdirSync(dirPath, {withFileTypes: true})) {
+		const entryPath = join(dirPath, entry.name);
+		total += entry.isDirectory()
+			? getDirectorySize(entryPath)
+			: statSync(entryPath).size;
+	}
+	return total;
+}
+
+export function formatFileSize(bytes: number): string {
+	if (bytes < 1024) return `${bytes} B`;
+	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+	if (bytes < 1024 * 1024 * 1024)
+		return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+	return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
 export function configExists(): boolean {
 	return existsSync(getConfigPath());
 }
