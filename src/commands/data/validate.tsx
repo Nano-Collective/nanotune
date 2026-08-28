@@ -24,9 +24,14 @@ import {
 interface Props {
 	fix?: boolean;
 	rewriteContext?: boolean;
+	isEval?: boolean;
 }
 
-export function DataValidateCommand({fix, rewriteContext}: Props) {
+export function DataValidateCommand({
+	fix,
+	rewriteContext,
+	isEval = false,
+}: Props) {
 	const {exit} = useApp();
 	const hasConfig = configExists();
 
@@ -36,6 +41,9 @@ export function DataValidateCommand({fix, rewriteContext}: Props) {
 		}
 	});
 
+	const setName = isEval ? 'Validation data' : 'Training data';
+	const title = isEval ? 'Validate Validation Data' : 'Validate Training Data';
+
 	let dedupeResult: DedupeResult | null = null;
 	let contextFixResult: ContextFixResult | null = null;
 	if (hasConfig) {
@@ -44,18 +52,19 @@ export function DataValidateCommand({fix, rewriteContext}: Props) {
 		if (rewriteContext) {
 			contextFixResult = fixContextMessages(
 				resolveContextMessage(loadConfig()),
+				isEval,
 			);
 		}
 		if (fix) {
-			dedupeResult = dedupeExamples();
+			dedupeResult = dedupeExamples(isEval);
 		}
 	}
 
 	// Re-validate after fixes are applied so the report reflects the data
 	// actually left on disk.
-	const count = hasConfig ? countExamples() : 0;
+	const count = hasConfig ? countExamples(isEval) : 0;
 	const result = hasConfig
-		? validateTrainingData(resolveContextMessage(loadConfig()))
+		? validateTrainingData(resolveContextMessage(loadConfig()), isEval)
 		: null;
 
 	// Report is fully rendered on first pass — without a keyboard there is
@@ -65,7 +74,7 @@ export function DataValidateCommand({fix, rewriteContext}: Props) {
 	if (!hasConfig || !result) {
 		return (
 			<Box flexDirection="column" padding={1}>
-				<Header title="Validate Training Data" />
+				<Header title={title} />
 				<StatusMessage variant="error">
 					Not a Nanotune project. Run `nanotune init` first.
 				</StatusMessage>
@@ -75,7 +84,7 @@ export function DataValidateCommand({fix, rewriteContext}: Props) {
 
 	return (
 		<Box flexDirection="column" padding={1}>
-			<Header title="Validate Training Data" />
+			<Header title={title} />
 
 			<Box marginBottom={1}>
 				<Text>Examples: </Text>
@@ -117,9 +126,9 @@ export function DataValidateCommand({fix, rewriteContext}: Props) {
 			)}
 
 			{result.valid ? (
-				<StatusMessage variant="success">Training data is valid!</StatusMessage>
+				<StatusMessage variant="success">{`${setName} is valid!`}</StatusMessage>
 			) : (
-				<StatusMessage variant="error">Training data has errors</StatusMessage>
+				<StatusMessage variant="error">{`${setName} has errors`}</StatusMessage>
 			)}
 
 			{result.errors.length > 0 && (
