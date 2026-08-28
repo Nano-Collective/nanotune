@@ -10,6 +10,7 @@ import {
   countTurns,
   dedupeExamples,
   deleteExample,
+  ensureValidationSet,
   exportData,
   exportToCSV,
   exportToJSON,
@@ -1208,6 +1209,219 @@ test.serial(
     t.is(result.trainCount, 1);
   },
 );
+
+// ── ensureValidationSet ───────────────────────────────────────────────
+
+test.serial("ensureValidationSet splits and reports it when no valid.jsonl exists", (t) => {
+  seedExamples(10);
+
+  const result = ensureValidationSet(1);
+
+  t.true(result.didSplit);
+  t.is(result.trainCount, 9);
+  t.is(result.validCount, 1);
+  t.is(countExamples(false), 9);
+  t.is(countExamples(true), 1);
+});
+
+test.serial("ensureValidationSet leaves an existing validation set alone", (t) => {
+  seedExamples(10);
+  ensureValidationSet(1);
+
+  const second = ensureValidationSet(1);
+
+  t.false(second.didSplit);
+  t.is(second.trainCount, 9);
+  t.is(second.validCount, 1);
+});
+
+test.serial("ensureValidationSet reports counts that account for every example", (t) => {
+  seedExamples(10);
+
+  const result = ensureValidationSet(1);
+
+  t.is(result.trainCount + result.validCount, 10);
+});
+
+test.serial("ensureValidationSet forwards its seed to the split", (t) => {
+  // Compared against splitTrainValidation with the same seed rather than
+  // against a second seeded run: two runs agreeing only shows the seed is
+  // used, and with a 2-of-20 split they would agree by chance often enough
+  // for a dropped seed to slip through.
+  seedExamples(20);
+  ensureValidationSet(42);
+  const viaEnsure = loadTrainingData(true).map((ex) => ex.messages[1].content);
+
+  rmSync(DATA_DIR, { recursive: true, force: true });
+  mkdirSync(DATA_DIR, { recursive: true });
+  seedExamples(20);
+  splitTrainValidation(0.1, 42);
+  const viaSplit = loadTrainingData(true).map((ex) => ex.messages[1].content);
+
+  t.deepEqual(viaEnsure, viaSplit);
+  // A split that shuffled differently would still land 2 examples in valid,
+  // so assert the contents are not merely the same size.
+  t.is(viaEnsure.length, 2);
+});
+
+test.serial("ensureValidationSet returns zero counts with no data at all", (t) => {
+  const result = ensureValidationSet(1);
+
+  t.false(result.didSplit);
+  t.is(result.trainCount, 0);
+  t.is(result.validCount, 0);
+});
+
+test.serial(
+  "ensureValidationSet does not report a split that produced no validation examples",
+  (t) => {
+    // One example cannot be split, so valid.jsonl stays empty and every later
+    // call re-enters the same branch. Reporting didSplit here would repeat
+    // "Split 1 examples into 1 train / 0 validation." on every train run.
+    seedExamples(1);
+
+    const first = ensureValidationSet(1);
+
+    t.false(first.didSplit);
+    t.is(first.trainCount, 1);
+    t.is(first.validCount, 0);
+
+    const second = ensureValidationSet(1);
+
+    t.false(second.didSplit);
+  },
+);
+
+test.serial("ensureValidationSet splits at the two-example boundary", (t) => {
+  seedExamples(2);
+
+  const result = ensureValidationSet(1);
+
+  t.true(result.didSplit);
+  t.is(result.trainCount, 1);
+  t.is(result.validCount, 1);
+});
+
+// ── isEval imports ────────────────────────────────────────────────────
+
+test.serial("importFromJSONL writes to valid.jsonl when isEval is true", (t) => {
+  const jsonlPath = join(TEST_DIR, "in.jsonl");
+  writeFileSync(
+    jsonlPath,
+    `${JSON.stringify({ input: "q", output: "a" })}\n`,
+  );
+
+  const result = importFromJSONL(jsonlPath, SYSTEM_CTX, true);
+
+  t.is(result.imported, 1);
+  t.is(countExamples(true), 1);
+  t.is(countExamples(false), 0);
+});
+
+test.serial("importFromCSV writes to valid.jsonl when isEval is true", (t) => {
+  const csvPath = join(TEST_DIR, "in.csv");
+  writeFileSync(csvPath, "input,output\nq,a\n");
+
+  const result = importFromCSV(csvPath, SYSTEM_CTX, true);
+
+  t.is(result.imported, 1);
+  t.is(countExamples(true), 1);
+  t.is(countExamples(false), 0);
+});
+
+test.serial("importFromJSON writes to valid.jsonl when isEval is true", (t) => {
+  const jsonPath = join(TEST_DIR, "in.json");
+  writeFileSync(jsonPath, JSON.stringify([{ input: "q", output: "a" }]));
+
+  const result = importFromJSON(jsonPath, SYSTEM_CTX, true);
+
+  t.is(result.imported, 1);
+  t.is(countExamples(true), 1);
+  t.is(countExamples(false), 0);
+});
+
+test.serial("importFromJSONL preserves a messages array into valid.jsonl", (t) => {
+  const jsonlPath = join(TEST_DIR, "in.jsonl");
+  writeFileSync(
+    jsonlPath,
+    `${JSON.stringify({
+      messages: [
+        { role: "system", content: "You are helpful." },
+        { role: "user", content: "q" },
+        { role: "assistant", content: "a" },
+      ],
+    })}\n`,
+  );
+
+  const result = importFromJSONL(jsonlPath, SYSTEM_CTX, true);
+
+  t.is(result.imported, 1);
+  t.is(loadTrainingData(true)[0].messages[1].content, "q");
+  t.is(countExamples(false), 0);
+});
+
+test.serial("importData routes to the validation set when isEval is true", (t) => {
+  const jsonlPath = join(TEST_DIR, "in.jsonl");
+  writeFileSync(
+    jsonlPath,
+    `${JSON.stringify({ input: "q", output: "a" })}\n`,
+  );
+
+  importData(jsonlPath, SYSTEM_CTX, true);
+
+  t.is(countExamples(true), 1);
+  t.is(countExamples(false), 0);
+});
+
+// ── validateTrainingData --eval ─────────────────────────────────
+
+test.serial("validateTrainingData reads the validation set when isEval is true", (t) => {
+  seedExamples(10);
+  ensureValidationSet(1);
+
+  // After a split the training set alone is not the whole picture; validating
+  // it silently would report on 9 of the 10 examples.
+  t.true(validateTrainingData(SYSTEM_CTX, true).valid);
+  t.true(validateTrainingData(SYSTEM_CTX, false).valid);
+});
+
+test.serial("validateTrainingData reports an empty validation set distinctly", (t) => {
+  seedExamples(10);
+
+  const result = validateTrainingData(SYSTEM_CTX, true);
+
+  t.false(result.valid);
+  t.deepEqual(result.errors, ["No validation data found"]);
+});
+
+test.serial(
+  "validateTrainingData does not apply the 50-example floor to the validation set",
+  (t) => {
+    seedExamples(10);
+    ensureValidationSet(1);
+
+    // A validation set is a slice of the training data, so "recommend at
+    // least 50" would fire on every correctly sized split.
+    const evalResult = validateTrainingData(SYSTEM_CTX, true);
+    t.false(evalResult.warnings.some((w) => w.includes("at least 50")));
+
+    const trainResult = validateTrainingData(SYSTEM_CTX, false);
+    t.true(trainResult.warnings.some((w) => w.includes("at least 50")));
+  },
+);
+
+test.serial("importData still defaults to the training set", (t) => {
+  const jsonlPath = join(TEST_DIR, "in.jsonl");
+  writeFileSync(
+    jsonlPath,
+    `${JSON.stringify({ input: "q", output: "a" })}\n`,
+  );
+
+  importData(jsonlPath, SYSTEM_CTX);
+
+  t.is(countExamples(false), 1);
+  t.is(countExamples(true), 0);
+});
 
 // ── clampPagination ───────────────────────────────────────────────────
 
