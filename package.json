@@ -29,14 +29,16 @@
 	},
 	"ava": {
 		"extensions": [
-			"ts"
+			"ts",
+			"tsx"
 		],
 		"nodeArguments": [
 			"--import=tsx"
 		],
 		"workerThreads": false,
 		"files": [
-			"src/**/*.spec.ts"
+			"src/**/*.spec.ts",
+			"src/**/*.spec.tsx"
 		]
 	},
 	"c8": {
@@ -86,6 +88,7 @@
 		"@types/react": "^19.2.10",
 		"ava": "^8.0.1",
 		"c8": "^12.0.0",
+		"ink-testing-library": "^4.0.0",
 		"knip": "^6.12.2",
 		"tsx": "^4.21.0",
 		"typescript": "^6.0.3"
