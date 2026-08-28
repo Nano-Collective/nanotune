@@ -12,7 +12,11 @@ import type {ChatMessage} from '../../types/index.js';
 
 type Field = 'input' | 'output' | 'confirm';
 
-export function DataAddCommand() {
+interface Props {
+	isEval?: boolean;
+}
+
+export function DataAddCommand({isEval = false}: Props) {
 	const {exit} = useApp();
 	const [field, setField] = useState<Field>('input');
 	const [input, setInput] = useState('');
@@ -20,7 +24,7 @@ export function DataAddCommand() {
 	const [turns, setTurns] = useState<Array<{user: string; assistant: string}>>(
 		[],
 	);
-	const [count, setCount] = useState(() => countExamples());
+	const [count, setCount] = useState(() => countExamples(isEval));
 	const [savedMessage, setSavedMessage] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [hasConfig] = useState(() => configExists());
@@ -34,7 +38,7 @@ export function DataAddCommand() {
 				messages.push({role: 'user', content: turn.user});
 				messages.push({role: 'assistant', content: turn.assistant});
 			}
-			appendTrainingExample({messages});
+			appendTrainingExample({messages}, isEval);
 
 			const turnCount = turns.length;
 			setCount(c => c + 1);
@@ -104,7 +108,7 @@ export function DataAddCommand() {
 	if (!hasConfig) {
 		return (
 			<Box flexDirection="column" padding={1}>
-				<Header title="Add Training Data" />
+				<Header title={isEval ? 'Add Validation Data' : 'Add Training Data'} />
 				<StatusMessage variant="error">
 					Not a Nanotune project. Run `nanotune init` first.
 				</StatusMessage>
@@ -114,7 +118,7 @@ export function DataAddCommand() {
 
 	return (
 		<Box flexDirection="column" padding={1}>
-			<Header title="Add Training Data" />
+			<Header title={isEval ? 'Add Validation Data' : 'Add Training Data'} />
 
 			<Box marginBottom={1}>
 				<Text>Examples: </Text>

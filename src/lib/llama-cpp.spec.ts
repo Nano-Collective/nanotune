@@ -5,8 +5,11 @@ import type {
 	InferenceResult,
 } from "./llama-cpp.js";
 import {
+	exportModel,
 	parseChatCompletionResponse,
 	parseLlamaCppStderr,
+	quantize,
+	scaleProgress,
 } from "./llama-cpp.js";
 
 test("InferenceOptions structure accepts all valid options", (t) => {
@@ -318,4 +321,38 @@ test("parseChatCompletionResponse returns InferenceResult-shaped value", (t) => 
 	});
 	// Type-asserts at compile time; smoke check at runtime.
 	t.is(typeof result.text, "string");
+});
+
+test("scaleProgress maps a sub-step onto its slice of the export", (t) => {
+	t.is(scaleProgress(0, 50, 0), 0);
+	t.is(scaleProgress(0, 50, 100), 50);
+	t.is(scaleProgress(50, 100, 0), 50);
+	t.is(scaleProgress(50, 100, 100), 100);
+});
+
+test("scaleProgress stays mid-slice while a sub-step is still running", (t) => {
+	// A sub-step that has not reported progress yet must never read as done.
+	t.is(scaleProgress(0, 50, undefined), 25);
+	t.is(scaleProgress(50, 100, undefined), 75);
+});
+
+test("quantize reports no progress on its kickoff event", async (t) => {
+	// Only the first yield is pulled, so llama-quantize is never spawned.
+	const first = await quantize("in.gguf", "out.gguf", "q4_k_m").next();
+
+	t.is(first.value?.step, "Quantizing to q4_k_m...");
+	t.is(first.value?.progress, undefined);
+});
+
+test("exportModel does not jump to 100% before quantization finishes", async (t) => {
+	// Regression: the quantize kickoff event used to be re-yielded as
+	// progress: 100 while a multi-GB model was still being written.
+	const gen = exportModel("fused", "model.gguf", "q4_k_m");
+	const start = await gen.next();
+	const converting = await gen.next();
+	await gen.return(undefined);
+
+	t.is(start.value?.progress, 0);
+	t.is(converting.value?.progress, 25);
+	t.is(scaleProgress(50, 100, undefined), 75);
 });

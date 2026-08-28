@@ -111,6 +111,27 @@ This runs formatting checks, type checks, and tests.
 - Bug fixes should include regression tests when possible
 - All tests must pass before merging
 
+### Testing Ink Commands
+
+New logic still belongs in `src/lib/` with a `.spec.ts` beside it. For behaviour that only exists in a command component, add a `.spec.tsx` and render it with [ink-testing-library](https://github.com/vadimdemedes/ink-testing-library):
+
+```tsx
+const instance = render(<StatusCommand />);
+await new Promise((resolve) => setTimeout(resolve, 100));
+const output = instance.frames.join("\n");
+instance.unmount();
+```
+
+Three things to know:
+
+- **Assert on `frames`, not `lastFrame()`.** `useAutoExit` unmounts the app once it has rendered, and the final frame is the cleared one.
+- **Always `unmount()`,** or the worker will not exit.
+- **Reset `process.exitCode` after each test.** `useAutoExit` sets it to 1 on failure, which would otherwise fail the whole run.
+
+Commands read `process.cwd()`, so `chdir` into a temp directory and use `test.serial`. See `src/commands/commands.spec.tsx`.
+
+The library's fake stdin reports `isTTY: true`, so it cannot tell you whether `useKeyInput` is gated correctly — assign `process.stdin.isTTY` and assert on whether the handler fires.
+
 ### Manual Testing
 
 When testing Nanotune functionality:

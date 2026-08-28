@@ -242,6 +242,19 @@ export async function* quantize(
 	yield {step: 'Quantization complete!', progress: 100};
 }
 
+/**
+ * Maps a sub-step's own 0-100 progress onto its slice of the overall export.
+ * Sub-steps that report no progress yet are treated as mid-slice, so the bar
+ * shows work in flight instead of a premature 100%.
+ */
+export function scaleProgress(
+	start: number,
+	end: number,
+	progress?: number,
+): number {
+	return start + ((progress ?? 50) / 100) * (end - start);
+}
+
 export async function* exportModel(
 	fusedModelPath: string,
 	outputPath: string,
@@ -253,8 +266,11 @@ export async function* exportModel(
 	yield {step: 'Step 1/2: Converting to GGUF...', progress: 0};
 
 	try {
-		for await (const progress of convertToGGUF(fusedModelPath, f16Path)) {
-			yield {step: progress.step, progress: 25};
+		for await (const update of convertToGGUF(fusedModelPath, f16Path)) {
+			yield {
+				step: update.step,
+				progress: scaleProgress(0, 50, update.progress),
+			};
 		}
 
 		// Step 2: Quantize if needed
@@ -268,8 +284,11 @@ export async function* exportModel(
 
 		yield {step: `Step 2/2: Quantizing to ${quantization}...`, progress: 50};
 
-		for await (const progress of quantize(f16Path, outputPath, quantization)) {
-			yield {step: progress.step, progress: 100};
+		for await (const update of quantize(f16Path, outputPath, quantization)) {
+			yield {
+				step: update.step,
+				progress: scaleProgress(50, 100, update.progress),
+			};
 		}
 
 		yield {step: 'Export complete!', progress: 100};

@@ -66,18 +66,20 @@ export function appendTrainingExample(
 
 export function appendToTrainingData(
 	example: {
-		contextMessage: ChatMessage;
+		/** Omitted, or empty, when the session has no system message — the
+		 *  example is then just the user/assistant pair. */
+		contextMessage?: ChatMessage | null;
 		userInput: string;
 		assistantOutput: string;
 	},
 	isEval = false,
 ): void {
+	const {contextMessage} = example;
 	const trainingExample: TrainingExample = {
 		messages: [
-			{
-				role: example.contextMessage.role,
-				content: example.contextMessage.content,
-			},
+			...(contextMessage?.content
+				? [{role: contextMessage.role, content: contextMessage.content}]
+				: []),
 			{role: 'user', content: example.userInput},
 			{role: 'assistant', content: example.assistantOutput},
 		],
@@ -113,6 +115,41 @@ export function updateTrainingExample(
 		examples[index] = example;
 		saveTrainingData(examples, isEval);
 	}
+}
+
+/**
+ * Replaces the first user/assistant turn in `messages` with new content,
+ * leaving every other message untouched — regardless of shape. Handles
+ * examples missing a user and/or assistant message by inserting rather than
+ * guessing a position, so malformed data is never silently dropped.
+ */
+export function mergeEditedTurn(
+	messages: ChatMessage[],
+	userInput: string,
+	assistantOutput: string,
+): ChatMessage[] {
+	const userIdx = messages.findIndex(m => m.role === 'user');
+	const assistantIdx = messages.findIndex(m => m.role === 'assistant');
+
+	const updated = [...messages];
+	if (userIdx >= 0) updated[userIdx] = {role: 'user', content: userInput};
+	if (assistantIdx >= 0)
+		updated[assistantIdx] = {role: 'assistant', content: assistantOutput};
+
+	if (userIdx === -1 && assistantIdx === -1) {
+		updated.push(
+			{role: 'user', content: userInput},
+			{role: 'assistant', content: assistantOutput},
+		);
+	} else if (userIdx === -1) {
+		updated.splice(assistantIdx, 0, {role: 'user', content: userInput});
+	} else if (assistantIdx === -1) {
+		updated.splice(userIdx + 1, 0, {
+			role: 'assistant',
+			content: assistantOutput,
+		});
+	}
+	return updated;
 }
 
 export function updateExample(
@@ -159,17 +196,20 @@ export interface ValidationResult {
 
 export function validateTrainingData(
 	contextMessage: ChatMessage,
+	isEval = false,
 ): ValidationResult {
 	const errors: string[] = [];
 	const warnings: string[] = [];
-	const examples = loadTrainingData();
+	const examples = loadTrainingData(isEval);
 
 	if (examples.length === 0) {
-		errors.push('No training data found');
+		errors.push(isEval ? 'No validation data found' : 'No training data found');
 		return {valid: false, errors, warnings};
 	}
 
-	if (examples.length < 50) {
+	// A validation set is a slice of the training data, so the 50-example floor
+	// does not apply to it - warning about it would be noise on a correct split.
+	if (!isEval && examples.length < 50) {
 		warnings.push(
 			`Only ${examples.length} examples found. Recommend at least 50 for good results.`,
 		);
@@ -254,6 +294,88 @@ export function validateTrainingData(
 	};
 }
 
+export interface DedupeResult {
+	removedCount: number;
+	/** 1-based positions (in the original file) that were removed. */
+	removedIndexes: number[];
+}
+
+/**
+ * Remove exact-duplicate examples: same messages (role + content, in order).
+ * Deliberately stricter than validateTrainingData's duplicate warning (which
+ * only compares the first user message) — removal must be provably safe, so
+ * two examples that merely share the same input but differ in output or
+ * context message are left alone.
+ */
+export function dedupeExamples(isEval = false): DedupeResult {
+	const examples = loadTrainingData(isEval);
+	const seen = new Set<string>();
+	const kept: TrainingExample[] = [];
+	const removedIndexes: number[] = [];
+
+	examples.forEach((ex, i) => {
+		const key = JSON.stringify(
+			ex.messages.map(m => ({role: m.role, content: m.content})),
+		);
+		if (seen.has(key)) {
+			removedIndexes.push(i + 1);
+			return;
+		}
+		seen.add(key);
+		kept.push(ex);
+	});
+
+	if (removedIndexes.length > 0) {
+		saveTrainingData(kept, isEval);
+	}
+
+	return {removedCount: removedIndexes.length, removedIndexes};
+}
+
+export interface ContextFixResult {
+	fixedCount: number;
+}
+
+/**
+ * Rewrite each example's context message (messages[0]) to match the given
+ * contextMessage, but only when a context message already exists. Never
+ * inserts one where the example starts with a user message, since that
+ * would change the example's shape rather than just fix a mismatch.
+ */
+export function fixContextMessages(
+	contextMessage: ChatMessage,
+	isEval = false,
+): ContextFixResult {
+	const examples = loadTrainingData(isEval);
+	let fixedCount = 0;
+
+	const updated = examples.map(ex => {
+		const first = ex.messages[0];
+		if (!first || first.role === 'user' || first.role === 'assistant') {
+			return ex;
+		}
+		if (
+			first.role === contextMessage.role &&
+			first.content === contextMessage.content
+		) {
+			return ex;
+		}
+		fixedCount++;
+		return {
+			messages: [
+				{role: contextMessage.role, content: contextMessage.content},
+				...ex.messages.slice(1),
+			],
+		};
+	});
+
+	if (fixedCount > 0) {
+		saveTrainingData(updated, isEval);
+	}
+
+	return {fixedCount};
+}
+
 export interface ImportResult {
 	imported: number;
 	skipped: number;
@@ -264,6 +386,7 @@ export interface ImportResult {
  * Parse a CSV file into an array of row arrays. Supports:
  *  - Quoted fields with embedded commas, newlines, and escaped quotes ("")
  *  - Unquoted fields
+ *  - A leading UTF-8 BOM, as written by Excel and other spreadsheet tools
  *  - CRLF or LF line endings
  */
 export function parseCSV(content: string): string[][] {
@@ -271,7 +394,7 @@ export function parseCSV(content: string): string[][] {
 	let field = '';
 	let row: string[] = [];
 	let inQuotes = false;
-	let i = 0;
+	let i = content.startsWith('\uFEFF') ? 1 : 0;
 
 	while (i < content.length) {
 		const ch = content[i];
@@ -349,6 +472,7 @@ export function parseCSV(content: string): string[][] {
 export function importFromCSV(
 	filePath: string,
 	contextMessage: ChatMessage,
+	isEval = false,
 ): ImportResult {
 	const errors: string[] = [];
 	let imported = 0;
@@ -361,11 +485,14 @@ export function importFromCSV(
 		return {imported, skipped, errors};
 	}
 
-	// Skip header if first row looks like one
-	const firstRowLower = rows[0].map(c => c.toLowerCase());
+	// Skip the first row only when it is exactly the two column names. Matching
+	// loosely — by substring, or on either column alone — silently drops real
+	// rows such as `"explain the input parameter","..."` or `"input","a value"`.
+	const firstRowLower = rows[0].map(c => c.trim().toLowerCase());
 	const hasHeader =
-		firstRowLower.some(c => c.includes('input')) ||
-		firstRowLower.some(c => c.includes('output'));
+		firstRowLower.length >= 2 &&
+		firstRowLower[0] === 'input' &&
+		firstRowLower[1] === 'output';
 	const startIndex = hasHeader ? 1 : 0;
 
 	for (let i = startIndex; i < rows.length; i++) {
@@ -384,11 +511,14 @@ export function importFromCSV(
 			continue;
 		}
 
-		appendToTrainingData({
-			contextMessage,
-			userInput: input.trim(),
-			assistantOutput: output.trim(),
-		});
+		appendToTrainingData(
+			{
+				contextMessage,
+				userInput: input.trim(),
+				assistantOutput: output.trim(),
+			},
+			isEval,
+		);
 		imported++;
 	}
 
@@ -398,6 +528,7 @@ export function importFromCSV(
 export function importFromJSONL(
 	filePath: string,
 	contextMessage: ChatMessage,
+	isEval = false,
 ): ImportResult {
 	const errors: string[] = [];
 	let imported = 0;
@@ -421,7 +552,7 @@ export function importFromJSONL(
 					);
 
 					if (userMsg?.content && assistantMsg?.content) {
-						appendTrainingExample({messages: data.messages}, false);
+						appendTrainingExample({messages: data.messages}, isEval);
 						imported++;
 						continue;
 					}
@@ -434,11 +565,14 @@ export function importFromJSONL(
 
 			// Simple {input, output} format — wrap with the project context.
 			if (data.input && data.output) {
-				appendToTrainingData({
-					contextMessage,
-					userInput: data.input,
-					assistantOutput: data.output,
-				});
+				appendToTrainingData(
+					{
+						contextMessage,
+						userInput: data.input,
+						assistantOutput: data.output,
+					},
+					isEval,
+				);
 				imported++;
 				continue;
 			}
@@ -457,6 +591,7 @@ export function importFromJSONL(
 export function importFromJSON(
 	filePath: string,
 	contextMessage: ChatMessage,
+	isEval = false,
 ): ImportResult {
 	const errors: string[] = [];
 	let imported = 0;
@@ -480,7 +615,7 @@ export function importFromJSON(
 			);
 
 			if (userMsg?.content && assistantMsg?.content) {
-				appendTrainingExample({messages: item.messages}, false);
+				appendTrainingExample({messages: item.messages}, isEval);
 				imported++;
 				continue;
 			}
@@ -491,11 +626,14 @@ export function importFromJSON(
 		}
 
 		if (item.input && item.output) {
-			appendToTrainingData({
-				contextMessage,
-				userInput: item.input,
-				assistantOutput: item.output,
-			});
+			appendToTrainingData(
+				{
+					contextMessage,
+					userInput: item.input,
+					assistantOutput: item.output,
+				},
+				isEval,
+			);
 			imported++;
 			continue;
 		}
@@ -510,6 +648,7 @@ export function importFromJSON(
 export function importData(
 	filePath: string,
 	contextMessage: ChatMessage,
+	isEval = false,
 ): ImportResult {
 	if (!existsSync(filePath)) {
 		return {imported: 0, skipped: 0, errors: ['File not found']};
@@ -519,14 +658,98 @@ export function importData(
 
 	switch (ext) {
 		case 'csv':
-			return importFromCSV(filePath, contextMessage);
+			return importFromCSV(filePath, contextMessage, isEval);
 		case 'jsonl':
-			return importFromJSONL(filePath, contextMessage);
+			return importFromJSONL(filePath, contextMessage, isEval);
 		case 'json':
-			return importFromJSON(filePath, contextMessage);
+			return importFromJSON(filePath, contextMessage, isEval);
 		default:
 			return {
 				imported: 0,
+				skipped: 0,
+				errors: [`Unsupported file format: ${ext}`],
+			};
+	}
+}
+
+export interface ExportResult {
+	exported: number;
+	skipped: number;
+	errors: string[];
+}
+
+export function exportToJSONL(filePath: string, isEval = false): ExportResult {
+	const examples = loadTrainingData(isEval);
+	const content = examples.map(ex => JSON.stringify(ex)).join('\n');
+	writeFileSync(filePath, examples.length > 0 ? `${content}\n` : '');
+	return {exported: examples.length, skipped: 0, errors: []};
+}
+
+export function exportToJSON(filePath: string, isEval = false): ExportResult {
+	const examples = loadTrainingData(isEval);
+	writeFileSync(filePath, `${JSON.stringify(examples, null, 2)}\n`);
+	return {exported: examples.length, skipped: 0, errors: []};
+}
+
+function csvEscape(value: string): string {
+	if (/[",\r\n]/.test(value)) {
+		return `"${value.replace(/"/g, '""')}"`;
+	}
+	return value;
+}
+
+/**
+ * CSV can only represent a single input/output pair per row, with no room
+ * for a context message. Multi-turn examples are skipped (not truncated) so
+ * that exporting then re-importing never silently drops turns.
+ */
+export function exportToCSV(filePath: string, isEval = false): ExportResult {
+	const examples = loadTrainingData(isEval);
+	const rows: string[] = ['input,output'];
+	let exported = 0;
+	let skipped = 0;
+	const errors: string[] = [];
+
+	examples.forEach((ex, i) => {
+		if (countTurns(ex) > 1) {
+			skipped++;
+			errors.push(
+				`Example ${i + 1}: multi-turn example cannot be represented in CSV, skipped`,
+			);
+			return;
+		}
+
+		const user = ex.messages.find(m => m.role === 'user');
+		const assistant = ex.messages.find(m => m.role === 'assistant');
+		if (!user?.content || !assistant?.content) {
+			skipped++;
+			errors.push(
+				`Example ${i + 1}: missing user or assistant message, skipped`,
+			);
+			return;
+		}
+
+		rows.push(`${csvEscape(user.content)},${csvEscape(assistant.content)}`);
+		exported++;
+	});
+
+	writeFileSync(filePath, `${rows.join('\n')}\n`);
+	return {exported, skipped, errors};
+}
+
+export function exportData(filePath: string, isEval = false): ExportResult {
+	const ext = filePath.toLowerCase().split('.').pop();
+
+	switch (ext) {
+		case 'csv':
+			return exportToCSV(filePath, isEval);
+		case 'jsonl':
+			return exportToJSONL(filePath, isEval);
+		case 'json':
+			return exportToJSON(filePath, isEval);
+		default:
+			return {
+				exported: 0,
 				skipped: 0,
 				errors: [`Unsupported file format: ${ext}`],
 			};
@@ -599,14 +822,19 @@ export function splitTrainValidation(
 export function ensureValidationSet(seed?: number): {
 	trainCount: number;
 	validCount: number;
+	didSplit: boolean;
 } {
 	const validCount = countExamples(true);
 	const trainCount = countExamples(false);
 
 	if (validCount === 0 && trainCount > 0) {
-		// No validation set - create one by splitting
-		return splitTrainValidation(0.1, seed);
+		// No validation set - create one by splitting.
+		const result = splitTrainValidation(0.1, seed);
+		// A single example cannot be split, so valid.jsonl stays empty and the
+		// next call lands here again. Reporting didSplit for that no-op would
+		// repeat "Split 1 examples into 1 train / 0 validation." on every run.
+		return {...result, didSplit: result.validCount > 0};
 	}
 
-	return {trainCount, validCount};
+	return {trainCount, validCount, didSplit: false};
 }
