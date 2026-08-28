@@ -26,6 +26,12 @@ The interactive flow supports multi-turn conversations:
 
 Accumulated turns are shown above the input fields as you build the conversation.
 
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `-e, --eval` | Add to the validation set (`valid.jsonl`) instead of training data |
+
 ## nanotune data import
 
 ```bash
@@ -49,6 +55,7 @@ Multi-turn examples in JSONL and JSON files are preserved with all their turns i
 | Flag | Description |
 |------|-------------|
 | `-y, --yes` | Skip the confirmation prompt |
+| `-e, --eval` | Import into the validation set (`valid.jsonl`) instead of training data |
 
 By default the importer previews your existing data and asks for confirmation. Pass `--yes` to import without prompting — this is also what lets `data import` run in a script or CI job, where there is no terminal to answer the prompt.
 
@@ -103,6 +110,15 @@ View and manage your training data with pagination, editing, and delete. Shows a
 | d | Delete the selected example |
 | q | Quit |
 
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `-e, --eval` | View the validation set (`valid.jsonl`) instead of training data |
+
+The header also reports the other set's size, so a split is visible from either
+side.
+
 Editing reuses the same input flow as `data add`, but only covers the example's **first** user/assistant turn — any additional turns and the example's context message are preserved unchanged. Press **Tab** to switch between the input and output fields, **Enter** to submit a field, and **Esc** to cancel without saving.
 
 ## nanotune data validate
@@ -126,12 +142,17 @@ Validate your training data before training. Checks for:
 |------|-------------|
 | `--fix` | Remove exact-duplicate examples (identical messages, not just matching input text) |
 | `--rewrite-context` | Rewrite each example's context message to match the current config |
+| `-e, --eval` | Validate the validation set (`valid.jsonl`) instead of training data |
 
 `--fix` is intentionally stricter than the "duplicate user inputs" warning above: the warning flags examples that merely share the same input text (worth a human look, since the outputs or context could differ on purpose), while `--fix` only ever removes examples whose entire message list is identical — the only case where deleting one is provably safe. `--rewrite-context` only touches examples that already have a context/system message; it never inserts one where an example starts directly with a user message. Both flags report exactly how many examples they changed, and can be combined:
 
 ```bash
 nanotune data validate --fix --rewrite-context
 ```
+
+After a split, `data validate` reports on `train.jsonl` only. Pass `--eval` to
+check `valid.jsonl` too — the "recommend at least 50 examples" warning is not
+applied there, since a validation set is a slice of the training data.
 
 ## See Also
 
