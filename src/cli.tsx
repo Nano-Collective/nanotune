@@ -141,7 +141,9 @@ program
 	.option('--seed <n>', 'Seed for a reproducible train/validation split')
 	.action(async options => {
 		const {TrainCommand} = await import('./commands/train.js');
-		render(<TrainCommand options={options} />);
+		// Ctrl+C is handled inside the command so training can stop gracefully
+		// and flush its checkpoint instead of the app being torn down mid-write.
+		render(<TrainCommand options={options} />, {exitOnCtrlC: false});
 	});
 
 // Export command
