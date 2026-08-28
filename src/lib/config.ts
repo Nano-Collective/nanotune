@@ -178,7 +178,7 @@ adapters/
 models/
 benchmarks/
 chats/
-judge.json
+judge.json*
 `;
 
 export function initializeProjectDirs(): void {
