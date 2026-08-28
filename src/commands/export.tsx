@@ -13,7 +13,10 @@ import {
 } from '../components/index.js';
 import {
 	configExists,
+	formatFileSize,
 	getAdaptersDir,
+	getDirectorySize,
+	getFusedModelDir,
 	getModelsDir,
 	loadConfig,
 } from '../lib/config.js';
@@ -47,6 +50,21 @@ interface Step {
 	status: 'pending' | 'running' | 'done' | 'error';
 }
 
+/**
+ * `--skip-fuse` relies on a fused model from a previous export. Pulled out
+ * as a pure function so it's testable without rendering the full command
+ * (which asserts Apple Silicon up front).
+ */
+export function skipFuseValidationError(
+	skipFuse: boolean | undefined,
+	fusedModelExists: boolean,
+): string | null {
+	if (skipFuse && !fusedModelExists) {
+		return 'No fused model found at .nanotune/models/fused. Run `nanotune export` without --skip-fuse first.';
+	}
+	return null;
+}
+
 export function ExportCommand({options}: Props) {
 	const {exit} = useApp();
 	const [status, setStatus] = useState<Status>('checking');
@@ -55,6 +73,7 @@ export function ExportCommand({options}: Props) {
 	const [currentStep, setCurrentStep] = useState('');
 	const [outputPath, setOutputPath] = useState<string | null>(null);
 	const [fileSize, setFileSize] = useState<string | null>(null);
+	const [fusedCacheInfo, setFusedCacheInfo] = useState<string | null>(null);
 	const [steps, setSteps] = useState<Step[]>([
 		{name: 'Fusing adapters', status: 'pending'},
 		{name: 'Converting to GGUF', status: 'pending'},
@@ -91,11 +110,25 @@ export function ExportCommand({options}: Props) {
 			const config = loadConfig();
 			const adaptersDir = getAdaptersDir();
 			const modelsDir = getModelsDir();
+			const fusedModelPath = getFusedModelDir();
 
 			// Check adapters exist
 			const adapterFile = join(adaptersDir, 'adapters.safetensors');
 			if (!existsSync(adapterFile)) {
 				setError('No trained adapters found. Run `nanotune train` first.');
+				setStatus('error');
+				return;
+			}
+
+			// Fail fast with a clear message rather than a cryptic error deep
+			// inside GGUF conversion if --skip-fuse is passed with no fused
+			// model on disk (e.g. after `nanotune clean`).
+			const skipFuseError = skipFuseValidationError(
+				options.skipFuse,
+				existsSync(fusedModelPath),
+			);
+			if (skipFuseError) {
+				setError(skipFuseError);
 				setStatus('error');
 				return;
 			}
@@ -116,7 +149,6 @@ export function ExportCommand({options}: Props) {
 			const outputName =
 				options.output || `${config.export.outputName}-${quantization}`;
 			const finalOutputPath = join(modelsDir, `${outputName}.gguf`);
-			const fusedModelPath = join(modelsDir, 'fused');
 
 			// Step 1: Fuse adapters
 			if (!options.skipFuse) {
@@ -162,8 +194,13 @@ export function ExportCommand({options}: Props) {
 			// Get file size
 			if (existsSync(finalOutputPath)) {
 				const stats = statSync(finalOutputPath);
-				const sizeMB = (stats.size / (1024 * 1024)).toFixed(1);
-				setFileSize(`${sizeMB} MB`);
+				setFileSize(formatFileSize(stats.size));
+			}
+
+			// The fused model cache is kept for faster re-exports via
+			// --skip-fuse; surface its size so it isn't a silent disk cost.
+			if (existsSync(fusedModelPath)) {
+				setFusedCacheInfo(formatFileSize(getDirectorySize(fusedModelPath)));
 			}
 
 			setOutputPath(finalOutputPath);
@@ -258,6 +295,12 @@ export function ExportCommand({options}: Props) {
 					{fileSize && (
 						<Text>
 							Size: <Text color="cyan">{fileSize}</Text>
+						</Text>
+					)}
+					{fusedCacheInfo && (
+						<Text dimColor>
+							Fused model cache: {fusedCacheInfo} at .nanotune/models/fused
+							(kept for faster re-exports — run `nanotune clean` to remove)
 						</Text>
 					)}
 					<Text> </Text>

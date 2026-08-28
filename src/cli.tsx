@@ -173,7 +173,10 @@ program
 		'Quantization type (f16, q8_0, q4_k_m, q4_k_s)',
 	)
 	.option('-o, --output <name>', 'Output filename')
-	.option('--skip-fuse', 'Skip adapter fusion (if already fused)')
+	.option(
+		'--skip-fuse',
+		'Skip adapter fusion — requires a fused/ cache from a previous export',
+	)
 	.action(async options => {
 		const {ExportCommand} = await import('./commands/export.js');
 		render(<ExportCommand options={options} />);
@@ -291,6 +294,28 @@ program
 	.action(async () => {
 		const {StatusCommand} = await import('./commands/status.js');
 		render(<StatusCommand />);
+	});
+
+// Clean command
+program
+	.command('clean')
+	.description('Remove the cached fused model to reclaim disk space')
+	.option('-y, --yes', 'Skip the confirmation prompt (for scripts and CI)')
+	.action(async (options: {yes?: boolean}) => {
+		// Only require --yes when there's actually a confirmation to answer —
+		// "nothing to clean" and "not a project" are safe to just report.
+		if (!options.yes && !supportsRawMode()) {
+			const {configExists, getFusedModelDir} = await import('./lib/config.js');
+			const {existsSync} = await import('node:fs');
+			if (configExists() && existsSync(getFusedModelDir())) {
+				console.error(interactiveRequiredMessage('clean'));
+				console.error('Pass --yes to clean without confirmation.');
+				process.exitCode = 1;
+				return;
+			}
+		}
+		const {CleanCommand} = await import('./commands/clean.js');
+		render(<CleanCommand options={options} />);
 	});
 
 program.parse();

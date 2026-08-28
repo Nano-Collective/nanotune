@@ -1,10 +1,12 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "ava";
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import { useKeyInput } from "../components/index.js";
+import { getFusedModelDir } from "../lib/config.js";
 import { loadTrainingData } from "../lib/data.js";
+import { CleanCommand } from "./clean.js";
 import { streamPreview } from "./chat.js";
 import { DataExportCommand } from "./data/export.js";
 import { DataImportCommand } from "./data/import.js";
@@ -59,6 +61,12 @@ function writeExamples(lines: object[]) {
     join(DATA_DIR, "train.jsonl"),
     `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`,
   );
+}
+
+function writeFusedModel() {
+  const fusedDir = join(NANOTUNE_DIR, "models", "fused");
+  mkdirSync(fusedDir, { recursive: true });
+  writeFileSync(join(fusedDir, "model.safetensors"), "x".repeat(1024));
 }
 
 function writeEvalExamples(lines: object[]) {
@@ -275,6 +283,93 @@ test.serial("DataImportCommand without yes waits for confirmation", async (t) =>
     );
     t.true(output.includes("Import data from this file?"));
     t.false(output.includes("Import complete!"));
+  } finally {
+    teardown();
+  }
+});
+
+// ── clean ────────────────────────────────────────────────────────────
+
+test.serial("CleanCommand renders its error state with no project", async (t) => {
+  try {
+    setupEmptyDir();
+    const output = await renderCommand(
+      <CleanCommand options={{}} />,
+      "Not a Nanotune project",
+    );
+    t.true(output.includes("Not a Nanotune project"));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("CleanCommand reports nothing to clean when fused/ is absent", async (t) => {
+  try {
+    setupProject();
+    const output = await renderCommand(
+      <CleanCommand options={{}} />,
+      "Nothing to clean",
+    );
+    t.true(output.includes("Nothing to clean"));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("CleanCommand with yes removes fused/ without prompting", async (t) => {
+  try {
+    setupProject();
+    writeFusedModel();
+    const fusedDir = getFusedModelDir();
+    t.true(existsSync(fusedDir));
+    const output = await renderCommand(
+      <CleanCommand options={{ yes: true }} />,
+      "Removed fused model cache",
+    );
+    t.false(output.includes("Remove it?"));
+    t.true(output.includes("Removed fused model cache"));
+    t.true(output.includes("Freed:"));
+    t.false(existsSync(fusedDir));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("CleanCommand without yes waits for confirmation before deleting", async (t) => {
+  try {
+    setupProject();
+    writeFusedModel();
+    const fusedDir = getFusedModelDir();
+    const output = await renderCommand(
+      <CleanCommand options={{}} />,
+      "Remove it?",
+    );
+    t.true(output.includes("Remove it?"));
+    t.false(output.includes("Removed fused model cache"));
+    t.true(existsSync(fusedDir));
+  } finally {
+    teardown();
+  }
+});
+
+// ── status: fused model cache ───────────────────────────────────────
+
+test.serial("StatusCommand shows the fused model cache when present", async (t) => {
+  try {
+    setupProject();
+    writeFusedModel();
+    const output = await renderCommand(<StatusCommand />, "Fused model cache");
+    t.true(output.includes("Fused model cache"));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("StatusCommand omits the fused model cache line when absent", async (t) => {
+  try {
+    setupProject();
+    const output = await renderCommand(<StatusCommand />, "Exports:");
+    t.false(output.includes("Fused model cache"));
   } finally {
     teardown();
   }

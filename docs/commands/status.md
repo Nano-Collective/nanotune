@@ -19,4 +19,5 @@ nanotune status
 - **Training data** — Number of examples loaded
 - **Training progress** — Current state and last training run
 - **Exports** — Available GGUF files
+- **Fused model cache** — Disk space used by the retained `fused/` model, if present
 - **Benchmark results** — Latest benchmark summary
