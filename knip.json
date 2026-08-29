@@ -4,7 +4,7 @@
 	"ignoreExportsUsedInFile": true,
 	"rules": {
 		"binaries": "off",
-		"exports": "off",
+		"exports": "error",
 		"types": "off"
 	}
 }
