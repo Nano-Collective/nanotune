@@ -1,14 +1,18 @@
 import test from "ava";
+import { execa } from "execa";
 import type {
 	ChatCompletionResponse,
 	InferenceOptions,
 	InferenceResult,
 } from "./llama-cpp.js";
 import {
+	createServerHandle,
 	exportModel,
 	parseChatCompletionResponse,
 	quantize,
 	scaleProgress,
+	stopLlamaServer,
+	waitForServerOrExit,
 } from "./llama-cpp.js";
 
 test("InferenceOptions structure accepts all valid options", (t) => {
@@ -266,4 +270,124 @@ test("exportModel does not jump to 100% before quantization finishes", async (t)
 	t.is(start.value?.progress, 0);
 	t.is(converting.value?.progress, 25);
 	t.is(scaleProgress(50, 100, undefined), 75);
+});
+
+// ── server lifecycle ──────────────────────────────────────────────────
+
+// llama-server itself is not available in CI, so these stand a plain node
+// child process in for it: the bug is in how the execa promise is handled,
+// not in what the child does.
+const spawnChild = (code: string) =>
+	execa(process.execPath, ["-e", code], {
+		stdin: "ignore",
+		stdout: "ignore",
+		stderr: "ignore",
+	});
+
+/** Collect anything Node reports as an unhandled rejection while `fn` runs. */
+async function withUnhandledRejections(
+	fn: () => Promise<void>,
+): Promise<unknown[]> {
+	const seen: unknown[] = [];
+	const listener = (reason: unknown) => seen.push(reason);
+	process.on("unhandledRejection", listener);
+	try {
+		await fn();
+		// An unhandled rejection is reported at the end of the tick that created
+		// it, so give the loop a turn before deciding none happened.
+		await new Promise((r) => setTimeout(r, 100));
+	} finally {
+		process.off("unhandledRejection", listener);
+	}
+	return seen;
+}
+
+test("createServerHandle settles `exited` when the child exits non-zero, without an unhandled rejection", async (t) => {
+	// Regression: execa's promise was left orphaned, so a server dying mid-run
+	// killed the whole CLI with a raw ExecaError stack dump.
+	let exitValue: unknown;
+	const rejections = await withUnhandledRejections(async () => {
+		const handle = createServerHandle(
+			1234,
+			spawnChild("setTimeout(() => process.exit(3), 50)"),
+		);
+		exitValue = await handle.exited;
+	});
+
+	t.true(exitValue instanceof Error);
+	t.deepEqual(rejections, []);
+});
+
+test("createServerHandle settles `exited` when the child is killed, without an unhandled rejection", async (t) => {
+	let exitValue: unknown;
+	const rejections = await withUnhandledRejections(async () => {
+		const handle = createServerHandle(
+			1234,
+			spawnChild("setInterval(() => {}, 1000)"),
+		);
+		handle.process.kill("SIGTERM");
+		exitValue = await handle.exited;
+	});
+
+	t.true(exitValue instanceof Error);
+	t.deepEqual(rejections, []);
+});
+
+test("stopLlamaServer terminates a running child and resolves", async (t) => {
+	const handle = createServerHandle(
+		1234,
+		spawnChild("setInterval(() => {}, 1000)"),
+	);
+
+	await stopLlamaServer(handle);
+
+	// execa reports a killed child as an error — proof it is actually gone.
+	t.true((await handle.exited) instanceof Error);
+});
+
+test("stopLlamaServer resolves for a child that already exited on its own", async (t) => {
+	// The mid-run case: the server is long gone by the time the caller's
+	// `finally` runs.
+	const handle = createServerHandle(1234, spawnChild("process.exit(3)"));
+	await handle.exited;
+
+	await stopLlamaServer(handle);
+
+	t.pass();
+});
+
+test("stopLlamaServer escalates past a child that ignores SIGTERM", async (t) => {
+	const handle = createServerHandle(
+		1234,
+		spawnChild(
+			"process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)",
+		),
+	);
+
+	await stopLlamaServer(handle, 100);
+
+	t.true((await handle.exited) instanceof Error);
+});
+
+test("waitForServerOrExit reports the child's exit instead of waiting out the startup timeout", async (t) => {
+	// Nothing ever listens on port 1, so /health can only fail.
+	const handle = createServerHandle(1, spawnChild("process.exit(1)"));
+	const started = Date.now();
+
+	const err = await t.throwsAsync(waitForServerOrExit(1, handle.exited, 2000));
+
+	t.true(err?.message.startsWith("llama-server exited during startup"));
+	t.true(Date.now() - started < 1500);
+});
+
+test("waitForServerOrExit still times out when the child stays up but never answers", async (t) => {
+	const handle = createServerHandle(
+		1,
+		spawnChild("setInterval(() => {}, 1000)"),
+	);
+
+	const err = await t.throwsAsync(waitForServerOrExit(1, handle.exited, 300));
+
+	t.true(err?.message.includes("failed to start within"));
+	await stopLlamaServer(handle);
 });

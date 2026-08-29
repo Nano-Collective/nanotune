@@ -245,6 +245,7 @@ export function BenchmarkCommand({options}: Props) {
 	const [currentTest, setCurrentTest] = useState<string | null>(null);
 	const [progress, setProgress] = useState(0);
 	const [results, setResults] = useState<BenchmarkResult | null>(null);
+	const [warning, setWarning] = useState<string | null>(null);
 	const [categories, setCategories] = useState<Record<string, CategoryResult>>(
 		{},
 	);
@@ -523,8 +524,22 @@ export function BenchmarkCommand({options}: Props) {
 			// would multiply latency by N and cache the model from disk N times.
 			const serverHandle = await startLlamaServer(modelPath, serverOptions);
 
+			// The server can die under us mid-run (OOM, an incompatible GGUF, an
+			// external kill). `exited` settles the moment it does — stop there and
+			// report what we have, rather than letting every remaining test fail to
+			// connect and burying the reason.
+			let serverDied = false;
+			let abortReason: string | null = null;
+			void serverHandle.exited.then(() => {
+				serverDied = true;
+			});
+
 			try {
 				for (let i = 0; i < tests.length; i++) {
+					if (serverDied) {
+						abortReason = `llama-server exited unexpectedly after ${i} of ${tests.length} tests — saving partial results.`;
+						break;
+					}
 					const test = tests[i];
 					setCurrentTest(getTestDisplayPrompt(test));
 					setProgress(((i + 1) / tests.length) * 100);
@@ -661,12 +676,22 @@ export function BenchmarkCommand({options}: Props) {
 				await stopLlamaServer(serverHandle);
 			}
 
+			if (abortReason && allResults.length === 0) {
+				// Nothing ran, so there is no partial report worth writing.
+				setError(abortReason);
+				setStatus('error');
+				return;
+			}
+			setWarning(abortReason);
+
 			// Calculate final results
 			const totalPassed = Object.values(categoryResults).reduce(
 				(sum, c) => sum + c.passed,
 				0,
 			);
-			const totalTests = tests.length;
+			// Not `tests.length` — an aborted run must score against what it
+			// actually ran, or the pass rate reads as a catastrophic regression.
+			const totalTests = allResults.length;
 
 			// Calculate average latency (excluding errors/timeouts)
 			const validLatencies = allResults
@@ -825,6 +850,9 @@ export function BenchmarkCommand({options}: Props) {
 					</Box>
 
 					<Text> </Text>
+					{warning && (
+						<StatusMessage variant="warning">{warning}</StatusMessage>
+					)}
 					<Text>
 						Model: <Text color="cyan">{results.model.split('/').pop()}</Text>
 						{results.isBase && <Text dimColor> (base model, control)</Text>}
