@@ -4,8 +4,11 @@ import type {
 	ChatCompletionResponse,
 	InferenceOptions,
 	InferenceResult,
+	ServerHandle,
+	StreamChunk,
 } from "./llama-cpp.js";
 import {
+	chatCompletionStream,
 	createServerHandle,
 	exportModel,
 	parseChatCompletionResponse,
@@ -390,4 +393,273 @@ test("waitForServerOrExit still times out when the child stays up but never answ
 
 	t.true(err?.message.includes("failed to start within"));
 	await stopLlamaServer(handle);
+});
+
+// ── chatCompletionStream ──────────────────────────────────────────────
+
+const enc = new TextEncoder();
+
+/** A ReadableStream that emits each string as its own byte chunk. */
+function sseBody(chunks: string[]): ReadableStream<Uint8Array> {
+	return new ReadableStream({
+		start(controller) {
+			for (const chunk of chunks) controller.enqueue(enc.encode(chunk));
+			controller.close();
+		},
+	});
+}
+
+/** SSE lines joined into a single chunk, newline-terminated as llama-server sends them. */
+function sseLines(lines: string[]): ReadableStream<Uint8Array> {
+	return sseBody([`${lines.join("\n")}\n`]);
+}
+
+/** Swap in a fetch implementation for the duration of `callback`. */
+async function withMockFetch(
+	impl: () => Promise<Response>,
+	callback: () => Promise<void>,
+): Promise<void> {
+	const original = globalThis.fetch;
+	globalThis.fetch = impl as typeof globalThis.fetch;
+	try {
+		await callback();
+	} finally {
+		globalThis.fetch = original;
+	}
+}
+
+function makeServerHandle(): ServerHandle {
+	// Only `port` is read by chatCompletionStream; the child is never touched.
+	return {
+		port: 9999,
+		process: null as unknown as ServerHandle["process"],
+		exited: Promise.resolve(undefined),
+	};
+}
+
+/** Drain the generator against a mocked streaming response. */
+async function collectChunks(
+	body: ReadableStream<Uint8Array>,
+	options?: { signal?: AbortSignal },
+): Promise<StreamChunk[]> {
+	const chunks: StreamChunk[] = [];
+	await withMockFetch(
+		async () => new Response(body, { status: 200 }),
+		async () => {
+			for await (const chunk of chatCompletionStream(
+				makeServerHandle(),
+				[{ role: "user", content: "hi" }],
+				options,
+			)) {
+				chunks.push(chunk);
+			}
+		},
+	);
+	return chunks;
+}
+
+const TIMINGS = {
+	prompt_ms: 123.4,
+	predicted_ms: 567.8,
+	predicted_per_second: 42.5,
+	predicted_n: 10,
+};
+
+test("chatCompletionStream yields token chunks then a done chunk", async (t) => {
+	const chunks = await collectChunks(
+		sseLines([
+			'data: {"choices":[{"delta":{"content":"Hello"}}]}',
+			'data: {"choices":[{"delta":{"content":","}}]}',
+			'data: {"choices":[{"delta":{"content":" world!"}}]}',
+			"data: [DONE]",
+		]),
+	);
+
+	t.is(chunks.length, 4);
+	t.deepEqual(chunks[0], { done: false, token: "Hello" });
+	t.deepEqual(chunks[1], { done: false, token: "," });
+	t.deepEqual(chunks[2], { done: false, token: " world!" });
+
+	const last = chunks[3];
+	t.true(last.done);
+	if (last.done) {
+		t.is(last.result.text, "Hello, world!");
+		t.false(last.cancelled);
+	}
+});
+
+test("chatCompletionStream skips SSE chunks with empty or missing delta.content", async (t) => {
+	const chunks = await collectChunks(
+		sseLines([
+			// Role-only delta (llama-server's first chunk) — no content.
+			'data: {"choices":[{"delta":{"role":"assistant"}}]}',
+			": keep-alive comment",
+			'data: {"choices":[{"delta":{"content":"Hi"}}]}',
+			// Empty-string delta — must not produce a token chunk.
+			'data: {"choices":[{"delta":{"content":""}}]}',
+			"data: [DONE]",
+		]),
+	);
+
+	const tokens = chunks.filter((c) => !c.done);
+	t.is(tokens.length, 1);
+	t.deepEqual(tokens[0], { done: false, token: "Hi" });
+});
+
+test("chatCompletionStream parses timings from the final SSE chunk", async (t) => {
+	const chunks = await collectChunks(
+		sseLines([
+			'data: {"choices":[{"delta":{"content":"ok"}}]}',
+			`data: {"choices":[{"delta":{"content":""},"finish_reason":"stop"}],"timings":${JSON.stringify(TIMINGS)}}`,
+			"data: [DONE]",
+		]),
+	);
+
+	const last = chunks.at(-1);
+	t.truthy(last?.done);
+	if (last?.done) {
+		t.is(last.result.text, "ok");
+		t.is(last.result.ttftMs, 123); // Math.round(123.4)
+		t.is(last.result.generationTimeMs, 568); // Math.round(567.8)
+		t.is(last.result.tokensPerSecond, 42.5);
+		t.is(last.result.tokensGenerated, 10);
+	}
+});
+
+test("chatCompletionStream parses a final SSE line that arrives without a trailing newline", async (t) => {
+	// Regression: the leftover buffer was flushed out of the decoder but never
+	// parsed, so an unterminated final line silently lost both its token and
+	// the timings llama-server attaches to it.
+	const chunks = await collectChunks(
+		sseBody([
+			'data: {"choices":[{"delta":{"content":"hi"}}]}\n',
+			`data: {"choices":[{"delta":{"content":"!"}}],"timings":${JSON.stringify(TIMINGS)}}`,
+		]),
+	);
+
+	t.deepEqual(
+		chunks.filter((c) => !c.done),
+		[
+			{ done: false, token: "hi" },
+			{ done: false, token: "!" },
+		],
+	);
+
+	const last = chunks.at(-1);
+	if (last?.done) {
+		t.is(last.result.text, "hi!");
+		t.is(last.result.tokensPerSecond, 42.5);
+		t.is(last.result.tokensGenerated, 10);
+	} else {
+		t.fail("expected a done chunk");
+	}
+});
+
+test("chatCompletionStream reassembles an SSE event split across byte chunks", async (t) => {
+	const chunks = await collectChunks(
+		sseBody([
+			'data: {"choices":[{"delta":{"cont',
+			'ent":"split"}}]}\n',
+			"data: [DONE]\n",
+		]),
+	);
+
+	t.deepEqual(
+		chunks.filter((c) => !c.done),
+		[{ done: false, token: "split" }],
+	);
+});
+
+test("chatCompletionStream ends with a cancelled done chunk when the signal fires mid-stream", async (t) => {
+	// Drive the body by hand so the abort lands between two reads, exactly as
+	// it does when the user hits Esc partway through a reply.
+	let controller!: ReadableStreamDefaultController<Uint8Array>;
+	const body = new ReadableStream<Uint8Array>({
+		start(c) {
+			controller = c;
+		},
+	});
+	const ac = new AbortController();
+
+	await withMockFetch(
+		async () => new Response(body, { status: 200 }),
+		async () => {
+			const stream = chatCompletionStream(
+				makeServerHandle(),
+				[{ role: "user", content: "hi" }],
+				{ signal: ac.signal },
+			);
+
+			controller.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"first"}}]}\n'));
+			const first = await stream.next();
+			t.deepEqual(first.value, { done: false, token: "first" });
+
+			ac.abort();
+			controller.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"second"}}]}\n'));
+
+			// The turn ends with a done chunk carrying the partial text — never a
+			// throw, and never a silent return with no terminal chunk.
+			const last = await stream.next();
+			t.true(last.value?.done);
+			if (last.value?.done) {
+				t.true(last.value.cancelled);
+				t.is(last.value.result.text, "first");
+			}
+
+			// Breaking out of the read loop already cancelled the body stream, so
+			// there is nothing left to close here.
+			t.true((await stream.next()).done);
+		},
+	);
+});
+
+test("chatCompletionStream yields a cancelled done chunk when the signal fires before any token", async (t) => {
+	const ac = new AbortController();
+	ac.abort();
+
+	const chunks: StreamChunk[] = [];
+	await withMockFetch(
+		async () => {
+			// What fetch does for an already-aborted signal.
+			throw Object.assign(new Error("This operation was aborted"), {
+				name: "AbortError",
+			});
+		},
+		async () => {
+			for await (const chunk of chatCompletionStream(
+				makeServerHandle(),
+				[{ role: "user", content: "hi" }],
+				{ signal: ac.signal },
+			)) {
+				chunks.push(chunk);
+			}
+		},
+	);
+
+	t.is(chunks.length, 1);
+	const only = chunks[0];
+	t.true(only.done);
+	if (only.done) {
+		t.true(only.cancelled);
+		t.is(only.result.text, "");
+	}
+});
+
+test("chatCompletionStream throws when the server returns a non-OK status", async (t) => {
+	await withMockFetch(
+		async () =>
+			new Response(null, { status: 500, statusText: "Internal Server Error" }),
+		async () => {
+			await t.throwsAsync(
+				async () => {
+					for await (const _ of chatCompletionStream(makeServerHandle(), [
+						{ role: "user", content: "hi" },
+					])) {
+						// should not reach here
+					}
+				},
+				{ message: /stream.*failed/i },
+			);
+		},
+	);
 });

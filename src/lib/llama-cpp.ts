@@ -361,12 +361,51 @@ interface LlamaServerTimings {
 export interface ChatCompletionResponse {
 	choices?: Array<{
 		message?: {role?: string; content?: string};
+		/** Streaming delta object — present in SSE chunks instead of `message`. */
+		delta?: {role?: string; content?: string};
+		finish_reason?: string | null;
 	}>;
 	timings?: LlamaServerTimings;
 	usage?: {
 		prompt_tokens?: number;
 		completion_tokens?: number;
 		total_tokens?: number;
+	};
+}
+
+/**
+ * A single item yielded by `chatCompletionStream`.
+ *
+ * - `{done: false, token}` — a new piece of generated text just arrived.
+ * - `{done: true, result}` — generation finished; `result` holds the full
+ *   assembled text and per-turn timing stats (TTFT, tok/s, token count).
+ *   `cancelled` is true when the caller's AbortSignal ended the turn early,
+ *   in which case `result.text` is whatever had been generated so far.
+ *
+ * Exactly one `done` chunk is yielded per stream, cancelled or not.
+ */
+export type StreamChunk =
+	| {done: false; token: string}
+	| {done: true; result: InferenceResult; cancelled?: boolean};
+
+/**
+ * Assemble an InferenceResult from generated text plus llama-server's timing
+ * and usage fields. Shared by the buffered and streaming paths so the two
+ * cannot drift in how they report TTFT, tok/s and token counts.
+ */
+function toInferenceResult(
+	text: string,
+	timings: LlamaServerTimings | undefined,
+	usage: ChatCompletionResponse['usage'],
+): InferenceResult {
+	return {
+		text: text.trim(),
+		ttftMs: timings?.prompt_ms ? Math.round(timings.prompt_ms) : undefined,
+		generationTimeMs: timings?.predicted_ms
+			? Math.round(timings.predicted_ms)
+			: undefined,
+		tokensPerSecond: timings?.predicted_per_second,
+		tokensGenerated: timings?.predicted_n ?? usage?.completion_tokens,
 	};
 }
 
@@ -380,17 +419,7 @@ export function parseChatCompletionResponse(
 	data: ChatCompletionResponse,
 ): InferenceResult {
 	const content = data.choices?.[0]?.message?.content ?? '';
-	const timings = data.timings;
-
-	return {
-		text: content.trim(),
-		ttftMs: timings?.prompt_ms ? Math.round(timings.prompt_ms) : undefined,
-		generationTimeMs: timings?.predicted_ms
-			? Math.round(timings.predicted_ms)
-			: undefined,
-		tokensPerSecond: timings?.predicted_per_second,
-		tokensGenerated: timings?.predicted_n ?? data.usage?.completion_tokens,
-	};
+	return toInferenceResult(content, data.timings, data.usage);
 }
 
 /** Server-lifetime options (used at llama-server startup time). */
@@ -623,4 +652,162 @@ export async function chatCompletion(
 
 	const data = (await response.json()) as ChatCompletionResponse;
 	return parseChatCompletionResponse(data);
+}
+
+/** True for the DOMException fetch raises when an AbortSignal fires. */
+function isAbortError(err: unknown): boolean {
+	return err instanceof Error && err.name === 'AbortError';
+}
+
+/**
+ * Streaming variant of `chatCompletion`. Sends `"stream": true` to the
+ * llama-server `/v1/chat/completions` SSE endpoint and yields tokens as they
+ * arrive, finishing with a `{done: true, result}` chunk carrying the same
+ * timing stats the non-streaming response would have returned.
+ *
+ * The caller must iterate the generator with `for await … of`. Aborting via
+ * `options.signal` is not an error: the generator swallows the AbortError and
+ * still yields a final `{done: true, cancelled: true, result}` chunk holding
+ * the partial text, so callers see exactly one terminal chunk either way and
+ * never have to distinguish "cancelled" from "failed" in a catch block.
+ *
+ * NOTE: `chatCompletion` is deliberately left unchanged — the benchmark
+ * command relies on it and does not need streaming.
+ */
+export async function* chatCompletionStream(
+	handle: ServerHandle,
+	messages: ChatMessage[],
+	options: GenerateOptions = {},
+): AsyncGenerator<StreamChunk> {
+	const {
+		maxTokens = 100,
+		temperature = 0.8,
+		topP = 0.9,
+		seed,
+		signal,
+	} = options;
+
+	const body: Record<string, unknown> = {
+		messages,
+		max_tokens: maxTokens,
+		temperature,
+		top_p: topP,
+		stream: true,
+	};
+	if (seed !== undefined) {
+		body.seed = seed;
+	}
+
+	// Accumulated text and the timings from whichever chunk carried them.
+	let fullText = '';
+	let timings: LlamaServerTimings | undefined;
+	let usage: ChatCompletionResponse['usage'];
+	let cancelled = false;
+
+	/**
+	 * Parse a batch of complete SSE lines, updating the accumulators above and
+	 * yielding a token chunk per non-empty `delta.content`. Declared inline so
+	 * the trailing-buffer flush below can run the exact same parsing as the
+	 * main loop: a final line that arrives without a trailing newline still
+	 * has to contribute its token and the timings attached to it.
+	 */
+	function* consumeLines(lines: string[]): Generator<StreamChunk> {
+		for (const line of lines) {
+			const trimmed = line.trim();
+
+			// Blank line (event separator) or SSE comment — skip.
+			if (!trimmed || trimmed.startsWith(':')) continue;
+
+			// Every SSE event line we care about starts with "data: ".
+			if (!trimmed.startsWith('data: ')) continue;
+
+			const payload = trimmed.slice('data: '.length).trim();
+
+			// End-of-stream sentinel.
+			if (payload === '[DONE]') continue;
+
+			let chunk: ChatCompletionResponse;
+			try {
+				chunk = JSON.parse(payload) as ChatCompletionResponse;
+			} catch {
+				// Malformed JSON in an SSE line — skip rather than crash.
+				continue;
+			}
+
+			// llama-server attaches timings to the final chunk, but take them
+			// from any chunk that carries them.
+			if (chunk.timings) timings = chunk.timings;
+			if (chunk.usage) usage = chunk.usage;
+
+			const token = chunk.choices?.[0]?.delta?.content;
+			if (token) {
+				fullText += token;
+				yield {done: false, token};
+			}
+		}
+	}
+
+	try {
+		const response = await fetch(
+			`http://127.0.0.1:${handle.port}/v1/chat/completions`,
+			{
+				method: 'POST',
+				headers: {'Content-Type': 'application/json'},
+				body: JSON.stringify(body),
+				signal,
+			},
+		);
+
+		if (!response.ok) {
+			throw new Error(
+				`llama-server /v1/chat/completions (stream) failed: ${response.statusText}`,
+			);
+		}
+
+		if (!response.body) {
+			throw new Error(
+				'llama-server returned no response body for streaming request',
+			);
+		}
+
+		// Holds the trailing partial line between reads — SSE events routinely
+		// straddle chunk boundaries.
+		let lineBuffer = '';
+		const decoder = new TextDecoder();
+
+		for await (const bytes of response.body) {
+			// Signal fired between reads — stop before decoding more.
+			if (signal?.aborted) {
+				cancelled = true;
+				break;
+			}
+
+			lineBuffer += decoder.decode(bytes, {stream: true});
+
+			const lines = lineBuffer.split('\n');
+			// The last segment may be incomplete; hold it for the next read.
+			lineBuffer = lines.pop() ?? '';
+
+			yield* consumeLines(lines);
+		}
+
+		// Flush the decoder and parse whatever is left, so a final line that
+		// arrived without a trailing newline still contributes its token and
+		// timings.
+		lineBuffer += decoder.decode();
+		if (lineBuffer.trim()) {
+			yield* consumeLines([lineBuffer]);
+		}
+	} catch (err) {
+		// An abort is a normal outcome, not a failure — fall through to the
+		// terminal chunk below. Anything else is a real error.
+		if (!isAbortError(err) && !signal?.aborted) throw err;
+		cancelled = true;
+	}
+
+	yield {
+		done: true,
+		result: toInferenceResult(fullText, timings, usage),
+		cancelled,
+	};
 }

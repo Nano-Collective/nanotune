@@ -5,6 +5,7 @@ import { Text } from "ink";
 import { render } from "ink-testing-library";
 import { useKeyInput } from "../components/index.js";
 import { loadTrainingData } from "../lib/data.js";
+import { streamPreview } from "./chat.js";
 import { DataImportCommand } from "./data/import.js";
 import { DataListCommand } from "./data/list.js";
 import { DataValidateCommand } from "./data/validate.js";
@@ -263,4 +264,32 @@ test.serial("DataImportCommand without yes waits for confirmation", async (t) =>
   } finally {
     teardown();
   }
+});
+
+// ── chat streaming preview ────────────────────────────────────────────
+
+test("streamPreview passes short content through untouched", (t) => {
+  const { text, truncated } = streamPreview("one\ntwo");
+  t.is(text, "one\ntwo");
+  t.false(truncated);
+});
+
+test("streamPreview keeps only the tail of a tall response", (t) => {
+  // Ink cannot cleanly repaint a live block taller than the terminal, so the
+  // preview shows the end of the reply while it streams.
+  const content = Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n");
+  const { text, truncated } = streamPreview(content);
+
+  t.true(truncated);
+  t.is(text.split("\n").length, 12);
+  t.true(text.endsWith("line 39"));
+  t.false(text.includes("line 27"));
+});
+
+test("streamPreview clips a single very long line by characters", (t) => {
+  // One unwrapped line can overflow the terminal on its own, so character
+  // clipping runs before the line count is applied.
+  const { text, truncated } = streamPreview("x".repeat(5000));
+  t.true(truncated);
+  t.is(text.length, 2000);
 });
