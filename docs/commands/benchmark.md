@@ -59,6 +59,8 @@ With sampling enabled, `--samples <n>` runs each test n times and records the pe
 nanotune benchmark --temperature 0.8 --samples 5
 ```
 
+`--temperature`, `--seed`, and `--samples` are rejected outright if they can't be parsed, rather than falling back to the default. A typo like `--samples 5x` fails with a message naming the flag, so a run never reports a score under settings you didn't ask for.
+
 ## Examples
 
 ```bash

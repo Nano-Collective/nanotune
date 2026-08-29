@@ -452,8 +452,7 @@ export async function* runTraining(
 				}
 			}
 		} catch (err) {
-			if (err instanceof Error && err.name === 'AbortError') {
-			} else {
+			if (!(err instanceof Error && err.name === 'AbortError')) {
 				throw err;
 			}
 		}
@@ -503,16 +502,10 @@ export async function fuseAdapters(
 }
 
 /**
- * @public Deliberately uncalled. Kept for #84, which will wire it to a real
- * SIGINT handler in `train`. Today Ctrl+C only works because the terminal
- * delivers SIGINT to the whole process group, so the "checkpoint saved" hint
- * is unverified — that is the bug #84 tracks.
-
  * Stop `subprocess` as soon as `signal` aborts. Split out from `runTraining`
  * so the wiring — including a signal that is already aborted, which never
  * fires an `abort` event — is testable without spawning a trainer.
  */
-
 export function stopOnAbort(
 	subprocess: ResultPromise,
 	signal?: AbortSignal,
@@ -533,9 +526,12 @@ export function abortTraining(subprocess: ResultPromise): void {
 	subprocess.kill('SIGINT');
 }
 
-export function shouldTreatAsStop(
-	signal?: AbortSignal,
-	error?: unknown,
-): boolean {
+/**
+ * True when a thrown error should be reported as a user-requested stop rather
+ * than a training failure. The error itself is deliberately not inspected: once
+ * we have sent SIGINT, whatever surfaces (an ExecaError, an aborted stream) is
+ * a consequence of the stop we asked for.
+ */
+export function shouldTreatAsStop(signal?: AbortSignal): boolean {
 	return signal?.aborted === true;
 }

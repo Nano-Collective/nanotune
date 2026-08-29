@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "ava";
 import { Text } from "ink";
@@ -6,6 +6,7 @@ import { render } from "ink-testing-library";
 import { useKeyInput } from "../components/index.js";
 import { loadTrainingData } from "../lib/data.js";
 import { streamPreview } from "./chat.js";
+import { DataExportCommand } from "./data/export.js";
 import { DataImportCommand } from "./data/import.js";
 import { DataListCommand } from "./data/list.js";
 import { DataValidateCommand } from "./data/validate.js";
@@ -58,6 +59,19 @@ function writeExamples(lines: object[]) {
     join(DATA_DIR, "train.jsonl"),
     `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`,
   );
+}
+
+function writeEvalExamples(lines: object[]) {
+  writeFileSync(
+    join(DATA_DIR, "valid.jsonl"),
+    `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`,
+  );
+}
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 60));
+
+function userContent(example: { messages: { role: string; content: string }[] }) {
+  return example.messages.find((m) => m.role === "user")?.content;
 }
 
 function example(userInput: string) {
@@ -292,4 +306,83 @@ test("streamPreview clips a single very long line by characters", (t) => {
   const { text, truncated } = streamPreview("x".repeat(5000));
   t.true(truncated);
   t.is(text.length, 2000);
+});
+
+// ── data list edits the set it was opened on ──────────────────────────
+
+test.serial(
+  "DataListCommand with --eval edits valid.jsonl and leaves train.jsonl alone",
+  async (t) => {
+    // Regression: the edit path called updateTrainingExample/loadTrainingData
+    // without isEval, so editing a validation example overwrote the training
+    // example at the same index instead.
+    const originalTTY = process.stdin.isTTY;
+    try {
+      setupProject();
+      writeExamples([example("train-one")]);
+      writeEvalExamples([example("valid-one")]);
+      process.stdin.isTTY = true;
+
+      const instance = render(<DataListCommand isEval />);
+      await settle();
+      instance.stdin.write("e"); // enter edit mode
+      await settle();
+      instance.stdin.write("\r"); // submit user input unchanged
+      await settle();
+      instance.stdin.write("\r"); // submit assistant output unchanged
+      await settle();
+      instance.unmount();
+
+      t.is(userContent(loadTrainingData(false)[0]), "train-one");
+      t.is(userContent(loadTrainingData(true)[0]), "valid-one");
+      t.is(loadTrainingData(false).length, 1);
+      t.is(loadTrainingData(true).length, 1);
+    } finally {
+      process.stdin.isTTY = originalTTY;
+      teardown();
+    }
+  },
+);
+
+// ── data export honours --eval ────────────────────────────────────────
+
+test.serial("DataExportCommand exports training data by default", async (t) => {
+  try {
+    setupProject();
+    writeExamples([example("train-one"), example("train-two")]);
+    writeEvalExamples([example("valid-one")]);
+
+    await renderCommand(
+      <DataExportCommand file="out.jsonl" yes />,
+      "Export complete!",
+    );
+
+    const written = readFileSync(join(TEST_DIR, "out.jsonl"), "utf-8").trim();
+    t.is(written.split("\n").length, 2);
+    t.true(written.includes("train-one"));
+    t.false(written.includes("valid-one"));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("DataExportCommand with --eval exports the validation set", async (t) => {
+  try {
+    setupProject();
+    writeExamples([example("train-one"), example("train-two")]);
+    writeEvalExamples([example("valid-one")]);
+
+    const output = await renderCommand(
+      <DataExportCommand file="out.jsonl" yes isEval />,
+      "Export complete!",
+    );
+
+    t.true(output.includes("Export Validation Data"));
+    const written = readFileSync(join(TEST_DIR, "out.jsonl"), "utf-8").trim();
+    t.is(written.split("\n").length, 1);
+    t.true(written.includes("valid-one"));
+    t.false(written.includes("train-one"));
+  } finally {
+    teardown();
+  }
 });

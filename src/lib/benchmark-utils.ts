@@ -70,22 +70,75 @@ export function formatConversationForJudge(
 export const DEFAULT_BENCHMARK_TEMPERATURE = 0;
 export const DEFAULT_BENCHMARK_SEED = 42;
 
+export interface SamplingOptions {
+	temperature: number;
+	seed: number;
+	samples: number;
+	/** One message per rejected flag; empty when everything parsed. */
+	errors: string[];
+}
+
+// Number() rather than parseFloat/parseInt so trailing garbage ("5abc") is
+// rejected instead of silently truncated to a plausible-looking value. A blank
+// value is screened out first because Number('') is 0.
+function parseFlag(raw: string | undefined): number | undefined {
+	if (raw === undefined) {
+		return undefined;
+	}
+	const trimmed = raw.trim();
+	return trimmed === '' ? Number.NaN : Number(trimmed);
+}
+
+/**
+ * Resolve the sampling flags, defaulting anything the user didn't pass.
+ *
+ * An unparseable value is an error rather than a silent fall back to the
+ * default: `--temperature abc` quietly becoming 0 would report a greedy run
+ * under a flag the user believed had enabled sampling, and the recorded
+ * `config` block in the saved report would disagree with what they typed.
+ */
 export function resolveSamplingOptions(options: {
 	temperature?: string;
 	seed?: string;
 	samples?: string;
-}): {temperature: number; seed: number; samples: number} {
-	const temperature = Number.parseFloat(options.temperature ?? '');
-	const seed = Number.parseInt(options.seed ?? '', 10);
-	const samples = Number.parseInt(options.samples ?? '', 10);
+}): SamplingOptions {
+	const errors: string[] = [];
 
-	return {
-		temperature: Number.isFinite(temperature)
-			? temperature
-			: DEFAULT_BENCHMARK_TEMPERATURE,
-		seed: Number.isFinite(seed) ? seed : DEFAULT_BENCHMARK_SEED,
-		samples: Number.isFinite(samples) && samples > 0 ? samples : 1,
-	};
+	let temperature = DEFAULT_BENCHMARK_TEMPERATURE;
+	const rawTemperature = parseFlag(options.temperature);
+	if (rawTemperature !== undefined) {
+		if (!Number.isFinite(rawTemperature) || rawTemperature < 0) {
+			errors.push(
+				`Invalid --temperature "${options.temperature}": expected a non-negative number.`,
+			);
+		} else {
+			temperature = rawTemperature;
+		}
+	}
+
+	let seed = DEFAULT_BENCHMARK_SEED;
+	const rawSeed = parseFlag(options.seed);
+	if (rawSeed !== undefined) {
+		if (!Number.isInteger(rawSeed)) {
+			errors.push(`Invalid --seed "${options.seed}": expected an integer.`);
+		} else {
+			seed = rawSeed;
+		}
+	}
+
+	let samples = 1;
+	const rawSamples = parseFlag(options.samples);
+	if (rawSamples !== undefined) {
+		if (!Number.isInteger(rawSamples) || rawSamples < 1) {
+			errors.push(
+				`Invalid --samples "${options.samples}": expected a positive integer.`,
+			);
+		} else {
+			samples = rawSamples;
+		}
+	}
+
+	return {temperature, seed, samples, errors};
 }
 
 export function summarizeSamples(passes: boolean[]): {

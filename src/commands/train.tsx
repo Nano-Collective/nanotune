@@ -111,6 +111,10 @@ export function TrainCommand({options}: Props) {
 		didSplit: boolean;
 	} | null>(null);
 	const [seedIgnored, setSeedIgnored] = useState(false);
+	// The checkpoint interval the run actually used. `--save-every` overrides
+	// config.json, so the stop/stopped views must report against this rather
+	// than re-reading config.training.saveEvery and naming the wrong iteration.
+	const [saveEvery, setSaveEvery] = useState<number | null>(null);
 	const abortRef = useRef<AbortController | null>(null);
 
 	// Ctrl+C is ours to handle here (the command renders with
@@ -245,6 +249,7 @@ export function TrainCommand({options}: Props) {
 				return;
 			}
 			const training = validation.data;
+			setSaveEvery(training.saveEvery);
 
 			// Check MLX
 			setStatus('checking');
@@ -347,7 +352,7 @@ export function TrainCommand({options}: Props) {
 
 			setStatus(controller.signal.aborted ? 'stopped' : 'done');
 		} catch (err) {
-			if (shouldTreatAsStop(abortRef.current?.signal, err)) {
+			if (shouldTreatAsStop(abortRef.current?.signal)) {
 				setStatus('stopped');
 				return;
 			}
@@ -497,9 +502,9 @@ export function TrainCommand({options}: Props) {
 			{status === 'stopping' && progress && (
 				<Box flexDirection="column">
 					{(() => {
-						const saveEvery = config.training.saveEvery;
+						const interval = saveEvery ?? config.training.saveEvery;
 						const lastSaved =
-							Math.floor(progress.iteration / saveEvery) * saveEvery;
+							Math.floor(progress.iteration / interval) * interval;
 						return (
 							<Spinner
 								label={
@@ -520,9 +525,9 @@ export function TrainCommand({options}: Props) {
 					<Text> </Text>
 					{progress &&
 						(() => {
-							const saveEvery = config.training.saveEvery;
+							const interval = saveEvery ?? config.training.saveEvery;
 							const lastSaved =
-								Math.floor(progress.iteration / saveEvery) * saveEvery;
+								Math.floor(progress.iteration / interval) * interval;
 							return lastSaved > 0 ? (
 								<>
 									<Text>
@@ -537,7 +542,7 @@ export function TrainCommand({options}: Props) {
 								</>
 							) : (
 								<Text>
-									No checkpoint saved (stopped before iteration {saveEvery})
+									No checkpoint saved (stopped before iteration {interval})
 								</Text>
 							);
 						})()}

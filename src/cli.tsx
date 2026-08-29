@@ -82,7 +82,8 @@ dataCommand
 		'-y, --yes',
 		'Skip the overwrite confirmation prompt (for scripts and CI)',
 	)
-	.action(async (file: string, options: {yes?: boolean}) => {
+	.option('-e, --eval', 'Export the validation set instead of training data')
+	.action(async (file: string, options: {yes?: boolean; eval?: boolean}) => {
 		const {DataExportCommand} = await import('./commands/data/export.js');
 		// Without a TTY there is no way to answer the overwrite prompt, so require --yes.
 		if (!options.yes && !supportsRawMode()) {
@@ -91,7 +92,9 @@ dataCommand
 			process.exitCode = 1;
 			return;
 		}
-		render(<DataExportCommand file={file} yes={options.yes} />);
+		render(
+			<DataExportCommand file={file} yes={options.yes} isEval={options.eval} />,
+		);
 	});
 
 dataCommand

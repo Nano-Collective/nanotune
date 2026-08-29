@@ -230,18 +230,14 @@ test("stopOnAbort terminates a real running child process", async (t) => {
 test("shouldTreatAsStop returns true when signal is aborted", (t) => {
   const controller = new AbortController();
   controller.abort();
-  t.true(shouldTreatAsStop(controller.signal, new Error("test")));
+  t.true(shouldTreatAsStop(controller.signal));
 });
 
 test("shouldTreatAsStop returns false when signal is not aborted", (t) => {
   const controller = new AbortController();
-  t.false(shouldTreatAsStop(controller.signal, new Error("test")));
+  t.false(shouldTreatAsStop(controller.signal));
 });
 
 test("shouldTreatAsStop returns false when signal is undefined", (t) => {
-  t.false(shouldTreatAsStop(undefined, new Error("test")));
-});
-
-test("shouldTreatAsStop returns false when signal is null", (t) => {
-  t.false(shouldTreatAsStop(undefined, null));
+  t.false(shouldTreatAsStop(undefined));
 });

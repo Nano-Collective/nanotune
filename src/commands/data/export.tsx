@@ -16,9 +16,10 @@ interface Props {
 	file: string;
 	/** Skip the overwrite confirmation — needed to run under CI or in a pipeline. */
 	yes?: boolean;
+	isEval?: boolean;
 }
 
-export function DataExportCommand({file, yes}: Props) {
+export function DataExportCommand({file, yes, isEval = false}: Props) {
 	const {exit} = useApp();
 	const filePath = resolve(process.cwd(), file);
 	const fileExists = existsSync(filePath);
@@ -27,7 +28,8 @@ export function DataExportCommand({file, yes}: Props) {
 	>(!fileExists || yes ? 'exporting' : 'confirm');
 	const [result, setResult] = useState<ExportResult | null>(null);
 	const [error, setError] = useState<string | null>(null);
-	const count = configExists() ? countExamples() : 0;
+	const count = configExists() ? countExamples(isEval) : 0;
+	const title = isEval ? 'Export Validation Data' : 'Export Training Data';
 
 	const doExport = useCallback(() => {
 		try {
@@ -37,7 +39,7 @@ export function DataExportCommand({file, yes}: Props) {
 				return;
 			}
 
-			const exportResult = exportData(filePath);
+			const exportResult = exportData(filePath, isEval);
 			if (
 				exportResult.exported === 0 &&
 				exportResult.errors[0]?.startsWith('Unsupported')
@@ -53,7 +55,7 @@ export function DataExportCommand({file, yes}: Props) {
 			setError(err instanceof Error ? err.message : 'Export failed');
 			setStatus('error');
 		}
-	}, [filePath]);
+	}, [filePath, isEval]);
 
 	useEffect(() => {
 		if (status === 'exporting') {
@@ -78,7 +80,7 @@ export function DataExportCommand({file, yes}: Props) {
 	if (!configExists()) {
 		return (
 			<Box flexDirection="column" padding={1}>
-				<Header title="Export Training Data" />
+				<Header title={title} />
 				<StatusMessage variant="error">
 					Not a Nanotune project. Run `nanotune init` first.
 				</StatusMessage>
@@ -88,7 +90,7 @@ export function DataExportCommand({file, yes}: Props) {
 
 	return (
 		<Box flexDirection="column" padding={1}>
-			<Header title="Export Training Data" />
+			<Header title={title} />
 
 			{status === 'confirm' && (
 				<Box flexDirection="column">
