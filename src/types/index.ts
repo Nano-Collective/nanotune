@@ -54,6 +54,8 @@ export interface DownloadProgress {
 	fileName?: string;
 	percent?: number;
 	sizeInfo?: string;
+	/** Resolved local snapshot directory, present on the final 100%-done event. */
+	path?: string;
 }
 
 export interface TrainingExample {
@@ -149,11 +151,25 @@ export interface BenchmarkTestResult {
 	judgeReasoning?: string;
 	/** Per-criteria scores from LLM judge */
 	judgeCriteriaScores?: Record<string, number>;
+	/** Number of samples run for this test. Present when greater than 1. */
+	samples?: number;
+	/** Portion of samples that passed. Present when samples > 1. */
+	samplePassRate?: number;
+	/** Variance of the sample outcomes. Present when samples > 1. */
+	sampleVariance?: number;
 }
 
 export interface BenchmarkResult {
 	model: string;
 	timestamp: string;
+	/** Benchmark configuration used for this run */
+	config?: {
+		temperature: number;
+		seed: number;
+		samples: number;
+	};
+	/** True when this run benchmarked the base (pre-fine-tuning) model as a control. */
+	isBase?: boolean;
 	summary: {
 		total: number;
 		passed: number;

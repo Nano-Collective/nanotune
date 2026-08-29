@@ -2,7 +2,7 @@ import {existsSync} from 'node:fs';
 import {join} from 'node:path';
 import {Spinner, StatusMessage} from '@inkjs/ui';
 import {Box, Text, useApp} from 'ink';
-import {useCallback, useEffect, useState} from 'react';
+import {useCallback, useEffect, useRef, useState} from 'react';
 import {
 	ExitHint,
 	Header,
@@ -24,6 +24,7 @@ import {
 	installMLX,
 	type MLXTrainingOptions,
 	runTraining,
+	shouldTreatAsStop,
 } from '../lib/mlx.js';
 import {assertSupportedPlatform} from '../lib/platform.js';
 import type {TrainingProgress} from '../types/index.js';
@@ -38,6 +39,7 @@ interface Props {
 		saveEvery?: string;
 		resume?: boolean;
 		dryRun?: boolean;
+		seed?: string;
 	};
 }
 
@@ -47,6 +49,8 @@ type Status =
 	| 'validating'
 	| 'downloading'
 	| 'training'
+	| 'stopping'
+	| 'stopped'
 	| 'done'
 	| 'error';
 
@@ -60,20 +64,74 @@ export function TrainCommand({options}: Props) {
 	const [downloadPercent, setDownloadPercent] = useState<number | null>(null);
 	const [downloadDetail, setDownloadDetail] = useState<string | null>(null);
 	const [elapsed, setElapsed] = useState<string | null>(null);
+	const [split, setSplit] = useState<{
+		trainCount: number;
+		validCount: number;
+		didSplit: boolean;
+	} | null>(null);
+	const [seedIgnored, setSeedIgnored] = useState(false);
+	const abortRef = useRef<AbortController | null>(null);
 
+	// Ctrl+C is ours to handle here (the command renders with
+	// `exitOnCtrlC: false`), so mid-training it stops the trainer gracefully
+	// instead of letting Ink tear the app down while MLX is still writing.
+	// A second Ctrl+C gives up on the checkpoint rather than trapping the user
+	// behind a trainer that will not exit.
 	useKeyInput((input, key) => {
+		if (key.ctrl && input === 'c') {
+			if (status === 'training') {
+				abortRef.current?.abort();
+				setStatus('stopping');
+			} else if (status === 'stopping') {
+				process.exit(130);
+			} else {
+				exit();
+			}
+			return;
+		}
 		if (key.escape && status !== 'training' && status !== 'downloading') {
 			exit();
 		}
-		if ((status === 'done' || status === 'error') && (key.return || input)) {
+		if (
+			(status === 'done' || status === 'stopped' || status === 'error') &&
+			(key.return || input)
+		) {
 			exit();
 		}
 	});
 
-	useAutoExit(status === 'done' || status === 'error', status === 'error');
+	useAutoExit(
+		status === 'done' || status === 'stopped' || status === 'error',
+		status === 'error',
+	);
+
+	useEffect(() => {
+		if (status === 'stopped') {
+			process.exitCode = 130;
+		}
+	}, [status]);
 
 	const run = useCallback(async () => {
 		try {
+			// Parse the seed before any work happens. Number.parseInt would turn
+			// a typo into NaN and mulberry32 would coerce that to 0, producing a
+			// confidently deterministic split under a seed the user never asked
+			// for; `--seed 3.7` would silently truncate the same way. Number()
+			// rejects both, but reads blank input as 0, so that is screened out
+			// first. Testing against undefined rather than truthiness keeps
+			// `--seed 0` a real seed.
+			let seed: number | undefined;
+			if (options.seed !== undefined) {
+				const raw = options.seed.trim();
+				const parsed = raw === '' ? Number.NaN : Number(raw);
+				if (!Number.isInteger(parsed)) {
+					setError(`Invalid --seed "${options.seed}": expected an integer.`);
+					setStatus('error');
+					return;
+				}
+				seed = parsed;
+			}
+
 			// Fail fast on unsupported hardware. Without this the run dies much
 			// later inside `pip install mlx-lm` with an opaque resolver error.
 			assertSupportedPlatform();
@@ -117,9 +175,6 @@ export function TrainCommand({options}: Props) {
 				return;
 			}
 
-			// Ensure we have a validation set (MLX requires it)
-			ensureValidationSet();
-
 			// Load config
 			const config = loadConfig();
 
@@ -161,10 +216,22 @@ export function TrainCommand({options}: Props) {
 				}
 			}
 
-			// Dry run check
+			// Dry run check. This returns before the split so that a command
+			// documented as "validate config without training" leaves train.jsonl
+			// and valid.jsonl exactly as it found them.
 			if (options.dryRun) {
 				setStatus('done');
 				return;
+			}
+
+			// Ensure we have a validation set (MLX requires it).
+			const split = ensureValidationSet(seed);
+			setSplit(split);
+			// The split only happens when there is no validation set yet, so a
+			// seed handed to an already-split project changes nothing. Saying so
+			// beats letting the user believe they re-rolled the split.
+			if (seed !== undefined && !split.didSplit) {
+				setSeedIgnored(true);
 			}
 
 			// Download model if not cached
@@ -191,7 +258,10 @@ export function TrainCommand({options}: Props) {
 				setElapsed(null);
 			}
 
-			// Start training
+			// Start training. The controller is in place before the status flips
+			// so a Ctrl+C on the very first frame still has something to abort.
+			const controller = new AbortController();
+			abortRef.current = controller;
 			setStatus('training');
 			const startTime = Date.now();
 
@@ -206,6 +276,7 @@ export function TrainCommand({options}: Props) {
 				stepsPerEval,
 				saveEvery,
 				resume: options.resume,
+				signal: controller.signal,
 			};
 
 			for await (const update of runTraining(trainingOptions)) {
@@ -226,8 +297,12 @@ export function TrainCommand({options}: Props) {
 				}
 			}
 
-			setStatus('done');
+			setStatus(controller.signal.aborted ? 'stopped' : 'done');
 		} catch (err) {
+			if (shouldTreatAsStop(abortRef.current?.signal, err)) {
+				setStatus('stopped');
+				return;
+			}
 			setError(err instanceof Error ? err.message : 'Training failed');
 			setStatus('error');
 		}
@@ -240,6 +315,7 @@ export function TrainCommand({options}: Props) {
 		options.saveEvery,
 		options.resume,
 		options.dryRun,
+		options.seed,
 	]);
 
 	useEffect(() => {
@@ -258,7 +334,10 @@ export function TrainCommand({options}: Props) {
 	}
 
 	const config = loadConfig();
-	const exampleCount = countExamples();
+	// This component re-renders on every training update, so prefer the counts
+	// the split already returned over re-reading both files each time.
+	const exampleCount = split ? split.trainCount : countExamples();
+	const validCount = split ? split.validCount : countExamples(true);
 
 	return (
 		<Box flexDirection="column" padding={1}>
@@ -269,8 +348,22 @@ export function TrainCommand({options}: Props) {
 					Model: <Text color="cyan">{config.baseModel}</Text>
 				</Text>
 				<Text>
-					Examples: <Text color="cyan">{exampleCount}</Text>
+					Examples: <Text color="cyan">{exampleCount}</Text> train
+					{' | '}
+					<Text color="cyan">{validCount}</Text> validation
 				</Text>
+				{split?.didSplit && (
+					<Text color="yellow">
+						Split {split.trainCount + split.validCount} examples into{' '}
+						{split.trainCount} train / {split.validCount} validation.
+					</Text>
+				)}
+				{seedIgnored && (
+					<Text color="yellow">
+						Existing validation set found - --seed ignored. Delete valid.jsonl
+						to re-split.
+					</Text>
+				)}
 				<Text>
 					Iterations:{' '}
 					<Text color="cyan">
@@ -341,7 +434,59 @@ export function TrainCommand({options}: Props) {
 					</Box>
 
 					<Text> </Text>
-					<Text dimColor>[Ctrl+C] Stop training (checkpoint saved)</Text>
+					<Text dimColor>[Ctrl+C] Stop training</Text>
+				</Box>
+			)}
+
+			{status === 'stopping' && progress && (
+				<Box flexDirection="column">
+					{(() => {
+						const saveEvery = config.training.saveEvery;
+						const lastSaved =
+							Math.floor(progress.iteration / saveEvery) * saveEvery;
+						return (
+							<Spinner
+								label={
+									lastSaved > 0
+										? `Stopping training (last checkpoint: iteration ${lastSaved})...`
+										: 'Stopping training (no checkpoint saved yet)...'
+								}
+							/>
+						);
+					})()}
+					<Text dimColor>[Ctrl+C] Quit without waiting</Text>
+				</Box>
+			)}
+
+			{status === 'stopped' && (
+				<Box flexDirection="column">
+					<StatusMessage variant="warning">Training stopped</StatusMessage>
+					<Text> </Text>
+					{progress &&
+						(() => {
+							const saveEvery = config.training.saveEvery;
+							const lastSaved =
+								Math.floor(progress.iteration / saveEvery) * saveEvery;
+							return lastSaved > 0 ? (
+								<>
+									<Text>
+										Checkpoint saved at iteration{' '}
+										<Text color="cyan">{lastSaved}</Text>
+									</Text>
+									<Text> </Text>
+									<Text>
+										Resume with:{' '}
+										<Text color="cyan">nanotune train --resume</Text>
+									</Text>
+								</>
+							) : (
+								<Text>
+									No checkpoint saved (stopped before iteration {saveEvery})
+								</Text>
+							);
+						})()}
+					<Text> </Text>
+					<ExitHint>Press any key to exit</ExitHint>
 				</Box>
 			)}
 
