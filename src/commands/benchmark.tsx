@@ -23,6 +23,8 @@ import {
 	buildMessages,
 	formatConversationForJudge,
 	getTestDisplayPrompt,
+	resolveSamplingOptions,
+	summarizeSamples,
 } from '../lib/benchmark-utils.js';
 import {
 	configExists,
@@ -77,6 +79,7 @@ interface Props {
 		maxTokens?: string;
 		temperature?: string;
 		seed?: string;
+		samples?: string;
 	};
 }
 
@@ -100,6 +103,14 @@ function generateMarkdownReport(
 	lines.push(
 		`**Run Type:** ${result.isBase ? 'Base model (control)' : 'Fine-tuned'}`,
 	);
+	if (result.config) {
+		lines.push('');
+		lines.push('## Configuration');
+		lines.push('');
+		lines.push(`- **Temperature:** ${result.config.temperature}`);
+		lines.push(`- **Seed:** ${result.config.seed}`);
+		lines.push(`- **Samples per test:** ${result.config.samples}`);
+	}
 	lines.push('');
 
 	// Summary
@@ -168,6 +179,15 @@ function generateMarkdownReport(
 			lines.push('');
 		}
 		lines.push(`**Category:** ${testResult.category}`);
+		if (testResult.samples !== undefined) {
+			lines.push(`**Samples:** ${testResult.samples}`);
+			lines.push(
+				`**Sample Pass Rate:** ${Math.round((testResult.samplePassRate ?? 0) * 100)}%`,
+			);
+			lines.push(
+				`**Sample Variance:** ${(testResult.sampleVariance ?? 0).toFixed(4)}`,
+			);
+		}
 		if (testResult.latencyMs) {
 			lines.push(`**Total Latency:** ${testResult.latencyMs}ms`);
 		}
@@ -432,6 +452,21 @@ export function BenchmarkCommand({options}: Props) {
 			}
 
 			// Build inference options from CLI flags or preset
+			const sampling = resolveSamplingOptions({
+				temperature: options.temperature,
+				seed: options.seed,
+				samples: options.samples,
+			});
+
+			// Validate sampling configuration
+			if (sampling.samples > 1 && sampling.temperature === 0) {
+				setError(
+					'Cannot use --samples with temperature 0 (greedy decoding produces identical outputs). Use --temperature 0.1 or higher for sampling.',
+				);
+				setStatus('error');
+				return;
+			}
+
 			let serverOptions: ServerOptions;
 			let generateOptions: GenerateOptions;
 
@@ -462,10 +497,8 @@ export function BenchmarkCommand({options}: Props) {
 				};
 				generateOptions = {
 					maxTokens: preset.maxTokens,
-					temperature: options.temperature
-						? Number.parseFloat(options.temperature)
-						: 0.8,
-					seed: options.seed ? Number.parseInt(options.seed, 10) : undefined,
+					temperature: sampling.temperature,
+					seed: sampling.seed,
 				};
 			} else {
 				serverOptions = {
@@ -487,10 +520,8 @@ export function BenchmarkCommand({options}: Props) {
 					maxTokens: options.maxTokens
 						? Number.parseInt(options.maxTokens, 10)
 						: 50,
-					temperature: options.temperature
-						? Number.parseFloat(options.temperature)
-						: 0.8,
-					seed: options.seed ? Number.parseInt(options.seed, 10) : undefined,
+					temperature: sampling.temperature,
+					seed: sampling.seed,
 				};
 			}
 
@@ -548,69 +579,98 @@ export function BenchmarkCommand({options}: Props) {
 					let judgeReasoning: string | undefined;
 					let judgeCriteriaScores: Record<string, number> | undefined;
 
+					const samplePasses: boolean[] = [];
+
 					try {
 						// Build messages array (chat-template aware) for this test.
 						const requestMessages = buildMessages(test, contextMsg);
 
-						// Cancel the in-flight fetch when the timeout wins — otherwise
-						// llama-server keeps generating into the void and the next test
-						// is delayed waiting for the server to free up.
-						const controller = new AbortController();
-						const timeoutId = setTimeout(() => {
-							controller.abort();
-						}, timeout);
+						for (let sample = 0; sample < sampling.samples; sample++) {
+							// Cancel the in-flight fetch when the timeout wins — otherwise
+							// llama-server keeps generating into the void and the next test
+							// is delayed waiting for the server to free up.
+							const controller = new AbortController();
+							const timeoutId = setTimeout(() => {
+								controller.abort();
+							}, timeout);
 
-						try {
-							const inferenceResult = await chatCompletion(
-								serverHandle,
-								requestMessages,
-								{...generateOptions, signal: controller.signal},
-							);
-							latencyMs = Date.now() - startTime;
-							response = inferenceResult.text;
-							ttftMs = inferenceResult.ttftMs;
-							generationTimeMs = inferenceResult.generationTimeMs;
-							tokensGenerated = inferenceResult.tokensGenerated;
-							tokensPerSecond = inferenceResult.tokensPerSecond;
-						} catch (err) {
-							if (controller.signal.aborted) {
-								throw new Error('Timeout');
+							let sampleResponse = '';
+							let sampleFailed = false;
+							try {
+								const inferenceResult = await chatCompletion(
+									serverHandle,
+									requestMessages,
+									{
+										...generateOptions,
+										seed: sampling.seed + sample,
+										signal: controller.signal,
+									},
+								);
+								sampleResponse = inferenceResult.text;
+								if (sample === 0) {
+									latencyMs = Date.now() - startTime;
+									response = inferenceResult.text;
+									ttftMs = inferenceResult.ttftMs;
+									generationTimeMs = inferenceResult.generationTimeMs;
+									tokensGenerated = inferenceResult.tokensGenerated;
+									tokensPerSecond = inferenceResult.tokensPerSecond;
+								}
+							} catch (err) {
+								// Timeout or other errors: treat this sample as failed and continue.
+								// This ensures partial results aren't thrown away when one sample
+								// times out in a multi-sample run.
+								sampleFailed = true;
+								if (sample === 0) {
+									latencyMs = Date.now() - startTime;
+									response =
+										err instanceof Error
+											? `Error: ${err.message}`
+											: 'Unknown error';
+								}
+							} finally {
+								clearTimeout(timeoutId);
 							}
-							throw err;
-						} finally {
-							clearTimeout(timeoutId);
+
+							let samplePassed: boolean;
+							if (sampleFailed) {
+								// Sample failed due to timeout or error, mark as failed
+								samplePassed = false;
+							} else if (test.match === 'llm-judge' && judgeConfig) {
+								// Use LLM judge for evaluation
+								const criteria = resolveCriteria(test.criteria);
+								const threshold = test.passThreshold ?? 7;
+								// For multi-turn tests, include conversation context in the judge prompt
+								const judgePrompt = test.messages
+									? formatConversationForJudge(test.messages, contextMsg)
+									: (test.prompt as string);
+								const judgeResult = await callJudge(
+									judgePrompt,
+									sampleResponse.trim(),
+									criteria,
+									judgeConfig,
+									threshold,
+									test.acceptable,
+								);
+								samplePassed = judgeResult.pass;
+								if (sample === 0) {
+									judgeScore = judgeResult.score;
+									judgeReasoning = judgeResult.reasoning;
+									judgeCriteriaScores = judgeResult.criteriaScores;
+								}
+							} else {
+								// Use string matching
+								const matchResult = checkPass(
+									test.acceptable || [],
+									sampleResponse.trim(),
+									test.match || 'semantic',
+									test.caseSensitive ?? false,
+								);
+								samplePassed = matchResult.passed;
+							}
+							samplePasses.push(samplePassed);
 						}
 
-						if (test.match === 'llm-judge' && judgeConfig) {
-							// Use LLM judge for evaluation
-							const criteria = resolveCriteria(test.criteria);
-							const threshold = test.passThreshold ?? 7;
-							// For multi-turn tests, include conversation context in the judge prompt
-							const judgePrompt = test.messages
-								? formatConversationForJudge(test.messages, contextMsg)
-								: (test.prompt as string);
-							const judgeResult = await callJudge(
-								judgePrompt,
-								response.trim(),
-								criteria,
-								judgeConfig,
-								threshold,
-								test.acceptable,
-							);
-							passed = judgeResult.pass;
-							judgeScore = judgeResult.score;
-							judgeReasoning = judgeResult.reasoning;
-							judgeCriteriaScores = judgeResult.criteriaScores;
-						} else {
-							// Use string matching
-							const matchResult = checkPass(
-								test.acceptable || [],
-								response.trim(),
-								test.match || 'semantic',
-								test.caseSensitive ?? false,
-							);
-							passed = matchResult.passed;
-						}
+						passed = summarizeSamples(samplePasses).passed;
 
 						if (passed) {
 							categoryResults[test.category].passed++;
@@ -637,6 +697,7 @@ export function BenchmarkCommand({options}: Props) {
 					}
 
 					// Store full result for detailed report
+					const sampleSummary = summarizeSamples(samplePasses);
 					allResults.push({
 						id: test.id,
 						prompt: getTestDisplayPrompt(test),
@@ -653,6 +714,11 @@ export function BenchmarkCommand({options}: Props) {
 						judgeScore,
 						judgeReasoning,
 						judgeCriteriaScores,
+						samples: sampling.samples > 1 ? sampling.samples : undefined,
+						samplePassRate:
+							sampling.samples > 1 ? sampleSummary.passRate : undefined,
+						sampleVariance:
+							sampling.samples > 1 ? sampleSummary.variance : undefined,
 					});
 
 					setCategories({...categoryResults});
@@ -713,6 +779,11 @@ export function BenchmarkCommand({options}: Props) {
 			const finalResult: BenchmarkResult = {
 				model: modelPath,
 				timestamp: new Date().toISOString(),
+				config: {
+					temperature: sampling.temperature,
+					seed: sampling.seed,
+					samples: sampling.samples,
+				},
 				isBase: Boolean(options.base),
 				summary: {
 					total: totalTests,
@@ -763,6 +834,7 @@ export function BenchmarkCommand({options}: Props) {
 		options.maxTokens,
 		options.temperature,
 		options.seed,
+		options.samples,
 	]);
 
 	useEffect(() => {
