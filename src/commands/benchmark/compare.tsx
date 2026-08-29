@@ -1,10 +1,4 @@
-import {
-	existsSync,
-	mkdirSync,
-	realpathSync,
-	statSync,
-	writeFileSync,
-} from 'node:fs';
+import {realpathSync, statSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {StatusMessage} from '@inkjs/ui';
 import {Box, Text, useApp} from 'ink';
@@ -25,8 +19,8 @@ import {
 	generateComparisonMarkdown,
 } from '../../lib/benchmark-compare.js';
 import {
+	ensureBenchmarksDir,
 	findLatestBenchmark,
-	getBenchmarksDir,
 	listBenchmarks,
 	loadBenchmark,
 	resolveBenchmarkPath,
@@ -135,10 +129,7 @@ export function BenchmarkCompareCommand({fileA, fileB}: Props) {
 			const result = compareBenchmarks(before, after);
 
 			const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-			const benchmarksDir = getBenchmarksDir();
-			if (!existsSync(benchmarksDir)) {
-				mkdirSync(benchmarksDir, {recursive: true});
-			}
+			const benchmarksDir = ensureBenchmarksDir();
 			const jsonPath = join(benchmarksDir, `compare-${timestamp}.json`);
 			const markdownPath = join(benchmarksDir, `compare-${timestamp}.md`);
 			writeFileSync(jsonPath, JSON.stringify(result, null, 2));

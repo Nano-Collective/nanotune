@@ -1,5 +1,8 @@
 import {
+  existsSync,
   mkdirSync,
+  readdirSync,
+  readFileSync,
   rmSync,
   utimesSync,
   writeFileSync,
@@ -9,12 +12,14 @@ import test from "ava";
 import { ConfigSchema } from "../types/index.js";
 import {
   createDefaultConfig,
+  ensureBenchmarksDir,
   findLatestGGUF,
   listBenchmarks,
   resolveBenchmarkPath,
   findUnknownConfigKeys,
   loadConfig,
   resolveContextMessage,
+  writeFileAtomic,
 } from "./config.js";
 
 const TEST_DIR = join(process.cwd(), ".test-nanotune");
@@ -582,5 +587,120 @@ test.serial("loadConfig prints each unknown key once across loads", (t) => {
     console.warn = originalWarn;
     process.chdir(ORIG_CWD);
     rmSync(WARN_TEST_DIR, { recursive: true, force: true });
+  }
+});
+
+
+// ── ensureBenchmarksDir ───────────────────────────────────────────────
+//
+// setupBenchTest leaves a project with no benchmarks directory — exactly the
+// state `git clone` produces, since .nanotune/.gitignore lists benchmarks/ and
+// only `nanotune init` ever creates it.
+
+test.serial("ensureBenchmarksDir creates the directory when it is missing", (t) => {
+  setupBenchTest();
+  try {
+    t.false(existsSync(BENCH_DIR));
+    const dir = ensureBenchmarksDir();
+    t.is(dir, BENCH_DIR);
+    t.true(existsSync(dir));
+  } finally {
+    teardownBenchTest();
+  }
+});
+
+test.serial("ensureBenchmarksDir leaves an existing directory and its contents alone", (t) => {
+  setupBenchTest();
+  try {
+    mkdirSync(BENCH_DIR, { recursive: true });
+    writeFileSync(join(BENCH_DIR, "tests.json"), "[]");
+
+    t.is(ensureBenchmarksDir(), BENCH_DIR);
+    t.is(readFileSync(join(BENCH_DIR, "tests.json"), "utf-8"), "[]");
+  } finally {
+    teardownBenchTest();
+  }
+});
+
+test.serial("results saved into a cloned project are discoverable afterwards", (t) => {
+  setupBenchTest();
+  try {
+    // The tail of a real run: both reports land under a benchmarks directory
+    // the clone never had, and `benchmark compare` still finds them there.
+    const dir = ensureBenchmarksDir();
+    const resultPath = join(dir, "benchmark-2026-01-01T00-00-00-000Z.json");
+    writeFileAtomic(resultPath, JSON.stringify({ summary: { total: 2 } }));
+    writeFileAtomic(resultPath.replace(".json", ".md"), "# Benchmark Report");
+
+    t.deepEqual(
+      listBenchmarks().map((b) => b.filename),
+      ["benchmark-2026-01-01T00-00-00-000Z.json"],
+    );
+    t.is(resolveBenchmarkPath("2026-01-01T00-00-00-000Z"), resultPath);
+  } finally {
+    teardownBenchTest();
+  }
+});
+
+// ── writeFileAtomic ───────────────────────────────────────────────────
+
+test.serial("writeFileAtomic writes the contents and leaves no temp file behind", (t) => {
+  setupBenchTest();
+  try {
+    const dir = ensureBenchmarksDir();
+    const path = join(dir, "report.md");
+    writeFileAtomic(path, "# Benchmark Report");
+
+    t.is(readFileSync(path, "utf-8"), "# Benchmark Report");
+    t.deepEqual(readdirSync(dir), ["report.md"]);
+  } finally {
+    teardownBenchTest();
+  }
+});
+
+test.serial("writeFileAtomic replaces an existing file", (t) => {
+  setupBenchTest();
+  try {
+    const dir = ensureBenchmarksDir();
+    const path = join(dir, "tests.json");
+    writeFileAtomic(path, "[1]");
+    writeFileAtomic(path, "[1,2]");
+
+    t.is(readFileSync(path, "utf-8"), "[1,2]");
+    t.deepEqual(readdirSync(dir), ["tests.json"]);
+  } finally {
+    teardownBenchTest();
+  }
+});
+
+test.serial("writeFileAtomic cleans up its temp file when the rename fails", (t) => {
+  setupBenchTest();
+  try {
+    const dir = ensureBenchmarksDir();
+    // Renaming onto a non-empty directory fails, so the write never lands.
+    // The point is that it leaves no half-written sibling behind either — a
+    // stray temp is how a partial write gets mistaken for a finished run.
+    const blocked = join(dir, "blocked");
+    mkdirSync(blocked, { recursive: true });
+    writeFileSync(join(blocked, "keep.txt"), "keep");
+
+    t.throws(() => writeFileAtomic(blocked, "should not land"));
+    t.deepEqual(readdirSync(dir), ["blocked"]);
+    t.is(readFileSync(join(blocked, "keep.txt"), "utf-8"), "keep");
+  } finally {
+    teardownBenchTest();
+  }
+});
+
+test.serial("writeFileAtomic surfaces a missing parent rather than inventing one", (t) => {
+  setupBenchTest();
+  try {
+    // `--dataset` can point anywhere, so a typo'd path must still fail loudly
+    // instead of quietly creating directories outside the project.
+    const missing = join(BENCH_TEST_DIR, "nope", "tests.json");
+    t.throws(() => writeFileAtomic(missing, "[]"), { code: "ENOENT" });
+    t.false(existsSync(join(BENCH_TEST_DIR, "nope")));
+  } finally {
+    teardownBenchTest();
   }
 });

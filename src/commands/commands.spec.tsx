@@ -1,10 +1,17 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import test from "ava";
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import { useKeyInput } from "../components/index.js";
 import { loadTrainingData } from "../lib/data.js";
+import { BenchmarkCommand } from "./benchmark.js";
 import { streamPreview } from "./chat.js";
 import { DataImportCommand } from "./data/import.js";
 import { DataListCommand } from "./data/list.js";
@@ -292,4 +299,31 @@ test("streamPreview clips a single very long line by characters", (t) => {
   const { text, truncated } = streamPreview("x".repeat(5000));
   t.true(truncated);
   t.is(text.length, 2000);
+});
+
+// ── benchmark on a cloned project ───────────────────────────────────
+
+test.serial("BenchmarkCommand creates its benchmarks directory before writing the sample dataset", async (t) => {
+  try {
+    setupProject();
+    // setupProject leaves no benchmarks/ — the state `git clone` produces,
+    // since .nanotune/.gitignore lists it and only `nanotune init` creates it.
+    // A stub GGUF gets the run past model resolution to the dataset step,
+    // which is where the missing directory used to surface as a bare ENOENT.
+    const modelsDir = join(NANOTUNE_DIR, "models");
+    mkdirSync(modelsDir, { recursive: true });
+    writeFileSync(join(modelsDir, "model.gguf"), "stub");
+
+    const output = await renderCommand(
+      <BenchmarkCommand options={{}} />,
+      "No benchmark dataset found",
+    );
+
+    t.true(output.includes("No benchmark dataset found"));
+    const dataset = join(NANOTUNE_DIR, "benchmarks", "tests.json");
+    t.true(existsSync(dataset));
+    t.is(JSON.parse(readFileSync(dataset, "utf-8")).length, 2);
+  } finally {
+    teardown();
+  }
 });
