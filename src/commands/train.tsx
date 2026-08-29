@@ -2,7 +2,7 @@ import {existsSync} from 'node:fs';
 import {join} from 'node:path';
 import {Spinner, StatusMessage} from '@inkjs/ui';
 import {Box, Text, useApp} from 'ink';
-import {useCallback, useEffect, useState} from 'react';
+import {useCallback, useEffect, useRef, useState} from 'react';
 import {
 	ExitHint,
 	Header,
@@ -24,29 +24,52 @@ import {
 	installMLX,
 	type MLXTrainingOptions,
 	runTraining,
+	shouldTreatAsStop,
 } from '../lib/mlx.js';
 import {assertSupportedPlatform} from '../lib/platform.js';
-import {TrainingConfigSchema} from '../types/index.js';
-import type {TrainingProgress} from '../types/index.js';
+import {TrainingConfigSchema, type TrainingProgress} from '../types/index.js';
 
 // Maps TrainingConfigSchema field names to the CLI flag that overrides them,
 // so schema validation errors can point at the flag the user actually typed.
+// `seed` is the mlx_lm training seed, overridden by --train-seed; the bare
+// --seed flag is Nanotune's train/validation split seed and is handled
+// separately below.
 const TRAINING_FLAG_NAMES: Record<string, string> = {
 	iterations: '-i, --iterations',
 	learningRate: '--lr',
+	batchSize: '--batch-size',
+	numLayers: '--num-layers',
+	stepsPerEval: '--steps-per-eval',
+	saveEvery: '--save-every',
 	fineTuneType: '--fine-tune-type',
 	loraRank: '--lora-rank',
 	loraAlpha: '--lora-alpha',
 	loraDropout: '--lora-dropout',
 	maxSeqLength: '--max-seq-length',
 	valBatches: '--val-batches',
-	seed: '--seed',
+	seed: '--train-seed',
 };
+
+// Absent flag stays absent so the config value wins. Anything unparseable
+// becomes NaN, which TrainingConfigSchema rejects with the field name attached.
+// Number() rather than parseInt/parseFloat so "8abc" fails instead of becoming
+// 8; a blank value is screened out first because Number('') is 0.
+function numericOverride(raw?: string): number | undefined {
+	if (raw === undefined) {
+		return undefined;
+	}
+	const trimmed = raw.trim();
+	return trimmed === '' ? Number.NaN : Number(trimmed);
+}
 
 interface Props {
 	options: {
 		iterations?: string;
 		lr?: string;
+		batchSize?: string;
+		numLayers?: string;
+		stepsPerEval?: string;
+		saveEvery?: string;
 		fineTuneType?: string;
 		loraRank?: string;
 		loraAlpha?: string;
@@ -54,9 +77,10 @@ interface Props {
 		maxSeqLength?: string;
 		gradCheckpoint?: boolean;
 		valBatches?: string;
-		seed?: string;
+		trainSeed?: string;
 		resume?: boolean;
 		dryRun?: boolean;
+		seed?: string;
 	};
 }
 
@@ -66,6 +90,8 @@ type Status =
 	| 'validating'
 	| 'downloading'
 	| 'training'
+	| 'stopping'
+	| 'stopped'
 	| 'done'
 	| 'error';
 
@@ -79,20 +105,74 @@ export function TrainCommand({options}: Props) {
 	const [downloadPercent, setDownloadPercent] = useState<number | null>(null);
 	const [downloadDetail, setDownloadDetail] = useState<string | null>(null);
 	const [elapsed, setElapsed] = useState<string | null>(null);
+	const [split, setSplit] = useState<{
+		trainCount: number;
+		validCount: number;
+		didSplit: boolean;
+	} | null>(null);
+	const [seedIgnored, setSeedIgnored] = useState(false);
+	const abortRef = useRef<AbortController | null>(null);
 
+	// Ctrl+C is ours to handle here (the command renders with
+	// `exitOnCtrlC: false`), so mid-training it stops the trainer gracefully
+	// instead of letting Ink tear the app down while MLX is still writing.
+	// A second Ctrl+C gives up on the checkpoint rather than trapping the user
+	// behind a trainer that will not exit.
 	useKeyInput((input, key) => {
+		if (key.ctrl && input === 'c') {
+			if (status === 'training') {
+				abortRef.current?.abort();
+				setStatus('stopping');
+			} else if (status === 'stopping') {
+				process.exit(130);
+			} else {
+				exit();
+			}
+			return;
+		}
 		if (key.escape && status !== 'training' && status !== 'downloading') {
 			exit();
 		}
-		if ((status === 'done' || status === 'error') && (key.return || input)) {
+		if (
+			(status === 'done' || status === 'stopped' || status === 'error') &&
+			(key.return || input)
+		) {
 			exit();
 		}
 	});
 
-	useAutoExit(status === 'done' || status === 'error', status === 'error');
+	useAutoExit(
+		status === 'done' || status === 'stopped' || status === 'error',
+		status === 'error',
+	);
+
+	useEffect(() => {
+		if (status === 'stopped') {
+			process.exitCode = 130;
+		}
+	}, [status]);
 
 	const run = useCallback(async () => {
 		try {
+			// Parse the seed before any work happens. Number.parseInt would turn
+			// a typo into NaN and mulberry32 would coerce that to 0, producing a
+			// confidently deterministic split under a seed the user never asked
+			// for; `--seed 3.7` would silently truncate the same way. Number()
+			// rejects both, but reads blank input as 0, so that is screened out
+			// first. Testing against undefined rather than truthiness keeps
+			// `--seed 0` a real seed.
+			let seed: number | undefined;
+			if (options.seed !== undefined) {
+				const raw = options.seed.trim();
+				const parsed = raw === '' ? Number.NaN : Number(raw);
+				if (!Number.isInteger(parsed)) {
+					setError(`Invalid --seed "${options.seed}": expected an integer.`);
+					setStatus('error');
+					return;
+				}
+				seed = parsed;
+			}
+
 			// Fail fast on unsupported hardware. Without this the run dies much
 			// later inside `pip install mlx-lm` with an opaque resolver error.
 			assertSupportedPlatform();
@@ -120,60 +200,51 @@ export function TrainCommand({options}: Props) {
 			// Load config
 			const config = loadConfig();
 
-			// Override with CLI options
-			const iterations = options.iterations
-				? Number.parseInt(options.iterations, 10)
-				: config.training.iterations;
-			const learningRate = options.lr
-				? Number.parseFloat(options.lr)
-				: config.training.learningRate;
-			const fineTuneType = options.fineTuneType ?? config.training.fineTuneType;
-			const loraRank = options.loraRank
-				? Number.parseInt(options.loraRank, 10)
-				: config.training.loraRank;
-			const loraAlpha = options.loraAlpha
-				? Number.parseFloat(options.loraAlpha)
-				: config.training.loraAlpha;
-			const loraDropout = options.loraDropout
-				? Number.parseFloat(options.loraDropout)
-				: config.training.loraDropout;
-			const maxSeqLength = options.maxSeqLength
-				? Number.parseInt(options.maxSeqLength, 10)
-				: config.training.maxSeqLength;
-			const gradCheckpoint = options.gradCheckpoint ?? config.training.gradCheckpoint;
-			const valBatches = options.valBatches
-				? Number.parseInt(options.valBatches, 10)
-				: config.training.valBatches;
-			const seed = options.seed
-				? Number.parseInt(options.seed, 10)
-				: config.training.seed;
+			// Override with CLI options. Number() rather than parseInt/parseFloat
+			// so trailing garbage ("8abc") becomes NaN and gets caught below
+			// instead of being silently truncated to a plausible-looking value.
+			const overrides = {
+				iterations: numericOverride(options.iterations),
+				learningRate: numericOverride(options.lr),
+				batchSize: numericOverride(options.batchSize),
+				numLayers: numericOverride(options.numLayers),
+				stepsPerEval: numericOverride(options.stepsPerEval),
+				saveEvery: numericOverride(options.saveEvery),
+				fineTuneType: options.fineTuneType,
+				loraRank: numericOverride(options.loraRank),
+				loraAlpha: numericOverride(options.loraAlpha),
+				loraDropout: numericOverride(options.loraDropout),
+				maxSeqLength: numericOverride(options.maxSeqLength),
+				gradCheckpoint: options.gradCheckpoint,
+				valBatches: numericOverride(options.valBatches),
+				seed: numericOverride(options.trainSeed),
+			};
 
-			// Fail fast — before the slow MLX install/data-validation steps —
-			// on invalid values rather than letting them reach mlx_lm as NaN
-			// or an out-of-range number. TrainingConfigSchema is the single
-			// source of truth for valid ranges/enum values (also enforced on
+			// Fail fast, before the slow MLX install and data-validation steps,
+			// rather than letting a bad value reach mlx_lm as NaN or an
+			// out-of-range number. TrainingConfigSchema is the single source of
+			// truth for valid ranges and enum values (also enforced on
 			// config.json itself via loadConfig() above).
 			const validation = TrainingConfigSchema.safeParse({
 				...config.training,
-				iterations,
-				learningRate,
-				fineTuneType,
-				loraRank,
-				loraAlpha,
-				loraDropout,
-				maxSeqLength,
-				gradCheckpoint,
-				valBatches,
-				seed,
+				...Object.fromEntries(
+					Object.entries(overrides).filter(([, value]) => value !== undefined),
+				),
 			});
 			if (!validation.success) {
 				const issue = validation.error.issues[0];
 				const field = String(issue.path[0]);
-				const flag = TRAINING_FLAG_NAMES[field] ?? field;
-				setError(`Invalid value for ${flag}: ${issue.message}`);
+				// Only blame a flag when the user actually passed one; otherwise
+				// the bad value came from config.json and saying so is the fix.
+				const source =
+					overrides[field as keyof typeof overrides] === undefined
+						? `config.training.${field}`
+						: (TRAINING_FLAG_NAMES[field] ?? field);
+				setError(`Invalid value for ${source}: ${issue.message}`);
 				setStatus('error');
 				return;
 			}
+			const training = validation.data;
 
 			// Check MLX
 			setStatus('checking');
@@ -194,13 +265,22 @@ export function TrainCommand({options}: Props) {
 				return;
 			}
 
-			// Ensure we have a validation set (MLX requires it)
-			ensureValidationSet();
-
-			// Dry run check
+			// Dry run check. This returns before the split so that a command
+			// documented as "validate config without training" leaves train.jsonl
+			// and valid.jsonl exactly as it found them.
 			if (options.dryRun) {
 				setStatus('done');
 				return;
+			}
+
+			// Ensure we have a validation set (MLX requires it).
+			const split = ensureValidationSet(seed);
+			setSplit(split);
+			// The split only happens when there is no validation set yet, so a
+			// seed handed to an already-split project changes nothing. Saying so
+			// beats letting the user believe they re-rolled the split.
+			if (seed !== undefined && !split.didSplit) {
+				setSeedIgnored(true);
 			}
 
 			// Download model if not cached
@@ -227,29 +307,24 @@ export function TrainCommand({options}: Props) {
 				setElapsed(null);
 			}
 
-			// Start training
+			// Start training. The controller is in place before the status flips
+			// so a Ctrl+C on the very first frame still has something to abort.
+			const controller = new AbortController();
+			abortRef.current = controller;
 			setStatus('training');
 			const startTime = Date.now();
 
+			// Spread the parsed schema output rather than the raw locals: these
+			// are the values validation actually approved, and they arrive
+			// correctly typed, so mlx_lm cannot receive something the checks
+			// above never saw.
 			const trainingOptions: MLXTrainingOptions = {
+				...training,
 				model: config.baseModel,
 				dataPath: getDataDir(),
 				adapterPath: getAdaptersDir(),
-				iterations,
-				learningRate,
-				batchSize: config.training.batchSize,
-				numLayers: config.training.numLayers,
-				stepsPerEval: config.training.stepsPerEval,
-				saveEvery: config.training.saveEvery,
 				resume: options.resume,
-				fineTuneType: fineTuneType as 'lora' | 'dora' | 'full',
-				loraRank,
-				loraAlpha,
-				loraDropout,
-				maxSeqLength,
-				gradCheckpoint,
-				valBatches,
-				seed,
+				signal: controller.signal,
 			};
 
 			for await (const update of runTraining(trainingOptions)) {
@@ -270,14 +345,22 @@ export function TrainCommand({options}: Props) {
 				}
 			}
 
-			setStatus('done');
+			setStatus(controller.signal.aborted ? 'stopped' : 'done');
 		} catch (err) {
+			if (shouldTreatAsStop(abortRef.current?.signal, err)) {
+				setStatus('stopped');
+				return;
+			}
 			setError(err instanceof Error ? err.message : 'Training failed');
 			setStatus('error');
 		}
 	}, [
 		options.iterations,
 		options.lr,
+		options.batchSize,
+		options.numLayers,
+		options.stepsPerEval,
+		options.saveEvery,
 		options.fineTuneType,
 		options.loraRank,
 		options.loraAlpha,
@@ -285,9 +368,10 @@ export function TrainCommand({options}: Props) {
 		options.maxSeqLength,
 		options.gradCheckpoint,
 		options.valBatches,
-		options.seed,
+		options.trainSeed,
 		options.resume,
 		options.dryRun,
+		options.seed,
 	]);
 
 	useEffect(() => {
@@ -306,7 +390,10 @@ export function TrainCommand({options}: Props) {
 	}
 
 	const config = loadConfig();
-	const exampleCount = countExamples();
+	// This component re-renders on every training update, so prefer the counts
+	// the split already returned over re-reading both files each time.
+	const exampleCount = split ? split.trainCount : countExamples();
+	const validCount = split ? split.validCount : countExamples(true);
 
 	return (
 		<Box flexDirection="column" padding={1}>
@@ -317,8 +404,22 @@ export function TrainCommand({options}: Props) {
 					Model: <Text color="cyan">{config.baseModel}</Text>
 				</Text>
 				<Text>
-					Examples: <Text color="cyan">{exampleCount}</Text>
+					Examples: <Text color="cyan">{exampleCount}</Text> train
+					{' | '}
+					<Text color="cyan">{validCount}</Text> validation
 				</Text>
+				{split?.didSplit && (
+					<Text color="yellow">
+						Split {split.trainCount + split.validCount} examples into{' '}
+						{split.trainCount} train / {split.validCount} validation.
+					</Text>
+				)}
+				{seedIgnored && (
+					<Text color="yellow">
+						Existing validation set found - --seed ignored. Delete valid.jsonl
+						to re-split.
+					</Text>
+				)}
 				<Text>
 					Iterations:{' '}
 					<Text color="cyan">
@@ -389,7 +490,59 @@ export function TrainCommand({options}: Props) {
 					</Box>
 
 					<Text> </Text>
-					<Text dimColor>[Ctrl+C] Stop training (checkpoint saved)</Text>
+					<Text dimColor>[Ctrl+C] Stop training</Text>
+				</Box>
+			)}
+
+			{status === 'stopping' && progress && (
+				<Box flexDirection="column">
+					{(() => {
+						const saveEvery = config.training.saveEvery;
+						const lastSaved =
+							Math.floor(progress.iteration / saveEvery) * saveEvery;
+						return (
+							<Spinner
+								label={
+									lastSaved > 0
+										? `Stopping training (last checkpoint: iteration ${lastSaved})...`
+										: 'Stopping training (no checkpoint saved yet)...'
+								}
+							/>
+						);
+					})()}
+					<Text dimColor>[Ctrl+C] Quit without waiting</Text>
+				</Box>
+			)}
+
+			{status === 'stopped' && (
+				<Box flexDirection="column">
+					<StatusMessage variant="warning">Training stopped</StatusMessage>
+					<Text> </Text>
+					{progress &&
+						(() => {
+							const saveEvery = config.training.saveEvery;
+							const lastSaved =
+								Math.floor(progress.iteration / saveEvery) * saveEvery;
+							return lastSaved > 0 ? (
+								<>
+									<Text>
+										Checkpoint saved at iteration{' '}
+										<Text color="cyan">{lastSaved}</Text>
+									</Text>
+									<Text> </Text>
+									<Text>
+										Resume with:{' '}
+										<Text color="cyan">nanotune train --resume</Text>
+									</Text>
+								</>
+							) : (
+								<Text>
+									No checkpoint saved (stopped before iteration {saveEvery})
+								</Text>
+							);
+						})()}
+					<Text> </Text>
+					<ExitHint>Press any key to exit</ExitHint>
 				</Box>
 			)}
 

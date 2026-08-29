@@ -24,9 +24,10 @@ interface Props {
 	file: string;
 	/** Skip the y/n confirmation — needed to run under CI or in a pipeline. */
 	yes?: boolean;
+	isEval?: boolean;
 }
 
-export function DataImportCommand({file, yes}: Props) {
+export function DataImportCommand({file, yes, isEval = false}: Props) {
 	const {exit} = useApp();
 	const [status, setStatus] = useState<
 		'preview' | 'importing' | 'done' | 'error'
@@ -38,7 +39,7 @@ export function DataImportCommand({file, yes}: Props) {
 	useEffect(() => {
 		// Load preview
 		try {
-			const existingData = loadTrainingData();
+			const existingData = loadTrainingData(isEval);
 			const previewItems = existingData.slice(0, 3).map(ex => {
 				const user = ex.messages.find(m => m.role === 'user');
 				const assistant = ex.messages.find(m => m.role === 'assistant');
@@ -50,7 +51,7 @@ export function DataImportCommand({file, yes}: Props) {
 		} catch {
 			// Ignore preview errors
 		}
-	}, []);
+	}, [isEval]);
 
 	const doImport = useCallback(() => {
 		try {
@@ -62,7 +63,11 @@ export function DataImportCommand({file, yes}: Props) {
 
 			const config = loadConfig();
 			const filePath = resolve(process.cwd(), file);
-			const importResult = importData(filePath, resolveContextMessage(config));
+			const importResult = importData(
+				filePath,
+				resolveContextMessage(config),
+				isEval,
+			);
 
 			setResult(importResult);
 			setStatus('done');
@@ -70,7 +75,7 @@ export function DataImportCommand({file, yes}: Props) {
 			setError(err instanceof Error ? err.message : 'Import failed');
 			setStatus('error');
 		}
-	}, [file]);
+	}, [file, isEval]);
 
 	// `--yes` skips straight past the confirmation prompt.
 	useEffect(() => {
@@ -97,7 +102,9 @@ export function DataImportCommand({file, yes}: Props) {
 	if (!configExists()) {
 		return (
 			<Box flexDirection="column" padding={1}>
-				<Header title="Import Training Data" />
+				<Header
+					title={isEval ? 'Import Validation Data' : 'Import Training Data'}
+				/>
 				<StatusMessage variant="error">
 					Not a Nanotune project. Run `nanotune init` first.
 				</StatusMessage>
@@ -107,7 +114,9 @@ export function DataImportCommand({file, yes}: Props) {
 
 	return (
 		<Box flexDirection="column" padding={1}>
-			<Header title="Import Training Data" />
+			<Header
+				title={isEval ? 'Import Validation Data' : 'Import Training Data'}
+			/>
 
 			{status === 'preview' && (
 				<Box flexDirection="column">
@@ -118,7 +127,9 @@ export function DataImportCommand({file, yes}: Props) {
 
 					{preview.length > 0 && (
 						<Box flexDirection="column" marginBottom={1}>
-							<Text bold>Preview of existing data:</Text>
+							<Text bold>
+								Preview of existing {isEval ? 'validation' : 'training'} data:
+							</Text>
 							{preview.map((p, i) => (
 								<Text key={i} dimColor>
 									{p}

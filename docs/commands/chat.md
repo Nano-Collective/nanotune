@@ -10,6 +10,8 @@ Chat with an exported model in an interactive REPL. This is the quickest way to 
 
 Nanotune starts a `llama-server` process once, loads the model, and reuses that hot process for every turn, so there's no cold start between messages.
 
+Replies stream token by token as the model generates them. While a reply is streaming, `Esc` cancels it: anything generated up to that point is kept in the transcript and stays in the conversation history, so the next turn picks up where the model left off.
+
 ## Usage
 
 ```bash
@@ -40,7 +42,7 @@ nanotune chat
 | `/save [file] [--force]` | Save the transcript to JSON (default: `.nanotune/chats/<timestamp>.json`) |
 | `/keep` | Append the last exchange to `train.jsonl` as a training example |
 | `/stats` | Show session token statistics |
-| `/exit`, `/quit` | Leave the chat (`Esc` also exits when idle) |
+| `/exit`, `/quit` | Leave the chat (`Esc` exits when idle, cancels a reply while it streams) |
 
 ## Options
 

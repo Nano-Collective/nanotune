@@ -5,6 +5,7 @@ import {execa, type ResultPromise} from 'execa';
 import type {
 	DependencyStatus,
 	DownloadProgress,
+	FineTuneType,
 	TrainingProgress,
 } from '../types/index.js';
 
@@ -19,7 +20,7 @@ export interface MLXTrainingOptions {
 	stepsPerEval: number;
 	saveEvery: number;
 	resume?: boolean;
-	fineTuneType: 'lora' | 'dora' | 'full';
+	fineTuneType: FineTuneType;
 	loraRank: number;
 	loraAlpha: number;
 	loraDropout: number;
@@ -27,18 +28,35 @@ export interface MLXTrainingOptions {
 	gradCheckpoint: boolean;
 	valBatches: number;
 	seed: number;
+	/**
+	 * Optional AbortSignal for stopping a run early. Aborting sends SIGINT so
+	 * MLX writes its checkpoint before exiting; the generator then returns
+	 * normally, since a user-requested stop is not a training failure.
+	 */
+	signal?: AbortSignal;
 }
 
-// mlx_lm has no flat CLI flags for LoRA rank/scale/dropout — they're only
+// mlx_lm has no flat CLI flags for LoRA rank/scale/dropout. They are only
 // settable via a YAML config's `lora_parameters` block, passed with -c/--config.
 // (mlx_lm calls the field `scale`; Nanotune's schema/CLI call it `alpha` to
 // match common LoRA terminology and issue #72's wording.)
+//
+// Values reach here already validated as finite numbers by TrainingConfigSchema,
+// but `String(1e-7)` yields exponent notation that PyYAML's 1.1 resolver reads
+// as a string rather than a float, so anything below 1e-6 is written in fixed
+// notation instead.
+function yamlNumber(value: number): string {
+	return Math.abs(value) < 1e-6 && value !== 0
+		? value.toFixed(20)
+		: String(value);
+}
+
 export function buildLoraConfigYaml(
 	rank: number,
 	alpha: number,
 	dropout: number,
 ): string {
-	return `lora_parameters:\n  rank: ${rank}\n  scale: ${alpha}\n  dropout: ${dropout}\n`;
+	return `lora_parameters:\n  rank: ${yamlNumber(rank)}\n  scale: ${yamlNumber(alpha)}\n  dropout: ${yamlNumber(dropout)}\n`;
 }
 
 export async function checkPython(): Promise<{
@@ -98,6 +116,11 @@ export async function installMLX(): Promise<void> {
 	}
 }
 
+/**
+ * @public Deliberately uncalled. Kept for `nanotune doctor` (#65), which is
+ * what will surface a toolchain check to the user. Note `llamaCpp` is
+ * hardcoded false — llama.cpp is checked separately in llama-cpp.ts.
+ */
 export async function checkDependencies(): Promise<DependencyStatus> {
 	const python = await checkPython();
 	const mlx = python.installed ? await checkMLXInstalled() : false;
@@ -173,7 +196,7 @@ if result["error"]:
     print(json.dumps({"status":"error","error":result["error"]}), flush=True)
     sys.exit(1)
 else:
-    print(json.dumps({"status":"done","percent":100}), flush=True)
+    print(json.dumps({"status":"done","percent":100,"path":result["path"]}), flush=True)
 `.trim();
 
 export interface DownloadStatus {
@@ -183,6 +206,8 @@ export interface DownloadStatus {
 	downloaded?: number;
 	percent?: number;
 	error?: string;
+	/** Resolved local snapshot directory, present on the final 'done' event. */
+	path?: string;
 }
 
 export async function* ensureModelDownloaded(
@@ -241,7 +266,7 @@ export async function* ensureModelDownloaded(
 									: undefined,
 						};
 					} else if (msg.status === 'done') {
-						yield {type: 'download', percent: 100};
+						yield {type: 'download', percent: 100, path: msg.path};
 					} else if (msg.status === 'error') {
 						downloadError = msg.error || 'Model download failed';
 					}
@@ -281,9 +306,23 @@ function formatBytes(bytes: number, decimals = 2): string {
 	return `${(bytes / 1e3).toFixed(decimals)} KB`;
 }
 
-export async function* runTraining(
+/**
+ * `full` fine-tuning trains the weights directly, so mlx_lm never reads
+ * `lora_parameters` and writing the temp YAML would be dead work.
+ */
+export function needsLoraConfig(fineTuneType: FineTuneType): boolean {
+	return fineTuneType !== 'full';
+}
+
+/**
+ * Builds the mlx_lm argv. Split out from `runTraining` so the flag wiring is
+ * testable without spawning a trainer. `loraConfigPath` is the temp YAML from
+ * `buildLoraConfigYaml`, omitted for `full` fine-tuning.
+ */
+export function buildTrainingArgs(
 	options: MLXTrainingOptions,
-): AsyncGenerator<TrainingProgress> {
+	loraConfigPath?: string,
+): string[] {
 	const args = [
 		'-m',
 		'mlx_lm',
@@ -317,6 +356,16 @@ export async function* runTraining(
 		String(options.seed),
 	];
 
+	if (options.gradCheckpoint) {
+		args.push('--grad-checkpoint');
+	}
+
+	// mlx_lm merges the -c config with the explicit flags above, with the
+	// explicit flags winning on overlap, so this only supplies rank/scale/dropout.
+	if (loraConfigPath) {
+		args.push('-c', loraConfigPath);
+	}
+
 	if (options.resume) {
 		args.push(
 			'--resume-adapter-file',
@@ -324,32 +373,42 @@ export async function* runTraining(
 		);
 	}
 
-	if (options.gradCheckpoint) {
-		args.push('--grad-checkpoint');
-	}
+	return args;
+}
 
-	// LoRA rank/alpha/dropout have no flat CLI flags, so write them to a
-	// temp YAML config and pass -c/--config alongside the explicit flags
-	// above (mlx_lm merges the two, with explicit flags taking priority).
-	// Directory creation happens inside the try so a failed write still gets
-	// cleaned up in the finally below rather than leaking a temp dir.
+export async function* runTraining(
+	options: MLXTrainingOptions,
+): AsyncGenerator<TrainingProgress> {
+	// LoRA rank/alpha/dropout have no flat CLI flags, so they go in a temp YAML
+	// config. Directory creation happens inside the try so a failed write still
+	// gets cleaned up in the finally below rather than leaking a temp dir.
 	let loraConfigDir: string | null = null;
 	try {
-		if (options.fineTuneType !== 'full') {
+		let loraConfigPath: string | undefined;
+		if (needsLoraConfig(options.fineTuneType)) {
 			loraConfigDir = mkdtempSync(join(tmpdir(), 'nanotune-lora-'));
-			const loraConfigPath = join(loraConfigDir, 'lora.yaml');
+			loraConfigPath = join(loraConfigDir, 'lora.yaml');
 			writeFileSync(
 				loraConfigPath,
-				buildLoraConfigYaml(options.loraRank, options.loraAlpha, options.loraDropout),
+				buildLoraConfigYaml(
+					options.loraRank,
+					options.loraAlpha,
+					options.loraDropout,
+				),
 			);
-			args.push('-c', loraConfigPath);
 		}
 
-		const subprocess = execa('python3', args, {
-			stdout: 'pipe',
-			stderr: 'pipe',
-			buffer: false,
-		});
+		const subprocess = execa(
+			'python3',
+			buildTrainingArgs(options, loraConfigPath),
+			{
+				stdout: 'pipe',
+				stderr: 'pipe',
+				buffer: false,
+			},
+		);
+
+		stopOnAbort(subprocess, options.signal);
 
 		const stdout = subprocess.stdout;
 		const stderr = subprocess.stderr;
@@ -367,33 +426,49 @@ export async function* runTraining(
 
 		let buffer = '';
 
-		for await (const chunk of stdout) {
-			buffer += chunk.toString();
-			const lines = buffer.split('\n');
-			buffer = lines.pop() || '';
+		// The for-await can throw ABORT_ERR if the process exits mid-stream, which
+		// is exactly what a SIGINT stop looks like. Let the subprocess result below
+		// decide whether that was a stop or a real failure.
+		try {
+			for await (const chunk of stdout) {
+				buffer += chunk.toString();
+				const lines = buffer.split('\n');
+				buffer = lines.pop() || '';
 
-			for (const line of lines) {
-				// Parse: "Iter 10: Train loss 1.234, Val loss 1.456"
-				// or: "Iter 10 (15.2 it/s): Train loss 1.234"
-				const match = line.match(
-					/Iter\s+(\d+)(?:\s*\([^)]+\))?:\s*Train loss\s+([\d.]+)(?:,\s*Val loss\s+([\d.]+))?/i,
-				);
-				if (match) {
-					yield {
-						iteration: Number.parseInt(match[1], 10),
-						totalIterations: options.iterations,
-						trainLoss: Number.parseFloat(match[2]),
-						valLoss: match[3] ? Number.parseFloat(match[3]) : undefined,
-					};
+				for (const line of lines) {
+					// Parse: "Iter 10: Train loss 1.234, Val loss 1.456"
+					// or: "Iter 10 (15.2 it/s): Train loss 1.234"
+					const match = line.match(
+						/Iter\s+(\d+)(?:\s*\([^)]+\))?:\s*Train loss\s+([\d.]+)(?:,\s*Val loss\s+([\d.]+))?/i,
+					);
+					if (match) {
+						yield {
+							iteration: Number.parseInt(match[1], 10),
+							totalIterations: options.iterations,
+							trainLoss: Number.parseFloat(match[2]),
+							valLoss: match[3] ? Number.parseFloat(match[3]) : undefined,
+						};
+					}
 				}
+			}
+		} catch (err) {
+			if (err instanceof Error && err.name === 'AbortError') {
+			} else {
+				throw err;
 			}
 		}
 
 		try {
 			await subprocess;
 		} catch (err) {
+			// A stop we asked for: MLX has flushed its checkpoint, so return
+			// normally instead of reporting the interrupted run as a failure.
+			if (options.signal?.aborted) {
+				return;
+			}
 			// Include stderr in the error message for better debugging
-			const errorMessage = err instanceof Error ? err.message : 'Training failed';
+			const errorMessage =
+				err instanceof Error ? err.message : 'Training failed';
 			const stderrTrimmed = stderrOutput.trim();
 			if (stderrTrimmed) {
 				// Extract the most relevant part of the error (last few lines usually have the actual error)
@@ -427,6 +502,40 @@ export async function fuseAdapters(
 	]);
 }
 
+/**
+ * @public Deliberately uncalled. Kept for #84, which will wire it to a real
+ * SIGINT handler in `train`. Today Ctrl+C only works because the terminal
+ * delivers SIGINT to the whole process group, so the "checkpoint saved" hint
+ * is unverified — that is the bug #84 tracks.
+
+ * Stop `subprocess` as soon as `signal` aborts. Split out from `runTraining`
+ * so the wiring — including a signal that is already aborted, which never
+ * fires an `abort` event — is testable without spawning a trainer.
+ */
+
+export function stopOnAbort(
+	subprocess: ResultPromise,
+	signal?: AbortSignal,
+): void {
+	if (!signal) {
+		return;
+	}
+	if (signal.aborted) {
+		abortTraining(subprocess);
+		return;
+	}
+	signal.addEventListener('abort', () => abortTraining(subprocess), {
+		once: true,
+	});
+}
+
 export function abortTraining(subprocess: ResultPromise): void {
 	subprocess.kill('SIGINT');
+}
+
+export function shouldTreatAsStop(
+	signal?: AbortSignal,
+	error?: unknown,
+): boolean {
+	return signal?.aborted === true;
 }

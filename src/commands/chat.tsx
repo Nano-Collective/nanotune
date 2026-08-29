@@ -18,7 +18,7 @@ import {
 } from '../lib/config.js';
 import {appendToTrainingData, countExamples} from '../lib/data.js';
 import {
-	chatCompletion,
+	chatCompletionStream,
 	type ServerHandle,
 	startLlamaServer,
 	stopLlamaServer,
@@ -57,6 +57,44 @@ interface DisplayTurn {
 	stats?: AssistantStats;
 }
 
+/**
+ * Repaint the live preview at most this often. One React render per token
+ * makes Ink redraw its whole dynamic region on every token, which a fast local
+ * model can easily outrun — batching keeps the terminal responsive without the
+ * output looking any less live.
+ */
+const STREAM_PAINT_INTERVAL_MS = 50;
+
+/**
+ * The live preview shows only the tail of the response: Ink cannot cleanly
+ * repaint a block taller than the terminal, so a long answer would smear
+ * duplicated frames through the scrollback. Nothing is lost — the complete
+ * text is committed to <Static> the moment the turn finishes.
+ */
+const STREAM_PREVIEW_LINES = 12;
+const STREAM_PREVIEW_CHARS = 2000;
+
+/**
+ * Clip streamed text down to the tail that fits the live preview. Character
+ * clipping runs first so a single very long unwrapped line cannot blow past
+ * the terminal height on its own.
+ */
+export function streamPreview(content: string): {
+	text: string;
+	truncated: boolean;
+} {
+	const clipped =
+		content.length > STREAM_PREVIEW_CHARS
+			? content.slice(-STREAM_PREVIEW_CHARS)
+			: content;
+	const lines = clipped.split('\n');
+	const tail = lines.slice(-STREAM_PREVIEW_LINES);
+	return {
+		text: tail.join('\n'),
+		truncated: tail.length < lines.length || clipped.length < content.length,
+	};
+}
+
 const HELP_TEXT = [
 	'Slash commands:',
 	'  /help          Show this help',
@@ -81,6 +119,9 @@ export function ChatCommand({options}: Props) {
 
 	const serverHandleRef = useRef<ServerHandle | null>(null);
 	const turnIdRef = useRef(0);
+	const abortControllerRef = useRef<AbortController | null>(null);
+	/** Tokens accumulated for the assistant turn currently being streamed. */
+	const [streamingContent, setStreamingContent] = useState<string>('');
 
 	// Destructure once so the memo deps below are primitives (stable across
 	// renders) — referencing `options.x` directly inside useMemo would make the
@@ -222,6 +263,10 @@ export function ChatCommand({options}: Props) {
 			setHistory(nextHistory);
 			appendTurn({role: 'user', content: text});
 			setStatus('generating');
+			setStreamingContent('');
+
+			const controller = new AbortController();
+			abortControllerRef.current = controller;
 
 			try {
 				const messages: ChatMessage[] = [];
@@ -230,33 +275,74 @@ export function ChatCommand({options}: Props) {
 				}
 				messages.push(...nextHistory);
 
-				const result = await chatCompletion(handle, messages, generateOptions);
+				let accumulated = '';
+				let lastPaintMs = 0;
 
-				const assistantMsg: ChatMessage = {
-					role: 'assistant',
-					content: result.text,
-				};
-				setHistory(prev => [...prev, assistantMsg]);
-				appendTurn({
-					role: 'assistant',
-					content: result.text,
-					stats: {
-						tokensPerSecond: result.tokensPerSecond,
-						ttftMs: result.ttftMs,
-						tokensGenerated: result.tokensGenerated,
-					},
+				const stream = chatCompletionStream(handle, messages, {
+					...generateOptions,
+					signal: controller.signal,
 				});
-				if (result.tokensGenerated) {
-					setTotalTokens(prev => prev + (result.tokensGenerated ?? 0));
+
+				for await (const chunk of stream) {
+					if (!chunk.done) {
+						// Token chunk — update the live preview, throttled.
+						accumulated += chunk.token;
+						const now = Date.now();
+						if (now - lastPaintMs >= STREAM_PAINT_INTERVAL_MS) {
+							lastPaintMs = now;
+							setStreamingContent(accumulated);
+						}
+						continue;
+					}
+
+					// Terminal chunk — commit the turn. A cancelled turn that
+					// produced nothing is rolled back entirely; one that produced
+					// text keeps it, so the transcript on screen and the history the
+					// model sees never disagree.
+					const {result, cancelled} = chunk;
+					if (cancelled && !result.text) {
+						setHistory(history);
+						appendTurn({role: 'info', content: 'Generation cancelled.'});
+						continue;
+					}
+
+					const assistantMsg: ChatMessage = {
+						role: 'assistant',
+						content: result.text,
+					};
+					setHistory(prev => [...prev, assistantMsg]);
+					appendTurn({
+						role: 'assistant',
+						content: result.text,
+						stats: {
+							tokensPerSecond: result.tokensPerSecond,
+							ttftMs: result.ttftMs,
+							tokensGenerated: result.tokensGenerated,
+						},
+					});
+					if (cancelled) {
+						appendTurn({
+							role: 'info',
+							content: 'Generation cancelled — partial reply kept.',
+						});
+					}
+					if (result.tokensGenerated) {
+						setTotalTokens(prev => prev + (result.tokensGenerated ?? 0));
+					}
 				}
+
+				setStreamingContent('');
 				setStatus('ready');
 			} catch (err) {
+				setStreamingContent('');
 				const msg = err instanceof Error ? err.message : 'Generation failed';
 				appendTurn({role: 'info', content: `Error: ${msg}`});
 				// Roll the user turn back out of the model-visible history so the
 				// next attempt starts clean.
 				setHistory(history);
 				setStatus('ready');
+			} finally {
+				abortControllerRef.current = null;
 			}
 		},
 		[appendTurn, generateOptions, history, systemMessage],
@@ -357,10 +443,13 @@ export function ChatCommand({options}: Props) {
 	);
 
 	useKeyInput((_input, key) => {
-		// Esc exits when not actively generating (so users don't kill a long gen
-		// by accident — they can still Ctrl-C if needed).
-		if (key.escape && status !== 'generating') {
-			exit();
+		if (key.escape) {
+			if (status === 'generating') {
+				// Abort the in-flight request; sendMessage's catch block handles cleanup.
+				abortControllerRef.current?.abort();
+			} else {
+				exit();
+			}
 		}
 	});
 
@@ -398,7 +487,7 @@ export function ChatCommand({options}: Props) {
 
 			{status === 'generating' && (
 				<Box marginTop={1}>
-					<Spinner label="Generating..." />
+					<StreamingTurnView content={streamingContent} />
 				</Box>
 			)}
 
@@ -468,6 +557,29 @@ function TurnView({turn}: {turn: DisplayTurn}) {
 			</Text>
 			<Text>{turn.content}</Text>
 			{statLine && <Text dimColor>{statLine}</Text>}
+		</Box>
+	);
+}
+
+/**
+ * Rendered in place of the spinner while tokens are streaming in. Shows the
+ * tail of the text assembled so far, plus a cursor sentinel (▍) so the user
+ * can see the model is actively generating. The full text is printed once the
+ * turn commits to <Static>.
+ */
+function StreamingTurnView({content}: {content: string}) {
+	const {text, truncated} = streamPreview(content);
+	return (
+		<Box flexDirection="column">
+			<Text color="green" bold>
+				Model:
+			</Text>
+			{truncated && <Text dimColor>… (showing the last few lines)</Text>}
+			<Text>
+				{text}
+				<Text color="green">▍</Text>
+			</Text>
+			<Text dimColor>[Esc] Cancel generation</Text>
 		</Box>
 	);
 }

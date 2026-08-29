@@ -12,6 +12,11 @@ export const ChatMessageSchema = z.object({
 
 export const FINE_TUNE_TYPES = ['lora', 'dora', 'full'] as const;
 
+export type FineTuneType = (typeof FINE_TUNE_TYPES)[number];
+
+// Counts are integers: mlx_lm indexes and slices with these, so a float gets
+// there and dies with an opaque Python error rather than a message naming the
+// flag. Rank/alpha/dropout are the genuinely continuous ones.
 export const TrainingConfigSchema = z.object({
 	iterations: z.number().default(150),
 	learningRate: z.number().default(5e-5),
@@ -20,13 +25,13 @@ export const TrainingConfigSchema = z.object({
 	stepsPerEval: z.number().default(50),
 	saveEvery: z.number().default(50),
 	fineTuneType: z.enum(FINE_TUNE_TYPES).default('lora'),
-	loraRank: z.number().positive().default(8),
+	loraRank: z.int().positive().default(8),
 	loraAlpha: z.number().positive().default(20),
 	loraDropout: z.number().min(0).lt(1).default(0),
-	maxSeqLength: z.number().positive().default(2048),
+	maxSeqLength: z.int().positive().default(2048),
 	gradCheckpoint: z.boolean().default(false),
-	valBatches: z.number().nonnegative().default(25),
-	seed: z.number().nonnegative().default(0),
+	valBatches: z.int().nonnegative().default(25),
+	seed: z.int().nonnegative().default(0),
 });
 
 export const ExportConfigSchema = z.object({
@@ -64,6 +69,8 @@ export interface DownloadProgress {
 	fileName?: string;
 	percent?: number;
 	sizeInfo?: string;
+	/** Resolved local snapshot directory, present on the final 100%-done event. */
+	path?: string;
 }
 
 export interface TrainingExample {
@@ -159,11 +166,25 @@ export interface BenchmarkTestResult {
 	judgeReasoning?: string;
 	/** Per-criteria scores from LLM judge */
 	judgeCriteriaScores?: Record<string, number>;
+	/** Number of samples run for this test. Present when greater than 1. */
+	samples?: number;
+	/** Portion of samples that passed. Present when samples > 1. */
+	samplePassRate?: number;
+	/** Variance of the sample outcomes. Present when samples > 1. */
+	sampleVariance?: number;
 }
 
 export interface BenchmarkResult {
 	model: string;
 	timestamp: string;
+	/** Benchmark configuration used for this run */
+	config?: {
+		temperature: number;
+		seed: number;
+		samples: number;
+	};
+	/** True when this run benchmarked the base (pre-fine-tuning) model as a control. */
+	isBase?: boolean;
 	summary: {
 		total: number;
 		passed: number;

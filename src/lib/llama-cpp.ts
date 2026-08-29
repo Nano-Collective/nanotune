@@ -15,14 +15,6 @@ const LLAMA_CPP_BIN_DIR = join(LLAMA_CPP_DIR, 'bin');
 const GITHUB_API_LATEST =
 	'https://api.github.com/repos/ggerganov/llama.cpp/releases/latest';
 
-export function getLlamaCppPath(): string {
-	return LLAMA_CPP_DIR;
-}
-
-export function getLlamaCppBinDir(): string {
-	return LLAMA_CPP_BIN_DIR;
-}
-
 export async function checkLlamaCppInstalled(): Promise<boolean> {
 	const quantizePath = join(LLAMA_CPP_BIN_DIR, 'llama-quantize');
 	const convertScript = join(LLAMA_CPP_DIR, 'convert_hf_to_gguf.py');
@@ -307,11 +299,10 @@ export async function* exportModel(
 }
 
 /**
- * Combined server + generation options accepted by the one-shot
- * `runGGUFInference` helper. New code should prefer the split `ServerOptions`
- * (for `startLlamaServer`) and `GenerateOptions` (for `chatCompletion`)
- * directly; this exists so callers that bundle everything into one object
- * still have a single type to import.
+ * Combined server + generation options, for callers that bundle both sets into
+ * one object. Prefer the split `ServerOptions` (for `startLlamaServer`) and
+ * `GenerateOptions` (for `chatCompletion`) directly — every caller in the repo
+ * does, so this is currently referenced only by its type tests.
  */
 export type InferenceOptions = ServerOptions & GenerateOptions;
 
@@ -326,60 +317,6 @@ export interface InferenceResult {
 	tokensPerSecond?: number;
 	/** Total tokens generated */
 	tokensGenerated?: number;
-}
-
-export interface ParsedStderr {
-	ttftMs?: number;
-	generationTimeMs?: number;
-	tokensPerSecond?: number;
-	tokensGenerated?: number;
-}
-
-/**
- * Parse llama.cpp stderr output for timing metrics.
- *
- * llama.cpp outputs lines like:
- *   llama_perf_context_print: prompt eval time =   567.89 ms /  50 tokens (  11.36 ms per token,   88.05 tokens per second)
- *   llama_perf_context_print:        eval time =  1234.56 ms /  99 runs   (  12.47 ms per token,   80.19 tokens per second)
- *   llama_perf_context_print:       total time =  1802.45 ms / 149 tokens
- */
-export function parseLlamaCppStderr(stderr: string): ParsedStderr {
-	const result: ParsedStderr = {};
-
-	// TTFT: extract from "prompt eval time = <X> ms"
-	const promptEvalMatch = stderr.match(/prompt eval time\s*=\s*([\d.]+)\s*ms/);
-	if (promptEvalMatch) {
-		result.ttftMs = Math.round(Number.parseFloat(promptEvalMatch[1]));
-	}
-
-	// Generation tokens/sec: extract from eval time line (not prompt eval)
-	// Match "eval time = ... (<X> tokens per second)" but NOT "prompt eval time"
-	const evalTpsMatch = stderr.match(
-		/(?<!prompt\s)eval time\s*=\s*([\d.]+)\s*ms\s*\/\s*(\d+)\s*(?:runs|tokens)\s*\([^)]*?([\d.]+)\s*tokens per second\)/,
-	);
-	if (evalTpsMatch) {
-		result.generationTimeMs = Math.round(Number.parseFloat(evalTpsMatch[1]));
-		result.tokensGenerated = Number.parseInt(evalTpsMatch[2], 10);
-		result.tokensPerSecond = Number.parseFloat(evalTpsMatch[3]);
-	}
-
-	// Fallback: older llama.cpp versions that output "tok/s"
-	if (result.tokensPerSecond === undefined) {
-		const tpsMatch = stderr.match(/([\d.]+)\s*tok\/s/);
-		if (tpsMatch) {
-			result.tokensPerSecond = Number.parseFloat(tpsMatch[1]);
-		}
-	}
-
-	// Fallback: older format "N tokens generated"
-	if (result.tokensGenerated === undefined) {
-		const tokensMatch = stderr.match(/(\d+)\s+tokens\s+generated/i);
-		if (tokensMatch) {
-			result.tokensGenerated = Number.parseInt(tokensMatch[1], 10);
-		}
-	}
-
-	return result;
 }
 
 async function findFreePort(): Promise<number> {
@@ -424,12 +361,51 @@ interface LlamaServerTimings {
 export interface ChatCompletionResponse {
 	choices?: Array<{
 		message?: {role?: string; content?: string};
+		/** Streaming delta object — present in SSE chunks instead of `message`. */
+		delta?: {role?: string; content?: string};
+		finish_reason?: string | null;
 	}>;
 	timings?: LlamaServerTimings;
 	usage?: {
 		prompt_tokens?: number;
 		completion_tokens?: number;
 		total_tokens?: number;
+	};
+}
+
+/**
+ * A single item yielded by `chatCompletionStream`.
+ *
+ * - `{done: false, token}` — a new piece of generated text just arrived.
+ * - `{done: true, result}` — generation finished; `result` holds the full
+ *   assembled text and per-turn timing stats (TTFT, tok/s, token count).
+ *   `cancelled` is true when the caller's AbortSignal ended the turn early,
+ *   in which case `result.text` is whatever had been generated so far.
+ *
+ * Exactly one `done` chunk is yielded per stream, cancelled or not.
+ */
+export type StreamChunk =
+	| {done: false; token: string}
+	| {done: true; result: InferenceResult; cancelled?: boolean};
+
+/**
+ * Assemble an InferenceResult from generated text plus llama-server's timing
+ * and usage fields. Shared by the buffered and streaming paths so the two
+ * cannot drift in how they report TTFT, tok/s and token counts.
+ */
+function toInferenceResult(
+	text: string,
+	timings: LlamaServerTimings | undefined,
+	usage: ChatCompletionResponse['usage'],
+): InferenceResult {
+	return {
+		text: text.trim(),
+		ttftMs: timings?.prompt_ms ? Math.round(timings.prompt_ms) : undefined,
+		generationTimeMs: timings?.predicted_ms
+			? Math.round(timings.predicted_ms)
+			: undefined,
+		tokensPerSecond: timings?.predicted_per_second,
+		tokensGenerated: timings?.predicted_n ?? usage?.completion_tokens,
 	};
 }
 
@@ -443,17 +419,7 @@ export function parseChatCompletionResponse(
 	data: ChatCompletionResponse,
 ): InferenceResult {
 	const content = data.choices?.[0]?.message?.content ?? '';
-	const timings = data.timings;
-
-	return {
-		text: content.trim(),
-		ttftMs: timings?.prompt_ms ? Math.round(timings.prompt_ms) : undefined,
-		generationTimeMs: timings?.predicted_ms
-			? Math.round(timings.predicted_ms)
-			: undefined,
-		tokensPerSecond: timings?.predicted_per_second,
-		tokensGenerated: timings?.predicted_n ?? data.usage?.completion_tokens,
-	};
+	return toInferenceResult(content, data.timings, data.usage);
 }
 
 /** Server-lifetime options (used at llama-server startup time). */
@@ -484,6 +450,55 @@ export interface GenerateOptions {
 export interface ServerHandle {
 	port: number;
 	process: ResultPromise;
+	/**
+	 * Settles when the child exits — with the `ExecaError` if it was killed or
+	 * exited non-zero, never by rejecting. Callers can watch it to notice a
+	 * server that died under them.
+	 */
+	exited: Promise<unknown>;
+}
+
+/**
+ * Wrap a freshly spawned llama-server child in a `ServerHandle`.
+ *
+ * `exited` is attached here, at spawn time, and never later: execa's promise
+ * rejects whenever the child is killed or exits non-zero, and on Node 22 an
+ * unhandled rejection is fatal. Deferring the handler to `stopLlamaServer` —
+ * minutes or hours away — means a server that dies mid-run takes the whole
+ * CLI down with a raw stack dump.
+ */
+export function createServerHandle(
+	port: number,
+	serverProcess: ResultPromise,
+): ServerHandle {
+	return {
+		port,
+		process: serverProcess,
+		exited: serverProcess.catch((err: unknown) => err),
+	};
+}
+
+/**
+ * Wait for the server to answer /health, giving up early if the child exits
+ * first. Without the race a bad GGUF — which llama-server rejects in
+ * milliseconds — reports a generic timeout a full minute later instead of the
+ * exit that actually happened.
+ */
+export async function waitForServerOrExit(
+	port: number,
+	exited: Promise<unknown>,
+	timeoutMs: number,
+): Promise<void> {
+	await Promise.race([
+		waitForServer(port, timeoutMs),
+		exited.then(value => {
+			throw new Error(
+				`llama-server exited during startup${
+					value instanceof Error ? `: ${value.message}` : ''
+				}`,
+			);
+		}),
+	]);
 }
 
 /**
@@ -548,15 +563,16 @@ export async function startLlamaServer(
 		stdout: 'ignore',
 		stderr: 'ignore',
 	});
+	const handle = createServerHandle(port, serverProcess);
 
 	try {
-		await waitForServer(port, startupTimeoutMs);
+		await waitForServerOrExit(port, handle.exited, startupTimeoutMs);
 	} catch (err) {
 		serverProcess.kill();
 		throw err;
 	}
 
-	return {port, process: serverProcess};
+	return handle;
 }
 
 /**
@@ -568,7 +584,7 @@ export async function stopLlamaServer(
 	handle: ServerHandle,
 	graceMs = 2000,
 ): Promise<void> {
-	const exited = handle.process.catch(() => {});
+	const exited = handle.exited;
 	handle.process.kill('SIGTERM');
 
 	const escalation = new Promise<void>(resolve => {
@@ -638,20 +654,160 @@ export async function chatCompletion(
 	return parseChatCompletionResponse(data);
 }
 
+/** True for the DOMException fetch raises when an AbortSignal fires. */
+function isAbortError(err: unknown): boolean {
+	return err instanceof Error && err.name === 'AbortError';
+}
+
 /**
- * One-shot convenience: start a server, run one chat completion, stop the
- * server. Prefer `startLlamaServer` + `chatCompletion` when you have more
- * than one request to make.
+ * Streaming variant of `chatCompletion`. Sends `"stream": true` to the
+ * llama-server `/v1/chat/completions` SSE endpoint and yields tokens as they
+ * arrive, finishing with a `{done: true, result}` chunk carrying the same
+ * timing stats the non-streaming response would have returned.
+ *
+ * The caller must iterate the generator with `for await … of`. Aborting via
+ * `options.signal` is not an error: the generator swallows the AbortError and
+ * still yields a final `{done: true, cancelled: true, result}` chunk holding
+ * the partial text, so callers see exactly one terminal chunk either way and
+ * never have to distinguish "cancelled" from "failed" in a catch block.
+ *
+ * NOTE: `chatCompletion` is deliberately left unchanged — the benchmark
+ * command relies on it and does not need streaming.
  */
-export async function runGGUFInference(
-	modelPath: string,
+export async function* chatCompletionStream(
+	handle: ServerHandle,
 	messages: ChatMessage[],
-	options: ServerOptions & GenerateOptions = {},
-): Promise<InferenceResult> {
-	const handle = await startLlamaServer(modelPath, options);
-	try {
-		return await chatCompletion(handle, messages, options);
-	} finally {
-		await stopLlamaServer(handle);
+	options: GenerateOptions = {},
+): AsyncGenerator<StreamChunk> {
+	const {
+		maxTokens = 100,
+		temperature = 0.8,
+		topP = 0.9,
+		seed,
+		signal,
+	} = options;
+
+	const body: Record<string, unknown> = {
+		messages,
+		max_tokens: maxTokens,
+		temperature,
+		top_p: topP,
+		stream: true,
+	};
+	if (seed !== undefined) {
+		body.seed = seed;
 	}
+
+	// Accumulated text and the timings from whichever chunk carried them.
+	let fullText = '';
+	let timings: LlamaServerTimings | undefined;
+	let usage: ChatCompletionResponse['usage'];
+	let cancelled = false;
+
+	/**
+	 * Parse a batch of complete SSE lines, updating the accumulators above and
+	 * yielding a token chunk per non-empty `delta.content`. Declared inline so
+	 * the trailing-buffer flush below can run the exact same parsing as the
+	 * main loop: a final line that arrives without a trailing newline still
+	 * has to contribute its token and the timings attached to it.
+	 */
+	function* consumeLines(lines: string[]): Generator<StreamChunk> {
+		for (const line of lines) {
+			const trimmed = line.trim();
+
+			// Blank line (event separator) or SSE comment — skip.
+			if (!trimmed || trimmed.startsWith(':')) continue;
+
+			// Every SSE event line we care about starts with "data: ".
+			if (!trimmed.startsWith('data: ')) continue;
+
+			const payload = trimmed.slice('data: '.length).trim();
+
+			// End-of-stream sentinel.
+			if (payload === '[DONE]') continue;
+
+			let chunk: ChatCompletionResponse;
+			try {
+				chunk = JSON.parse(payload) as ChatCompletionResponse;
+			} catch {
+				// Malformed JSON in an SSE line — skip rather than crash.
+				continue;
+			}
+
+			// llama-server attaches timings to the final chunk, but take them
+			// from any chunk that carries them.
+			if (chunk.timings) timings = chunk.timings;
+			if (chunk.usage) usage = chunk.usage;
+
+			const token = chunk.choices?.[0]?.delta?.content;
+			if (token) {
+				fullText += token;
+				yield {done: false, token};
+			}
+		}
+	}
+
+	try {
+		const response = await fetch(
+			`http://127.0.0.1:${handle.port}/v1/chat/completions`,
+			{
+				method: 'POST',
+				headers: {'Content-Type': 'application/json'},
+				body: JSON.stringify(body),
+				signal,
+			},
+		);
+
+		if (!response.ok) {
+			throw new Error(
+				`llama-server /v1/chat/completions (stream) failed: ${response.statusText}`,
+			);
+		}
+
+		if (!response.body) {
+			throw new Error(
+				'llama-server returned no response body for streaming request',
+			);
+		}
+
+		// Holds the trailing partial line between reads — SSE events routinely
+		// straddle chunk boundaries.
+		let lineBuffer = '';
+		const decoder = new TextDecoder();
+
+		for await (const bytes of response.body) {
+			// Signal fired between reads — stop before decoding more.
+			if (signal?.aborted) {
+				cancelled = true;
+				break;
+			}
+
+			lineBuffer += decoder.decode(bytes, {stream: true});
+
+			const lines = lineBuffer.split('\n');
+			// The last segment may be incomplete; hold it for the next read.
+			lineBuffer = lines.pop() ?? '';
+
+			yield* consumeLines(lines);
+		}
+
+		// Flush the decoder and parse whatever is left, so a final line that
+		// arrived without a trailing newline still contributes its token and
+		// timings.
+		lineBuffer += decoder.decode();
+		if (lineBuffer.trim()) {
+			yield* consumeLines([lineBuffer]);
+		}
+	} catch (err) {
+		// An abort is a normal outcome, not a failure — fall through to the
+		// terminal chunk below. Anything else is a real error.
+		if (!isAbortError(err) && !signal?.aborted) throw err;
+		cancelled = true;
+	}
+
+	yield {
+		done: true,
+		result: toInferenceResult(fullText, timings, usage),
+		cancelled,
+	};
 }

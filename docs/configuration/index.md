@@ -79,7 +79,7 @@ Nanotune's project configuration is stored in `.nanotune/config.json`. This file
 | `maxSeqLength` | number | 2048 | Maximum sequence length |
 | `gradCheckpoint` | boolean | false | Enable gradient checkpointing to reduce memory use |
 | `valBatches` | number | 25 | Number of validation batches |
-| `seed` | number | 0 | Random seed for training |
+| `seed` | number | 0 | Random seed for mlx_lm's training run (override with `--train-seed`, not `--seed`, which seeds the train/validation split) |
 
 ### Export
 
