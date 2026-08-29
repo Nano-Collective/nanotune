@@ -4,6 +4,7 @@ import {useState} from 'react';
 import {DataTable, Header, useKeyInput} from '../../components/index.js';
 import {configExists} from '../../lib/config.js';
 import {
+	clampPagination,
 	countExamples,
 	countTurns,
 	deleteExample,
@@ -146,15 +147,20 @@ export function DataListCommand({isEval = false}: Props) {
 			if (globalIndex < data.length) {
 				try {
 					deleteExample(globalIndex, isEval);
-					setData(loadTrainingData(isEval));
+					const remaining = loadTrainingData(isEval);
+					setData(remaining);
 					setExpandedIndex(null);
 					setMessage({type: 'success', text: 'Example deleted'});
 					setTimeout(() => setMessage(null), 2000);
 
-					// Adjust selection if needed
-					if (selectedIndex >= pageData.length - 1 && selectedIndex > 0) {
-						setSelectedIndex(selectedIndex - 1);
-					}
+					const next = clampPagination(
+						remaining.length,
+						page,
+						selectedIndex,
+						PAGE_SIZE,
+					);
+					setPage(next.page);
+					setSelectedIndex(next.selectedIndex);
 				} catch (err) {
 					setMessage({
 						type: 'error',

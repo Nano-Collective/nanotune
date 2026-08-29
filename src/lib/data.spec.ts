@@ -5,6 +5,7 @@ import type { TrainingExample } from "../types/index.js";
 import {
   appendToTrainingData,
   appendTrainingExample,
+  clampPagination,
   countExamples,
   countTurns,
   dedupeExamples,
@@ -1394,4 +1395,41 @@ test.serial("importData still defaults to the training set", (t) => {
 
   t.is(countExamples(false), 1);
   t.is(countExamples(true), 0);
+});
+
+// ── clampPagination ───────────────────────────────────────────────────
+
+test.serial("clampPagination leaves a valid page and selection untouched", (t) => {
+  t.deepEqual(clampPagination(25, 1, 3, 10), { page: 1, selectedIndex: 3 });
+});
+
+test.serial("clampPagination steps back when the last page empties out", (t) => {
+  // 11 examples on page 2 (one row); deleting it leaves 10 → page 1 is last.
+  t.deepEqual(clampPagination(10, 1, 0, 10), { page: 0, selectedIndex: 0 });
+});
+
+test.serial("clampPagination clamps selection to the last remaining row", (t) => {
+  // Page 0 held 5 rows with the last one selected; one deletion leaves 4.
+  t.deepEqual(clampPagination(4, 0, 4, 10), { page: 0, selectedIndex: 3 });
+});
+
+test.serial("clampPagination clamps selection on a partial last page", (t) => {
+  // 14 examples → page 1 holds 4 rows, so index 6 is out of bounds.
+  t.deepEqual(clampPagination(14, 1, 6, 10), { page: 1, selectedIndex: 3 });
+});
+
+test.serial("clampPagination resets to the first page when data is empty", (t) => {
+  t.deepEqual(clampPagination(0, 3, 7, 10), { page: 0, selectedIndex: 0 });
+});
+
+test.serial("clampPagination skips back multiple pages at once", (t) => {
+  t.deepEqual(clampPagination(5, 4, 2, 10), { page: 0, selectedIndex: 2 });
+});
+
+test.serial("clampPagination keeps mid-page selection after a deletion", (t) => {
+  t.deepEqual(clampPagination(19, 0, 3, 10), { page: 0, selectedIndex: 3 });
+});
+
+test.serial("clampPagination handles a page size of one", (t) => {
+  t.deepEqual(clampPagination(3, 3, 0, 1), { page: 2, selectedIndex: 0 });
 });
