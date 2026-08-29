@@ -140,9 +140,20 @@ program
 	.option('--num-layers <n>', 'Number of layers to fine-tune')
 	.option('--steps-per-eval <n>', 'Run validation every N steps')
 	.option('--save-every <n>', 'Save a checkpoint every N steps')
+	.option('--fine-tune-type <type>', 'Fine-tuning type: lora, dora, or full')
+	.option('--lora-rank <n>', 'LoRA rank')
+	.option('--lora-alpha <n>', 'LoRA alpha (scaling factor)')
+	.option('--lora-dropout <n>', 'LoRA dropout')
+	.option('--max-seq-length <n>', 'Maximum sequence length')
+	.option('--grad-checkpoint', 'Enable gradient checkpointing')
+	.option('--no-grad-checkpoint', 'Disable gradient checkpointing')
+	.option('--val-batches <n>', 'Number of validation batches')
 	.option('--resume', 'Resume from last checkpoint')
 	.option('--dry-run', 'Validate config without training')
 	.option('--seed <n>', 'Seed for a reproducible train/validation split')
+	// Distinct from --seed above: that one seeds Nanotune's train/validation
+	// split, this one seeds mlx_lm's training run.
+	.option('--train-seed <n>', "Random seed for mlx_lm's training run")
 	.action(async options => {
 		const {TrainCommand} = await import('./commands/train.js');
 		// Ctrl+C is handled inside the command so training can stop gracefully

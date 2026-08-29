@@ -149,6 +149,20 @@ export function findUnknownConfigKeys(raw: unknown): string[] {
 
 const warnedKeys = new Set<string>();
 
+/**
+ * Turns a ZodError into lines a user can act on. `ConfigSchema.parse` throws
+ * with the raw issue array serialised as its message, which reaches the UI as
+ * a wall of JSON; naming the offending path and what was wrong with it is the
+ * whole diagnosis.
+ */
+export function formatConfigIssues(error: z.ZodError): string {
+	const lines = error.issues.map(issue => {
+		const path = issue.path.join('.');
+		return path ? `  ${path}: ${issue.message}` : `  ${issue.message}`;
+	});
+	return `Invalid ${CONFIG_FILE}:\n${lines.join('\n')}`;
+}
+
 export function loadConfig(): Config {
 	const path = getConfigPath();
 	if (!existsSync(path)) {
@@ -161,7 +175,11 @@ export function loadConfig(): Config {
 			console.warn(`Warning: ${warning}`);
 		}
 	}
-	return ConfigSchema.parse(raw);
+	const result = ConfigSchema.safeParse(raw);
+	if (!result.success) {
+		throw new Error(formatConfigIssues(result.error));
+	}
+	return result.data;
 }
 
 export function saveConfig(config: Config): void {
@@ -327,6 +345,14 @@ export function createDefaultConfig(
 			numLayers: 16,
 			stepsPerEval: 50,
 			saveEvery: 50,
+			fineTuneType: 'lora',
+			loraRank: 8,
+			loraAlpha: 20,
+			loraDropout: 0,
+			maxSeqLength: 2048,
+			gradCheckpoint: false,
+			valBatches: 25,
+			seed: 0,
 		},
 		export: {
 			quantization: 'q4_k_m',

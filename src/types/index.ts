@@ -10,6 +10,13 @@ export const ChatMessageSchema = z.object({
 	content: z.string(),
 });
 
+export const FINE_TUNE_TYPES = ['lora', 'dora', 'full'] as const;
+
+export type FineTuneType = (typeof FINE_TUNE_TYPES)[number];
+
+// Counts are integers: mlx_lm indexes and slices with these, so a float gets
+// there and dies with an opaque Python error rather than a message naming the
+// flag. Rank/alpha/dropout are the genuinely continuous ones.
 export const TrainingConfigSchema = z.object({
 	iterations: z.number().default(150),
 	learningRate: z.number().default(5e-5),
@@ -17,6 +24,14 @@ export const TrainingConfigSchema = z.object({
 	numLayers: z.number().default(16),
 	stepsPerEval: z.number().default(50),
 	saveEvery: z.number().default(50),
+	fineTuneType: z.enum(FINE_TUNE_TYPES).default('lora'),
+	loraRank: z.int().positive().default(8),
+	loraAlpha: z.number().positive().default(20),
+	loraDropout: z.number().min(0).lt(1).default(0),
+	maxSeqLength: z.int().positive().default(2048),
+	gradCheckpoint: z.boolean().default(false),
+	valBatches: z.int().nonnegative().default(25),
+	seed: z.int().nonnegative().default(0),
 });
 
 export const ExportConfigSchema = z.object({

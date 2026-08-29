@@ -6,10 +6,11 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import test from "ava";
-import { ConfigSchema } from "../types/index.js";
+import { ConfigSchema, TrainingConfigSchema } from "../types/index.js";
 import {
   createDefaultConfig,
   findLatestGGUF,
+  formatConfigIssues,
   listBenchmarks,
   resolveBenchmarkPath,
   findUnknownConfigKeys,
@@ -138,6 +139,68 @@ test("ConfigSchema rejects invalid quantization type", (t) => {
   t.false(result.success);
 });
 
+test("TrainingConfigSchema rejects a non-positive loraRank", (t) => {
+  const result = TrainingConfigSchema.safeParse({ loraRank: 0 });
+  t.false(result.success);
+});
+
+test("TrainingConfigSchema rejects a negative valBatches", (t) => {
+  const result = TrainingConfigSchema.safeParse({ valBatches: -1 });
+  t.false(result.success);
+});
+
+test("TrainingConfigSchema rejects loraDropout of 1 or more", (t) => {
+  t.false(TrainingConfigSchema.safeParse({ loraDropout: 1 }).success);
+  t.true(TrainingConfigSchema.safeParse({ loraDropout: 0.99 }).success);
+});
+
+test("TrainingConfigSchema rejects an unknown fineTuneType", (t) => {
+  const result = TrainingConfigSchema.safeParse({ fineTuneType: "bogus" });
+  t.false(result.success);
+});
+
+test("formatConfigIssues names the offending path instead of dumping JSON", (t) => {
+  const result = ConfigSchema.safeParse({
+    name: "p",
+    baseModel: "m",
+    systemPrompt: "s",
+    training: { loraRank: -4 },
+    export: { outputName: "o" },
+  });
+  t.false(result.success);
+  if (result.success) return;
+
+  const message = formatConfigIssues(result.error);
+  t.true(message.startsWith("Invalid config.json:"));
+  t.regex(message, /training\.loraRank: .*>0/);
+  // The raw ZodError message is a serialised issue array; that is the thing
+  // this exists to avoid putting in front of a user.
+  t.false(message.includes('"code"'));
+});
+
+test("TrainingConfigSchema rejects fractional counts", (t) => {
+  // mlx_lm indexes and slices with these, so a float dies inside Python with
+  // an opaque error instead of here with the field name attached.
+  t.false(TrainingConfigSchema.safeParse({ loraRank: 2.5 }).success);
+  t.false(TrainingConfigSchema.safeParse({ maxSeqLength: 1024.5 }).success);
+  t.false(TrainingConfigSchema.safeParse({ valBatches: 2.5 }).success);
+  t.false(TrainingConfigSchema.safeParse({ seed: 3.7 }).success);
+});
+
+test("TrainingConfigSchema still allows fractional loraAlpha and loraDropout", (t) => {
+  const result = TrainingConfigSchema.safeParse({
+    loraAlpha: 20.5,
+    loraDropout: 0.05,
+  });
+  t.true(result.success);
+});
+
+test("TrainingConfigSchema rejects NaN from an unparseable flag", (t) => {
+  // What `--lora-rank abc` becomes by the time it reaches validation.
+  t.false(TrainingConfigSchema.safeParse({ loraRank: Number.NaN }).success);
+  t.false(TrainingConfigSchema.safeParse({ iterations: Number.NaN }).success);
+});
+
 test("createDefaultConfig returns valid config", (t) => {
   const config = createDefaultConfig(
     "my-project",
@@ -161,6 +224,14 @@ test("createDefaultConfig sets correct defaults", (t) => {
   t.is(config.training.learningRate, 5e-5);
   t.is(config.training.batchSize, 4);
   t.is(config.training.numLayers, 16);
+  t.is(config.training.fineTuneType, "lora");
+  t.is(config.training.loraRank, 8);
+  t.is(config.training.loraAlpha, 20);
+  t.is(config.training.loraDropout, 0);
+  t.is(config.training.maxSeqLength, 2048);
+  t.is(config.training.gradCheckpoint, false);
+  t.is(config.training.valBatches, 25);
+  t.is(config.training.seed, 0);
 });
 
 test("resolveContextMessage prefers contextMessage over systemPrompt", (t) => {
@@ -177,6 +248,14 @@ test("resolveContextMessage prefers contextMessage over systemPrompt", (t) => {
       numLayers: 16,
       stepsPerEval: 50,
       saveEvery: 50,
+      fineTuneType: "lora" as const,
+      loraRank: 8,
+      loraAlpha: 20,
+      loraDropout: 0,
+      maxSeqLength: 2048,
+      gradCheckpoint: false,
+      valBatches: 25,
+      seed: 0,
     },
     export: {
       quantization: "q4_k_m" as const,
@@ -202,6 +281,14 @@ test("resolveContextMessage falls back to systemPrompt", (t) => {
       numLayers: 16,
       stepsPerEval: 50,
       saveEvery: 50,
+      fineTuneType: "lora" as const,
+      loraRank: 8,
+      loraAlpha: 20,
+      loraDropout: 0,
+      maxSeqLength: 2048,
+      gradCheckpoint: false,
+      valBatches: 25,
+      seed: 0,
     },
     export: {
       quantization: "q4_k_m" as const,
@@ -468,11 +555,11 @@ test("findUnknownConfigKeys names an unknown nested key and suggests the closest
 test("findUnknownConfigKeys omits the suggestion when no valid field is close", (t) => {
   const warnings = findUnknownConfigKeys({
     ...KNOWN_KEYS_CONFIG,
-    training: { ...KNOWN_KEYS_CONFIG.training, loraRank: 8 },
+    training: { ...KNOWN_KEYS_CONFIG.training, optimizer: "adamw" },
   });
 
   t.deepEqual(warnings, [
-    'unknown key "training.loraRank" in config.json — ignored.',
+    'unknown key "training.optimizer" in config.json — ignored.',
   ]);
 });
 
@@ -503,7 +590,11 @@ test("findUnknownConfigKeys walks every nested object", (t) => {
 test("findUnknownConfigKeys reports every unknown key", (t) => {
   const warnings = findUnknownConfigKeys({
     ...KNOWN_KEYS_CONFIG,
-    training: { ...KNOWN_KEYS_CONFIG.training, loraLayers: 16, loraRank: 8 },
+    training: {
+      ...KNOWN_KEYS_CONFIG.training,
+      loraLayers: 16,
+      optimizer: "adamw",
+    },
   });
 
   t.is(warnings.length, 2);
