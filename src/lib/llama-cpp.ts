@@ -421,6 +421,55 @@ export interface GenerateOptions {
 export interface ServerHandle {
 	port: number;
 	process: ResultPromise;
+	/**
+	 * Settles when the child exits — with the `ExecaError` if it was killed or
+	 * exited non-zero, never by rejecting. Callers can watch it to notice a
+	 * server that died under them.
+	 */
+	exited: Promise<unknown>;
+}
+
+/**
+ * Wrap a freshly spawned llama-server child in a `ServerHandle`.
+ *
+ * `exited` is attached here, at spawn time, and never later: execa's promise
+ * rejects whenever the child is killed or exits non-zero, and on Node 22 an
+ * unhandled rejection is fatal. Deferring the handler to `stopLlamaServer` —
+ * minutes or hours away — means a server that dies mid-run takes the whole
+ * CLI down with a raw stack dump.
+ */
+export function createServerHandle(
+	port: number,
+	serverProcess: ResultPromise,
+): ServerHandle {
+	return {
+		port,
+		process: serverProcess,
+		exited: serverProcess.catch((err: unknown) => err),
+	};
+}
+
+/**
+ * Wait for the server to answer /health, giving up early if the child exits
+ * first. Without the race a bad GGUF — which llama-server rejects in
+ * milliseconds — reports a generic timeout a full minute later instead of the
+ * exit that actually happened.
+ */
+export async function waitForServerOrExit(
+	port: number,
+	exited: Promise<unknown>,
+	timeoutMs: number,
+): Promise<void> {
+	await Promise.race([
+		waitForServer(port, timeoutMs),
+		exited.then(value => {
+			throw new Error(
+				`llama-server exited during startup${
+					value instanceof Error ? `: ${value.message}` : ''
+				}`,
+			);
+		}),
+	]);
 }
 
 /**
@@ -485,15 +534,16 @@ export async function startLlamaServer(
 		stdout: 'ignore',
 		stderr: 'ignore',
 	});
+	const handle = createServerHandle(port, serverProcess);
 
 	try {
-		await waitForServer(port, startupTimeoutMs);
+		await waitForServerOrExit(port, handle.exited, startupTimeoutMs);
 	} catch (err) {
 		serverProcess.kill();
 		throw err;
 	}
 
-	return {port, process: serverProcess};
+	return handle;
 }
 
 /**
@@ -505,7 +555,7 @@ export async function stopLlamaServer(
 	handle: ServerHandle,
 	graceMs = 2000,
 ): Promise<void> {
-	const exited = handle.process.catch(() => {});
+	const exited = handle.exited;
 	handle.process.kill('SIGTERM');
 
 	const escalation = new Promise<void>(resolve => {
