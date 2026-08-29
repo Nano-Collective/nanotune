@@ -4,6 +4,8 @@ import {useState} from 'react';
 import {DataTable, Header, useKeyInput} from '../../components/index.js';
 import {configExists} from '../../lib/config.js';
 import {
+	clampPagination,
+	countExamples,
 	countTurns,
 	deleteExample,
 	loadTrainingData,
@@ -16,12 +18,17 @@ type EditField = 'input' | 'output';
 
 const PAGE_SIZE = 10;
 
-export function DataListCommand() {
+interface Props {
+	isEval?: boolean;
+}
+
+export function DataListCommand({isEval = false}: Props) {
 	const {exit} = useApp();
 	const [page, setPage] = useState(0);
 	const [selectedIndex, setSelectedIndex] = useState(0);
 	const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
-	const [data, setData] = useState(() => loadTrainingData());
+	const [data, setData] = useState(() => loadTrainingData(isEval));
+	const [otherCount] = useState(() => countExamples(!isEval));
 	const [message, setMessage] = useState<{
 		type: 'success' | 'error';
 		text: string;
@@ -43,7 +50,11 @@ export function DataListCommand() {
 		try {
 			const original = data[editIndex];
 			const updated: {messages: ChatMessage[]} = {
-				messages: mergeEditedTurn(original.messages, userInput, assistantOutput),
+				messages: mergeEditedTurn(
+					original.messages,
+					userInput,
+					assistantOutput,
+				),
 			};
 			updateTrainingExample(editIndex, updated);
 			setData(loadTrainingData());
@@ -135,16 +146,21 @@ export function DataListCommand() {
 			const globalIndex = startIndex + selectedIndex;
 			if (globalIndex < data.length) {
 				try {
-					deleteExample(globalIndex);
-					setData(loadTrainingData());
+					deleteExample(globalIndex, isEval);
+					const remaining = loadTrainingData(isEval);
+					setData(remaining);
 					setExpandedIndex(null);
 					setMessage({type: 'success', text: 'Example deleted'});
 					setTimeout(() => setMessage(null), 2000);
 
-					// Adjust selection if needed
-					if (selectedIndex >= pageData.length - 1 && selectedIndex > 0) {
-						setSelectedIndex(selectedIndex - 1);
-					}
+					const next = clampPagination(
+						remaining.length,
+						page,
+						selectedIndex,
+						PAGE_SIZE,
+					);
+					setPage(next.page);
+					setSelectedIndex(next.selectedIndex);
 				} catch (err) {
 					setMessage({
 						type: 'error',
@@ -173,7 +189,7 @@ export function DataListCommand() {
 	if (!hasConfig) {
 		return (
 			<Box flexDirection="column" padding={1}>
-				<Header title="Training Data" />
+				<Header title={isEval ? 'Validation Data' : 'Training Data'} />
 				<StatusMessage variant="error">
 					Not a Nanotune project. Run `nanotune init` first.
 				</StatusMessage>
@@ -259,8 +275,12 @@ export function DataListCommand() {
 	return (
 		<Box flexDirection="column" padding={1}>
 			<Header
-				title="Training Data"
-				subtitle={`${data.length} examples | Page ${page + 1}/${totalPages || 1}`}
+				title={isEval ? 'Validation Data' : 'Training Data'}
+				subtitle={`${data.length} examples${
+					otherCount > 0
+						? ` (+${otherCount} ${isEval ? 'training' : 'validation'})`
+						: ''
+				} | Page ${page + 1}/${totalPages || 1}`}
 			/>
 
 			{message && (
@@ -271,9 +291,13 @@ export function DataListCommand() {
 
 			{data.length === 0 ? (
 				<Box flexDirection="column">
-					<Text dimColor>No training data yet.</Text>
+					<Text dimColor>
+						No {isEval ? 'validation' : 'training'} data yet.
+					</Text>
 					<Text>
-						Run <Text color="cyan">nanotune data add</Text> to add examples.
+						Run{' '}
+						<Text color="cyan">nanotune data add{isEval ? ' --eval' : ''}</Text>{' '}
+						to add examples.
 					</Text>
 				</Box>
 			) : (

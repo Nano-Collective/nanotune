@@ -20,8 +20,18 @@ nanotune train
 |------|-------------|
 | `-i, --iterations <n>` | Override iteration count |
 | `--lr <rate>` | Override learning rate |
+| `--batch-size <n>` | Override batch size |
+| `--num-layers <n>` | Override number of layers to fine-tune |
+| `--steps-per-eval <n>` | Override validation interval (steps) |
+| `--save-every <n>` | Override checkpoint save interval (steps) |
 | `--resume` | Resume from last checkpoint |
 | `--dry-run` | Validate config without training |
+| `--seed <n>` | Integer seed for a reproducible train/validation split |
+
+`--seed` only affects the run that actually creates the split. Once `valid.jsonl`
+exists the split is left alone, so passing a seed to an already-split project
+does nothing and `train` says so — delete `valid.jsonl` first to re-split. A
+non-integer seed is rejected rather than silently coerced.
 
 ## Examples
 
@@ -34,6 +44,9 @@ nanotune train -i 200
 
 # Override learning rate
 nanotune train --lr 1e-4
+
+# Override batch size, layers, eval and save intervals
+nanotune train --batch-size 8 --num-layers 8 --steps-per-eval 25 --save-every 25
 
 # Resume from last checkpoint
 nanotune train --resume
@@ -51,7 +64,7 @@ Training runs LoRA (Low-Rank Adaptation) fine-tuning via MLX with a live progres
 - Validation loss (at evaluation intervals)
 - Elapsed time
 
-Training checkpoints are saved at regular intervals (configurable via `saveEvery` in your config). If training is interrupted, use `--resume` to continue from the last checkpoint.
+Training checkpoints are saved at regular intervals (configurable via `saveEvery` in your config, or overridden per-run with `--save-every`). If training is interrupted, use `--resume` to continue from the last checkpoint.
 
 ## See Also
 

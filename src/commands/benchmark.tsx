@@ -1,5 +1,12 @@
-import {existsSync, readFileSync, writeFileSync} from 'node:fs';
-import {join} from 'node:path';
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from 'node:fs';
+import {dirname, join} from 'node:path';
 import {Spinner, StatusMessage} from '@inkjs/ui';
 import {Box, Text, useApp} from 'ink';
 import {useCallback, useEffect, useState} from 'react';
@@ -16,6 +23,8 @@ import {
 	buildMessages,
 	formatConversationForJudge,
 	getTestDisplayPrompt,
+	resolveSamplingOptions,
+	summarizeSamples,
 } from '../lib/benchmark-utils.js';
 import {
 	configExists,
@@ -32,11 +41,20 @@ import {
 } from '../lib/judge.js';
 import {
 	chatCompletion,
+	checkLlamaCppInstalled,
+	exportModel,
 	type GenerateOptions,
+	installLlamaCpp,
 	type ServerOptions,
 	startLlamaServer,
 	stopLlamaServer,
 } from '../lib/llama-cpp.js';
+import {ensureModelDownloaded} from '../lib/mlx.js';
+import {
+	getBaseModelCachePath,
+	sweepStaleCacheArtifacts,
+} from '../lib/model-cache.js';
+import {assertSupportedPlatform} from '../lib/platform.js';
 import {
 	BENCHMARK_PRESETS,
 	type BenchmarkPreset,
@@ -49,6 +67,7 @@ import {
 interface Props {
 	options: {
 		model?: string;
+		base?: boolean;
 		dataset?: string;
 		timeout?: string;
 		preset?: string;
@@ -60,6 +79,7 @@ interface Props {
 		maxTokens?: string;
 		temperature?: string;
 		seed?: string;
+		samples?: string;
 	};
 }
 
@@ -80,6 +100,17 @@ function generateMarkdownReport(
 	lines.push('');
 	lines.push(`**Date:** ${new Date(result.timestamp).toLocaleString()}`);
 	lines.push(`**Model:** ${result.model.split('/').pop()}`);
+	lines.push(
+		`**Run Type:** ${result.isBase ? 'Base model (control)' : 'Fine-tuned'}`,
+	);
+	if (result.config) {
+		lines.push('');
+		lines.push('## Configuration');
+		lines.push('');
+		lines.push(`- **Temperature:** ${result.config.temperature}`);
+		lines.push(`- **Seed:** ${result.config.seed}`);
+		lines.push(`- **Samples per test:** ${result.config.samples}`);
+	}
 	lines.push('');
 
 	// Summary
@@ -148,6 +179,15 @@ function generateMarkdownReport(
 			lines.push('');
 		}
 		lines.push(`**Category:** ${testResult.category}`);
+		if (testResult.samples !== undefined) {
+			lines.push(`**Samples:** ${testResult.samples}`);
+			lines.push(
+				`**Sample Pass Rate:** ${Math.round((testResult.samplePassRate ?? 0) * 100)}%`,
+			);
+			lines.push(
+				`**Sample Variance:** ${(testResult.sampleVariance ?? 0).toFixed(4)}`,
+			);
+		}
 		if (testResult.latencyMs) {
 			lines.push(`**Total Latency:** ${testResult.latencyMs}ms`);
 		}
@@ -221,9 +261,11 @@ export function BenchmarkCommand({options}: Props) {
 	const {exit} = useApp();
 	const [status, setStatus] = useState<Status>('loading');
 	const [error, setError] = useState<string | null>(null);
+	const [prepStep, setPrepStep] = useState<string | null>(null);
 	const [currentTest, setCurrentTest] = useState<string | null>(null);
 	const [progress, setProgress] = useState(0);
 	const [results, setResults] = useState<BenchmarkResult | null>(null);
+	const [warning, setWarning] = useState<string | null>(null);
 	const [categories, setCategories] = useState<Record<string, CategoryResult>>(
 		{},
 	);
@@ -250,20 +292,116 @@ export function BenchmarkCommand({options}: Props) {
 				role: 'system',
 				content: '',
 			};
+			let config: ReturnType<typeof loadConfig> | null = null;
 			try {
-				const config = loadConfig();
+				config = loadConfig();
 				contextMsg = resolveContextMessage(config);
 			} catch {
 				// Minimal config (e.g., external benchmark runner) — no context message needed
 			}
 			const benchmarksDir = getBenchmarksDir();
 
-			// Find model
-			let modelPath = options.model ?? findLatestGGUF();
-			if (!modelPath) {
-				setError('No exported models found. Run `nanotune export` first.');
+			if (options.model && options.base) {
+				setError(
+					'`--model` and `--base` are mutually exclusive — `--base` resolves the model itself.',
+				);
 				setStatus('error');
 				return;
+			}
+
+			// Find model
+			let modelPath: string | null;
+			if (options.base) {
+				if (!config) {
+					setError(
+						'`--base` requires a full nanotune config with `baseModel` set. Run `nanotune init` first, or omit `--base` and pass `--model` directly.',
+					);
+					setStatus('error');
+					return;
+				}
+
+				// Fail fast on unsupported hardware before a multi-minute
+				// download/convert/quantize run.
+				assertSupportedPlatform();
+
+				const quantization = config.export.quantization;
+				const cachePath = getBaseModelCachePath(config.baseModel, quantization);
+
+				if (!existsSync(cachePath)) {
+					// Installing llama.cpp and downloading the base model are
+					// independent — run them concurrently instead of waiting on
+					// one before starting the other.
+					const [, snapshotPath] = await Promise.all([
+						(async () => {
+							const hasLlamaCpp = await checkLlamaCppInstalled();
+							if (!hasLlamaCpp) {
+								setPrepStep('Installing llama.cpp...');
+								for await (const msg of installLlamaCpp()) {
+									setPrepStep(msg);
+								}
+							}
+						})(),
+						(async (): Promise<string | undefined> => {
+							setPrepStep(`Downloading base model ${config.baseModel}...`);
+							let resolvedPath: string | undefined;
+							for await (const progress of ensureModelDownloaded(
+								config.baseModel,
+							)) {
+								setPrepStep(
+									progress.sizeInfo
+										? `Downloading base model... ${progress.sizeInfo}`
+										: 'Downloading base model...',
+								);
+								if (progress.path) {
+									resolvedPath = progress.path;
+								}
+							}
+							return resolvedPath;
+						})(),
+					]);
+					if (!snapshotPath) {
+						throw new Error(
+							'Could not resolve the downloaded base model path.',
+						);
+					}
+
+					// Export to a temp path and rename into place atomically.
+					// existsSync(cachePath) above is the only thing gating reuse of
+					// this cache — if a run gets killed mid-quantize and the partial
+					// file landed directly at cachePath, every future run would
+					// silently treat that corrupt file as a valid cache hit.
+					mkdirSync(dirname(cachePath), {recursive: true});
+					// Clean up .tmp-<pid>.gguf / -f16.gguf leftovers from a previous
+					// run that was interrupted before its own cleanup could run.
+					sweepStaleCacheArtifacts(dirname(cachePath));
+					const tempCachePath = cachePath.replace(
+						/\.gguf$/,
+						`.tmp-${process.pid}.gguf`,
+					);
+					try {
+						for await (const progress of exportModel(
+							snapshotPath,
+							tempCachePath,
+							quantization,
+						)) {
+							setPrepStep(progress.step);
+						}
+						renameSync(tempCachePath, cachePath);
+					} finally {
+						if (existsSync(tempCachePath)) {
+							rmSync(tempCachePath, {force: true});
+						}
+					}
+				}
+
+				modelPath = cachePath;
+			} else {
+				modelPath = options.model ?? findLatestGGUF();
+				if (!modelPath) {
+					setError('No exported models found. Run `nanotune export` first.');
+					setStatus('error');
+					return;
+				}
 			}
 
 			if (!existsSync(modelPath)) {
@@ -315,6 +453,21 @@ export function BenchmarkCommand({options}: Props) {
 			}
 
 			// Build inference options from CLI flags or preset
+			const sampling = resolveSamplingOptions({
+				temperature: options.temperature,
+				seed: options.seed,
+				samples: options.samples,
+			});
+
+			// Validate sampling configuration
+			if (sampling.samples > 1 && sampling.temperature === 0) {
+				setError(
+					'Cannot use --samples with temperature 0 (greedy decoding produces identical outputs). Use --temperature 0.1 or higher for sampling.',
+				);
+				setStatus('error');
+				return;
+			}
+
 			let serverOptions: ServerOptions;
 			let generateOptions: GenerateOptions;
 
@@ -345,10 +498,8 @@ export function BenchmarkCommand({options}: Props) {
 				};
 				generateOptions = {
 					maxTokens: preset.maxTokens,
-					temperature: options.temperature
-						? Number.parseFloat(options.temperature)
-						: 0.8,
-					seed: options.seed ? Number.parseInt(options.seed, 10) : undefined,
+					temperature: sampling.temperature,
+					seed: sampling.seed,
 				};
 			} else {
 				serverOptions = {
@@ -370,10 +521,8 @@ export function BenchmarkCommand({options}: Props) {
 					maxTokens: options.maxTokens
 						? Number.parseInt(options.maxTokens, 10)
 						: 50,
-					temperature: options.temperature
-						? Number.parseFloat(options.temperature)
-						: 0.8,
-					seed: options.seed ? Number.parseInt(options.seed, 10) : undefined,
+					temperature: sampling.temperature,
+					seed: sampling.seed,
 				};
 			}
 
@@ -406,8 +555,22 @@ export function BenchmarkCommand({options}: Props) {
 			// would multiply latency by N and cache the model from disk N times.
 			const serverHandle = await startLlamaServer(modelPath, serverOptions);
 
+			// The server can die under us mid-run (OOM, an incompatible GGUF, an
+			// external kill). `exited` settles the moment it does — stop there and
+			// report what we have, rather than letting every remaining test fail to
+			// connect and burying the reason.
+			let serverDied = false;
+			let abortReason: string | null = null;
+			void serverHandle.exited.then(() => {
+				serverDied = true;
+			});
+
 			try {
 				for (let i = 0; i < tests.length; i++) {
+					if (serverDied) {
+						abortReason = `llama-server exited unexpectedly after ${i} of ${tests.length} tests — saving partial results.`;
+						break;
+					}
 					const test = tests[i];
 					setCurrentTest(getTestDisplayPrompt(test));
 					setProgress(((i + 1) / tests.length) * 100);
@@ -431,69 +594,98 @@ export function BenchmarkCommand({options}: Props) {
 					let judgeReasoning: string | undefined;
 					let judgeCriteriaScores: Record<string, number> | undefined;
 
+					const samplePasses: boolean[] = [];
+
 					try {
 						// Build messages array (chat-template aware) for this test.
 						const requestMessages = buildMessages(test, contextMsg);
 
-						// Cancel the in-flight fetch when the timeout wins — otherwise
-						// llama-server keeps generating into the void and the next test
-						// is delayed waiting for the server to free up.
-						const controller = new AbortController();
-						const timeoutId = setTimeout(() => {
-							controller.abort();
-						}, timeout);
+						for (let sample = 0; sample < sampling.samples; sample++) {
+							// Cancel the in-flight fetch when the timeout wins — otherwise
+							// llama-server keeps generating into the void and the next test
+							// is delayed waiting for the server to free up.
+							const controller = new AbortController();
+							const timeoutId = setTimeout(() => {
+								controller.abort();
+							}, timeout);
 
-						try {
-							const inferenceResult = await chatCompletion(
-								serverHandle,
-								requestMessages,
-								{...generateOptions, signal: controller.signal},
-							);
-							latencyMs = Date.now() - startTime;
-							response = inferenceResult.text;
-							ttftMs = inferenceResult.ttftMs;
-							generationTimeMs = inferenceResult.generationTimeMs;
-							tokensGenerated = inferenceResult.tokensGenerated;
-							tokensPerSecond = inferenceResult.tokensPerSecond;
-						} catch (err) {
-							if (controller.signal.aborted) {
-								throw new Error('Timeout');
+							let sampleResponse = '';
+							let sampleFailed = false;
+							try {
+								const inferenceResult = await chatCompletion(
+									serverHandle,
+									requestMessages,
+									{
+										...generateOptions,
+										seed: sampling.seed + sample,
+										signal: controller.signal,
+									},
+								);
+								sampleResponse = inferenceResult.text;
+								if (sample === 0) {
+									latencyMs = Date.now() - startTime;
+									response = inferenceResult.text;
+									ttftMs = inferenceResult.ttftMs;
+									generationTimeMs = inferenceResult.generationTimeMs;
+									tokensGenerated = inferenceResult.tokensGenerated;
+									tokensPerSecond = inferenceResult.tokensPerSecond;
+								}
+							} catch (err) {
+								// Timeout or other errors: treat this sample as failed and continue.
+								// This ensures partial results aren't thrown away when one sample
+								// times out in a multi-sample run.
+								sampleFailed = true;
+								if (sample === 0) {
+									latencyMs = Date.now() - startTime;
+									response =
+										err instanceof Error
+											? `Error: ${err.message}`
+											: 'Unknown error';
+								}
+							} finally {
+								clearTimeout(timeoutId);
 							}
-							throw err;
-						} finally {
-							clearTimeout(timeoutId);
+
+							let samplePassed: boolean;
+							if (sampleFailed) {
+								// Sample failed due to timeout or error, mark as failed
+								samplePassed = false;
+							} else if (test.match === 'llm-judge' && judgeConfig) {
+								// Use LLM judge for evaluation
+								const criteria = resolveCriteria(test.criteria);
+								const threshold = test.passThreshold ?? 7;
+								// For multi-turn tests, include conversation context in the judge prompt
+								const judgePrompt = test.messages
+									? formatConversationForJudge(test.messages, contextMsg)
+									: (test.prompt as string);
+								const judgeResult = await callJudge(
+									judgePrompt,
+									sampleResponse.trim(),
+									criteria,
+									judgeConfig,
+									threshold,
+									test.acceptable,
+								);
+								samplePassed = judgeResult.pass;
+								if (sample === 0) {
+									judgeScore = judgeResult.score;
+									judgeReasoning = judgeResult.reasoning;
+									judgeCriteriaScores = judgeResult.criteriaScores;
+								}
+							} else {
+								// Use string matching
+								const matchResult = checkPass(
+									test.acceptable || [],
+									sampleResponse.trim(),
+									test.match || 'semantic',
+									test.caseSensitive ?? false,
+								);
+								samplePassed = matchResult.passed;
+							}
+							samplePasses.push(samplePassed);
 						}
 
-						if (test.match === 'llm-judge' && judgeConfig) {
-							// Use LLM judge for evaluation
-							const criteria = resolveCriteria(test.criteria);
-							const threshold = test.passThreshold ?? 7;
-							// For multi-turn tests, include conversation context in the judge prompt
-							const judgePrompt = test.messages
-								? formatConversationForJudge(test.messages, contextMsg)
-								: (test.prompt as string);
-							const judgeResult = await callJudge(
-								judgePrompt,
-								response.trim(),
-								criteria,
-								judgeConfig,
-								threshold,
-								test.acceptable,
-							);
-							passed = judgeResult.pass;
-							judgeScore = judgeResult.score;
-							judgeReasoning = judgeResult.reasoning;
-							judgeCriteriaScores = judgeResult.criteriaScores;
-						} else {
-							// Use string matching
-							const matchResult = checkPass(
-								test.acceptable || [],
-								response.trim(),
-								test.match || 'semantic',
-								test.caseSensitive ?? false,
-							);
-							passed = matchResult.passed;
-						}
+						passed = summarizeSamples(samplePasses).passed;
 
 						if (passed) {
 							categoryResults[test.category].passed++;
@@ -520,6 +712,7 @@ export function BenchmarkCommand({options}: Props) {
 					}
 
 					// Store full result for detailed report
+					const sampleSummary = summarizeSamples(samplePasses);
 					allResults.push({
 						id: test.id,
 						prompt: getTestDisplayPrompt(test),
@@ -536,6 +729,11 @@ export function BenchmarkCommand({options}: Props) {
 						judgeScore,
 						judgeReasoning,
 						judgeCriteriaScores,
+						samples: sampling.samples > 1 ? sampling.samples : undefined,
+						samplePassRate:
+							sampling.samples > 1 ? sampleSummary.passRate : undefined,
+						sampleVariance:
+							sampling.samples > 1 ? sampleSummary.variance : undefined,
 					});
 
 					setCategories({...categoryResults});
@@ -544,12 +742,22 @@ export function BenchmarkCommand({options}: Props) {
 				await stopLlamaServer(serverHandle);
 			}
 
+			if (abortReason && allResults.length === 0) {
+				// Nothing ran, so there is no partial report worth writing.
+				setError(abortReason);
+				setStatus('error');
+				return;
+			}
+			setWarning(abortReason);
+
 			// Calculate final results
 			const totalPassed = Object.values(categoryResults).reduce(
 				(sum, c) => sum + c.passed,
 				0,
 			);
-			const totalTests = tests.length;
+			// Not `tests.length` — an aborted run must score against what it
+			// actually ran, or the pass rate reads as a catastrophic regression.
+			const totalTests = allResults.length;
 
 			// Calculate average latency (excluding errors/timeouts)
 			const validLatencies = allResults
@@ -596,6 +804,12 @@ export function BenchmarkCommand({options}: Props) {
 			const finalResult: BenchmarkResult = {
 				model: modelPath,
 				timestamp: new Date().toISOString(),
+				config: {
+					temperature: sampling.temperature,
+					seed: sampling.seed,
+					samples: sampling.samples,
+				},
+				isBase: Boolean(options.base),
 				summary: {
 					total: totalTests,
 					passed: totalPassed,
@@ -633,6 +847,7 @@ export function BenchmarkCommand({options}: Props) {
 		}
 	}, [
 		options.model,
+		options.base,
 		options.dataset,
 		options.timeout,
 		options.preset,
@@ -644,6 +859,7 @@ export function BenchmarkCommand({options}: Props) {
 		options.maxTokens,
 		options.temperature,
 		options.seed,
+		options.samples,
 	]);
 
 	useEffect(() => {
@@ -665,7 +881,9 @@ export function BenchmarkCommand({options}: Props) {
 		<Box flexDirection="column" padding={1}>
 			<Header title="Benchmark" />
 
-			{status === 'loading' && <Spinner label="Loading benchmark data..." />}
+			{status === 'loading' && (
+				<Spinner label={prepStep ?? 'Loading benchmark data...'} />
+			)}
 
 			{status === 'running' && (
 				<Box flexDirection="column">
@@ -704,8 +922,12 @@ export function BenchmarkCommand({options}: Props) {
 					</Box>
 
 					<Text> </Text>
+					{warning && (
+						<StatusMessage variant="warning">{warning}</StatusMessage>
+					)}
 					<Text>
 						Model: <Text color="cyan">{results.model.split('/').pop()}</Text>
+						{results.isBase && <Text dimColor> (base model, control)</Text>}
 					</Text>
 					<Text>
 						Score:{' '}

@@ -1,4 +1,10 @@
-import {chmodSync, existsSync, readFileSync, writeFileSync} from 'node:fs';
+import {
+	existsSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from 'node:fs';
 import {join} from 'node:path';
 import {createAnthropic} from '@ai-sdk/anthropic';
 import {createGoogleGenerativeAI} from '@ai-sdk/google';
@@ -63,18 +69,28 @@ export function loadJudgeConfig(): JudgeProviderConfig {
  * Write judge.json at 0600 — `apiKey` may hold a literal secret, not just the
  * `${ENV_VAR}` form.
  *
- * The two 0600s below are not duplicates: each covers a case the other cannot.
- * Drop the `mode` and a fresh config is created 0644, receives the key, and is
- * tightened only afterwards — too late for a process that already opened it,
- * since chmod cannot revoke an open descriptor.
+ * Writes a temp file and renames it over the target rather than writing in
+ * place. rename(2) is atomic and carries the mode with it, so the key is never
+ * present in a file that is not already 0600 — including when replacing a 0644
+ * config left by 1.5.0 or earlier — and an interrupted write cannot leave a
+ * truncated judge.json for `loadJudgeConfig` to choke on.
  */
 export function saveJudgeConfig(config: JudgeProviderConfig): void {
 	const path = getJudgeConfigPath();
-	// New file: open(2) honours `mode` only when it creates the file.
-	writeFileSync(path, JSON.stringify(config, null, 2), {mode: 0o600});
-	// Existing file: open(2) ignored `mode` above. Also repairs the 0644
-	// configs written by 1.5.0 and earlier.
-	chmodSync(path, 0o600);
+	const tmp = `${path}.tmp`;
+	// Clear a temp left behind by a process that died between write and
+	// rename. Without this the `wx` below would fail with EEXIST on every
+	// subsequent save.
+	rmSync(tmp, {force: true});
+	// `wx` is O_CREAT|O_EXCL: it guarantees a brand new inode, which is what
+	// makes open(2) honour `mode` — it ignores mode for a file that already
+	// exists. It also means we fail outright rather than write the key into a
+	// file someone else put there.
+	writeFileSync(tmp, JSON.stringify(config, null, 2), {
+		mode: 0o600,
+		flag: 'wx',
+	});
+	renameSync(tmp, path);
 }
 
 /** Resolve criteria names to full JudgeCriteria objects */
