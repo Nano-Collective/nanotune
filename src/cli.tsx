@@ -47,16 +47,21 @@ const dataCommand = program.command('data').description('Manage training data');
 dataCommand
 	.command('add')
 	.description('Interactively add training examples')
-	.action(async () => {
+	.option('-e, --eval', 'Add to the validation set instead of training data')
+	.action(async (options: {eval?: boolean}) => {
 		const {DataAddCommand} = await import('./commands/data/add.js');
-		renderInteractive('data add', <DataAddCommand />);
+		renderInteractive('data add', <DataAddCommand isEval={options.eval} />);
 	});
 
 dataCommand
 	.command('import <file>')
 	.description('Import training data from file (JSONL, CSV, or JSON)')
 	.option('-y, --yes', 'Skip the confirmation prompt (for scripts and CI)')
-	.action(async (file: string, options: {yes?: boolean}) => {
+	.option(
+		'-e, --eval',
+		'Import into the validation set instead of training data',
+	)
+	.action(async (file: string, options: {yes?: boolean; eval?: boolean}) => {
 		const {DataImportCommand} = await import('./commands/data/import.js');
 		// Without a TTY there is no way to answer the prompt, so require --yes.
 		if (!options.yes && !supportsRawMode()) {
@@ -65,7 +70,9 @@ dataCommand
 			process.exitCode = 1;
 			return;
 		}
-		render(<DataImportCommand file={file} yes={options.yes} />);
+		render(
+			<DataImportCommand file={file} yes={options.yes} isEval={options.eval} />,
+		);
 	});
 
 dataCommand
@@ -91,9 +98,10 @@ dataCommand
 	.command('list')
 	.alias('ls')
 	.description('View training data')
-	.action(async () => {
+	.option('-e, --eval', 'View the validation set instead of training data')
+	.action(async (options: {eval?: boolean}) => {
 		const {DataListCommand} = await import('./commands/data/list.js');
-		renderInteractive('data list', <DataListCommand />);
+		renderInteractive('data list', <DataListCommand isEval={options.eval} />);
 	});
 
 dataCommand
@@ -104,15 +112,23 @@ dataCommand
 		'--rewrite-context',
 		"Rewrite each example's context message to match the current config",
 	)
-	.action(async (options: {fix?: boolean; rewriteContext?: boolean}) => {
-		const {DataValidateCommand} = await import('./commands/data/validate.js');
-		render(
-			<DataValidateCommand
-				fix={options.fix}
-				rewriteContext={options.rewriteContext}
-			/>,
-		);
-	});
+	.option('-e, --eval', 'Validate the validation set instead of training data')
+	.action(
+		async (options: {
+			fix?: boolean;
+			rewriteContext?: boolean;
+			eval?: boolean;
+		}) => {
+			const {DataValidateCommand} = await import('./commands/data/validate.js');
+			render(
+				<DataValidateCommand
+					fix={options.fix}
+					rewriteContext={options.rewriteContext}
+					isEval={options.eval}
+				/>,
+			);
+		},
+	);
 
 // Train command
 program
@@ -122,9 +138,12 @@ program
 	.option('--lr <rate>', 'Learning rate')
 	.option('--resume', 'Resume from last checkpoint')
 	.option('--dry-run', 'Validate config without training')
+	.option('--seed <n>', 'Seed for a reproducible train/validation split')
 	.action(async options => {
 		const {TrainCommand} = await import('./commands/train.js');
-		render(<TrainCommand options={options} />);
+		// Ctrl+C is handled inside the command so training can stop gracefully
+		// and flush its checkpoint instead of the app being torn down mid-write.
+		render(<TrainCommand options={options} />, {exitOnCtrlC: false});
 	});
 
 // Export command
@@ -143,10 +162,14 @@ program
 	});
 
 // Benchmark command
-program
+const benchmarkCommand = program
 	.command('benchmark')
 	.description('Run benchmarks against a test dataset')
 	.option('-m, --model <path>', 'Path to model file')
+	.option(
+		'--base',
+		'Benchmark the base (pre-fine-tuning) model as a control, caching the quantized GGUF for reuse',
+	)
 	.option('-d, --dataset <path>', 'Path to benchmark dataset')
 	.option('-t, --timeout <ms>', 'Timeout per test in milliseconds')
 	.option(
@@ -173,6 +196,16 @@ program
 	.action(async options => {
 		const {BenchmarkCommand} = await import('./commands/benchmark.js');
 		render(<BenchmarkCommand options={options} />);
+	});
+
+benchmarkCommand
+	.command('compare [fileA] [fileB]')
+	.description('Compare two saved benchmark runs')
+	.action(async (fileA?: string, fileB?: string) => {
+		const {BenchmarkCompareCommand} = await import(
+			'./commands/benchmark/compare.js'
+		);
+		render(<BenchmarkCompareCommand fileA={fileA} fileB={fileB} />);
 	});
 
 // Chat command
