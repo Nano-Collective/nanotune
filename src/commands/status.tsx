@@ -1,4 +1,4 @@
-import {existsSync, readdirSync, readFileSync, statSync} from 'node:fs';
+import {existsSync, readdirSync, statSync} from 'node:fs';
 import {join} from 'node:path';
 import {StatusMessage} from '@inkjs/ui';
 import {Box, Text, useApp} from 'ink';
@@ -11,10 +11,11 @@ import {
 } from '../components/index.js';
 import {
 	configExists,
+	findLatestBenchmark,
 	getAdaptersDir,
-	getBenchmarksDir,
 	getDataDir,
 	getModelsDir,
+	loadBenchmark,
 	loadConfig,
 } from '../lib/config.js';
 import {countExamples} from '../lib/data.js';
@@ -71,10 +72,10 @@ export function StatusCommand() {
 	const dataDir = getDataDir();
 	const adaptersDir = getAdaptersDir();
 	const modelsDir = getModelsDir();
-	const benchmarksDir = getBenchmarksDir();
 
 	// Training data info
 	const exampleCount = countExamples();
+	const validCount = countExamples(true);
 	const trainFile = join(dataDir, 'train.jsonl');
 	const trainModified = existsSync(trainFile)
 		? formatRelativeTime(statSync(trainFile).mtime)
@@ -105,22 +106,12 @@ export function StatusCommand() {
 
 	// Latest benchmark
 	let latestBenchmark: BenchmarkResult | null = null;
-	if (existsSync(benchmarksDir)) {
-		const benchmarkFiles = readdirSync(benchmarksDir)
-			.filter(f => f.endsWith('.json') && f.startsWith('benchmark'))
-			.sort()
-			.reverse();
-
-		if (benchmarkFiles.length > 0) {
-			try {
-				const content = readFileSync(
-					join(benchmarksDir, benchmarkFiles[0]),
-					'utf-8',
-				);
-				latestBenchmark = JSON.parse(content);
-			} catch {
-				// Ignore parse errors
-			}
+	const latestBenchmarkPath = findLatestBenchmark();
+	if (latestBenchmarkPath) {
+		try {
+			latestBenchmark = loadBenchmark(latestBenchmarkPath);
+		} catch {
+			// Ignore parse errors
 		}
 	}
 
@@ -147,7 +138,10 @@ export function StatusCommand() {
 				<Text> </Text>
 				<Text bold>Training Data:</Text>
 				<Text>
-					{'  '}Examples: <Text color="cyan">{exampleCount}</Text>
+					{'  '}Training Examples: <Text color="cyan">{exampleCount}</Text>
+				</Text>
+				<Text>
+					{'  '}Validation Examples: <Text color="cyan">{validCount}</Text>
 				</Text>
 				{trainModified && (
 					<Text dimColor>
@@ -199,6 +193,9 @@ export function StatusCommand() {
 							{latestBenchmark.summary.passed}/{latestBenchmark.summary.total} (
 							{Math.round(latestBenchmark.summary.passRate * 100)}%)
 						</Text>
+						{latestBenchmark.isBase && (
+							<Text dimColor> (base model, control)</Text>
+						)}
 						<Text dimColor>
 							{' '}
 							- {new Date(latestBenchmark.timestamp).toLocaleDateString()}

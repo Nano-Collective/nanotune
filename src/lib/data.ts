@@ -174,17 +174,20 @@ export interface ValidationResult {
 
 export function validateTrainingData(
 	contextMessage: ChatMessage,
+	isEval = false,
 ): ValidationResult {
 	const errors: string[] = [];
 	const warnings: string[] = [];
-	const examples = loadTrainingData();
+	const examples = loadTrainingData(isEval);
 
 	if (examples.length === 0) {
-		errors.push('No training data found');
+		errors.push(isEval ? 'No validation data found' : 'No training data found');
 		return {valid: false, errors, warnings};
 	}
 
-	if (examples.length < 50) {
+	// A validation set is a slice of the training data, so the 50-example floor
+	// does not apply to it - warning about it would be noise on a correct split.
+	if (!isEval && examples.length < 50) {
 		warnings.push(
 			`Only ${examples.length} examples found. Recommend at least 50 for good results.`,
 		);
@@ -329,7 +332,10 @@ export function fixContextMessages(
 		if (!first || first.role === 'user' || first.role === 'assistant') {
 			return ex;
 		}
-		if (first.role === contextMessage.role && first.content === contextMessage.content) {
+		if (
+			first.role === contextMessage.role &&
+			first.content === contextMessage.content
+		) {
 			return ex;
 		}
 		fixedCount++;
@@ -444,6 +450,7 @@ export function parseCSV(content: string): string[][] {
 export function importFromCSV(
 	filePath: string,
 	contextMessage: ChatMessage,
+	isEval = false,
 ): ImportResult {
 	const errors: string[] = [];
 	let imported = 0;
@@ -482,11 +489,14 @@ export function importFromCSV(
 			continue;
 		}
 
-		appendToTrainingData({
-			contextMessage,
-			userInput: input.trim(),
-			assistantOutput: output.trim(),
-		});
+		appendToTrainingData(
+			{
+				contextMessage,
+				userInput: input.trim(),
+				assistantOutput: output.trim(),
+			},
+			isEval,
+		);
 		imported++;
 	}
 
@@ -496,6 +506,7 @@ export function importFromCSV(
 export function importFromJSONL(
 	filePath: string,
 	contextMessage: ChatMessage,
+	isEval = false,
 ): ImportResult {
 	const errors: string[] = [];
 	let imported = 0;
@@ -519,7 +530,7 @@ export function importFromJSONL(
 					);
 
 					if (userMsg?.content && assistantMsg?.content) {
-						appendTrainingExample({messages: data.messages}, false);
+						appendTrainingExample({messages: data.messages}, isEval);
 						imported++;
 						continue;
 					}
@@ -532,11 +543,14 @@ export function importFromJSONL(
 
 			// Simple {input, output} format — wrap with the project context.
 			if (data.input && data.output) {
-				appendToTrainingData({
-					contextMessage,
-					userInput: data.input,
-					assistantOutput: data.output,
-				});
+				appendToTrainingData(
+					{
+						contextMessage,
+						userInput: data.input,
+						assistantOutput: data.output,
+					},
+					isEval,
+				);
 				imported++;
 				continue;
 			}
@@ -555,6 +569,7 @@ export function importFromJSONL(
 export function importFromJSON(
 	filePath: string,
 	contextMessage: ChatMessage,
+	isEval = false,
 ): ImportResult {
 	const errors: string[] = [];
 	let imported = 0;
@@ -578,7 +593,7 @@ export function importFromJSON(
 			);
 
 			if (userMsg?.content && assistantMsg?.content) {
-				appendTrainingExample({messages: item.messages}, false);
+				appendTrainingExample({messages: item.messages}, isEval);
 				imported++;
 				continue;
 			}
@@ -589,11 +604,14 @@ export function importFromJSON(
 		}
 
 		if (item.input && item.output) {
-			appendToTrainingData({
-				contextMessage,
-				userInput: item.input,
-				assistantOutput: item.output,
-			});
+			appendToTrainingData(
+				{
+					contextMessage,
+					userInput: item.input,
+					assistantOutput: item.output,
+				},
+				isEval,
+			);
 			imported++;
 			continue;
 		}
@@ -608,6 +626,7 @@ export function importFromJSON(
 export function importData(
 	filePath: string,
 	contextMessage: ChatMessage,
+	isEval = false,
 ): ImportResult {
 	if (!existsSync(filePath)) {
 		return {imported: 0, skipped: 0, errors: ['File not found']};
@@ -617,11 +636,11 @@ export function importData(
 
 	switch (ext) {
 		case 'csv':
-			return importFromCSV(filePath, contextMessage);
+			return importFromCSV(filePath, contextMessage, isEval);
 		case 'jsonl':
-			return importFromJSONL(filePath, contextMessage);
+			return importFromJSONL(filePath, contextMessage, isEval);
 		case 'json':
-			return importFromJSON(filePath, contextMessage);
+			return importFromJSON(filePath, contextMessage, isEval);
 		default:
 			return {
 				imported: 0,
@@ -682,7 +701,9 @@ export function exportToCSV(filePath: string, isEval = false): ExportResult {
 		const assistant = ex.messages.find(m => m.role === 'assistant');
 		if (!user?.content || !assistant?.content) {
 			skipped++;
-			errors.push(`Example ${i + 1}: missing user or assistant message, skipped`);
+			errors.push(
+				`Example ${i + 1}: missing user or assistant message, skipped`,
+			);
 			return;
 		}
 
@@ -779,14 +800,19 @@ export function splitTrainValidation(
 export function ensureValidationSet(seed?: number): {
 	trainCount: number;
 	validCount: number;
+	didSplit: boolean;
 } {
 	const validCount = countExamples(true);
 	const trainCount = countExamples(false);
 
 	if (validCount === 0 && trainCount > 0) {
-		// No validation set - create one by splitting
-		return splitTrainValidation(0.1, seed);
+		// No validation set - create one by splitting.
+		const result = splitTrainValidation(0.1, seed);
+		// A single example cannot be split, so valid.jsonl stays empty and the
+		// next call lands here again. Reporting didSplit for that no-op would
+		// repeat "Split 1 examples into 1 train / 0 validation." on every run.
+		return {...result, didSplit: result.validCount > 0};
 	}
 
-	return {trainCount, validCount};
+	return {trainCount, validCount, didSplit: false};
 }
