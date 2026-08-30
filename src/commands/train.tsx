@@ -27,7 +27,40 @@ import {
 	shouldTreatAsStop,
 } from '../lib/mlx.js';
 import {assertSupportedPlatform} from '../lib/platform.js';
-import type {TrainingProgress} from '../types/index.js';
+import {TrainingConfigSchema, type TrainingProgress} from '../types/index.js';
+
+// Maps TrainingConfigSchema field names to the CLI flag that overrides them,
+// so schema validation errors can point at the flag the user actually typed.
+// `seed` is the mlx_lm training seed, overridden by --train-seed; the bare
+// --seed flag is Nanotune's train/validation split seed and is handled
+// separately below.
+const TRAINING_FLAG_NAMES: Record<string, string> = {
+	iterations: '-i, --iterations',
+	learningRate: '--lr',
+	batchSize: '--batch-size',
+	numLayers: '--num-layers',
+	stepsPerEval: '--steps-per-eval',
+	saveEvery: '--save-every',
+	fineTuneType: '--fine-tune-type',
+	loraRank: '--lora-rank',
+	loraAlpha: '--lora-alpha',
+	loraDropout: '--lora-dropout',
+	maxSeqLength: '--max-seq-length',
+	valBatches: '--val-batches',
+	seed: '--train-seed',
+};
+
+// Absent flag stays absent so the config value wins. Anything unparseable
+// becomes NaN, which TrainingConfigSchema rejects with the field name attached.
+// Number() rather than parseInt/parseFloat so "8abc" fails instead of becoming
+// 8; a blank value is screened out first because Number('') is 0.
+function numericOverride(raw?: string): number | undefined {
+	if (raw === undefined) {
+		return undefined;
+	}
+	const trimmed = raw.trim();
+	return trimmed === '' ? Number.NaN : Number(trimmed);
+}
 
 interface Props {
 	options: {
@@ -37,6 +70,14 @@ interface Props {
 		numLayers?: string;
 		stepsPerEval?: string;
 		saveEvery?: string;
+		fineTuneType?: string;
+		loraRank?: string;
+		loraAlpha?: string;
+		loraDropout?: string;
+		maxSeqLength?: string;
+		gradCheckpoint?: boolean;
+		valBatches?: string;
+		trainSeed?: string;
 		resume?: boolean;
 		dryRun?: boolean;
 		seed?: string;
@@ -70,6 +111,10 @@ export function TrainCommand({options}: Props) {
 		didSplit: boolean;
 	} | null>(null);
 	const [seedIgnored, setSeedIgnored] = useState(false);
+	// The checkpoint interval the run actually used. `--save-every` overrides
+	// config.json, so the stop/stopped views must report against this rather
+	// than re-reading config.training.saveEvery and naming the wrong iteration.
+	const [saveEvery, setSaveEvery] = useState<number | null>(null);
 	const abortRef = useRef<AbortController | null>(null);
 
 	// Ctrl+C is ours to handle here (the command renders with
@@ -156,6 +201,56 @@ export function TrainCommand({options}: Props) {
 				}
 			}
 
+			// Load config
+			const config = loadConfig();
+
+			// Override with CLI options. Number() rather than parseInt/parseFloat
+			// so trailing garbage ("8abc") becomes NaN and gets caught below
+			// instead of being silently truncated to a plausible-looking value.
+			const overrides = {
+				iterations: numericOverride(options.iterations),
+				learningRate: numericOverride(options.lr),
+				batchSize: numericOverride(options.batchSize),
+				numLayers: numericOverride(options.numLayers),
+				stepsPerEval: numericOverride(options.stepsPerEval),
+				saveEvery: numericOverride(options.saveEvery),
+				fineTuneType: options.fineTuneType,
+				loraRank: numericOverride(options.loraRank),
+				loraAlpha: numericOverride(options.loraAlpha),
+				loraDropout: numericOverride(options.loraDropout),
+				maxSeqLength: numericOverride(options.maxSeqLength),
+				gradCheckpoint: options.gradCheckpoint,
+				valBatches: numericOverride(options.valBatches),
+				seed: numericOverride(options.trainSeed),
+			};
+
+			// Fail fast, before the slow MLX install and data-validation steps,
+			// rather than letting a bad value reach mlx_lm as NaN or an
+			// out-of-range number. TrainingConfigSchema is the single source of
+			// truth for valid ranges and enum values (also enforced on
+			// config.json itself via loadConfig() above).
+			const validation = TrainingConfigSchema.safeParse({
+				...config.training,
+				...Object.fromEntries(
+					Object.entries(overrides).filter(([, value]) => value !== undefined),
+				),
+			});
+			if (!validation.success) {
+				const issue = validation.error.issues[0];
+				const field = String(issue.path[0]);
+				// Only blame a flag when the user actually passed one; otherwise
+				// the bad value came from config.json and saying so is the fix.
+				const source =
+					overrides[field as keyof typeof overrides] === undefined
+						? `config.training.${field}`
+						: (TRAINING_FLAG_NAMES[field] ?? field);
+				setError(`Invalid value for ${source}: ${issue.message}`);
+				setStatus('error');
+				return;
+			}
+			const training = validation.data;
+			setSaveEvery(training.saveEvery);
+
 			// Check MLX
 			setStatus('checking');
 			const hasMLX = await checkMLXInstalled();
@@ -173,47 +268,6 @@ export function TrainCommand({options}: Props) {
 				);
 				setStatus('error');
 				return;
-			}
-
-			// Load config
-			const config = loadConfig();
-
-			// Override with CLI options
-			const iterations = options.iterations
-				? Number.parseInt(options.iterations, 10)
-				: config.training.iterations;
-			const learningRate = options.lr
-				? Number.parseFloat(options.lr)
-				: config.training.learningRate;
-			const batchSize = options.batchSize
-				? Number.parseInt(options.batchSize, 10)
-				: config.training.batchSize;
-			const numLayers = options.numLayers
-				? Number.parseInt(options.numLayers, 10)
-				: config.training.numLayers;
-			const stepsPerEval = options.stepsPerEval
-				? Number.parseInt(options.stepsPerEval, 10)
-				: config.training.stepsPerEval;
-			const saveEvery = options.saveEvery
-				? Number.parseInt(options.saveEvery, 10)
-				: config.training.saveEvery;
-
-			// Fail fast on unparseable numeric flags rather than letting NaN
-			// reach mlx_lm as a literal "NaN" argument with an opaque error.
-			const numericOverrides: Array<[flag: string, value: number]> = [
-				['-i, --iterations', iterations],
-				['--lr', learningRate],
-				['--batch-size', batchSize],
-				['--num-layers', numLayers],
-				['--steps-per-eval', stepsPerEval],
-				['--save-every', saveEvery],
-			];
-			for (const [flag, value] of numericOverrides) {
-				if (!Number.isFinite(value)) {
-					setError(`Invalid value for ${flag}: must be a number.`);
-					setStatus('error');
-					return;
-				}
 			}
 
 			// Dry run check. This returns before the split so that a command
@@ -265,16 +319,15 @@ export function TrainCommand({options}: Props) {
 			setStatus('training');
 			const startTime = Date.now();
 
+			// Spread the parsed schema output rather than the raw locals: these
+			// are the values validation actually approved, and they arrive
+			// correctly typed, so mlx_lm cannot receive something the checks
+			// above never saw.
 			const trainingOptions: MLXTrainingOptions = {
+				...training,
 				model: config.baseModel,
 				dataPath: getDataDir(),
 				adapterPath: getAdaptersDir(),
-				iterations,
-				learningRate,
-				batchSize,
-				numLayers,
-				stepsPerEval,
-				saveEvery,
 				resume: options.resume,
 				signal: controller.signal,
 			};
@@ -299,7 +352,7 @@ export function TrainCommand({options}: Props) {
 
 			setStatus(controller.signal.aborted ? 'stopped' : 'done');
 		} catch (err) {
-			if (shouldTreatAsStop(abortRef.current?.signal, err)) {
+			if (shouldTreatAsStop(abortRef.current?.signal)) {
 				setStatus('stopped');
 				return;
 			}
@@ -313,6 +366,14 @@ export function TrainCommand({options}: Props) {
 		options.numLayers,
 		options.stepsPerEval,
 		options.saveEvery,
+		options.fineTuneType,
+		options.loraRank,
+		options.loraAlpha,
+		options.loraDropout,
+		options.maxSeqLength,
+		options.gradCheckpoint,
+		options.valBatches,
+		options.trainSeed,
 		options.resume,
 		options.dryRun,
 		options.seed,
@@ -441,9 +502,9 @@ export function TrainCommand({options}: Props) {
 			{status === 'stopping' && progress && (
 				<Box flexDirection="column">
 					{(() => {
-						const saveEvery = config.training.saveEvery;
+						const interval = saveEvery ?? config.training.saveEvery;
 						const lastSaved =
-							Math.floor(progress.iteration / saveEvery) * saveEvery;
+							Math.floor(progress.iteration / interval) * interval;
 						return (
 							<Spinner
 								label={
@@ -464,9 +525,9 @@ export function TrainCommand({options}: Props) {
 					<Text> </Text>
 					{progress &&
 						(() => {
-							const saveEvery = config.training.saveEvery;
+							const interval = saveEvery ?? config.training.saveEvery;
 							const lastSaved =
-								Math.floor(progress.iteration / saveEvery) * saveEvery;
+								Math.floor(progress.iteration / interval) * interval;
 							return lastSaved > 0 ? (
 								<>
 									<Text>
@@ -481,7 +542,7 @@ export function TrainCommand({options}: Props) {
 								</>
 							) : (
 								<Text>
-									No checkpoint saved (stopped before iteration {saveEvery})
+									No checkpoint saved (stopped before iteration {interval})
 								</Text>
 							);
 						})()}

@@ -303,6 +303,32 @@ export function BenchmarkCommand({options}: Props) {
 				return;
 			}
 
+			// Resolve the sampling flags before anything expensive. `--base` can
+			// spend minutes downloading and quantizing a base model, and failing
+			// a typo'd `--samples` only after that has finished wastes the whole
+			// run on something we could see immediately.
+			const sampling = resolveSamplingOptions({
+				temperature: options.temperature,
+				seed: options.seed,
+				samples: options.samples,
+			});
+
+			// Reject a mistyped flag rather than running a suite under settings
+			// the user didn't ask for.
+			if (sampling.errors.length > 0) {
+				setError(sampling.errors[0]);
+				setStatus('error');
+				return;
+			}
+
+			if (sampling.samples > 1 && sampling.temperature === 0) {
+				setError(
+					'Cannot use --samples with temperature 0 (greedy decoding produces identical outputs). Use --temperature 0.1 or higher for sampling.',
+				);
+				setStatus('error');
+				return;
+			}
+
 			// Find model
 			let modelPath: string | null;
 			if (options.base) {
@@ -444,22 +470,6 @@ export function BenchmarkCommand({options}: Props) {
 					setStatus('error');
 					return;
 				}
-			}
-
-			// Build inference options from CLI flags or preset
-			const sampling = resolveSamplingOptions({
-				temperature: options.temperature,
-				seed: options.seed,
-				samples: options.samples,
-			});
-
-			// Validate sampling configuration
-			if (sampling.samples > 1 && sampling.temperature === 0) {
-				setError(
-					'Cannot use --samples with temperature 0 (greedy decoding produces identical outputs). Use --temperature 0.1 or higher for sampling.',
-				);
-				setStatus('error');
-				return;
 			}
 
 			let serverOptions: ServerOptions;

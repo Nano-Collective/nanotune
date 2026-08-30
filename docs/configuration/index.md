@@ -30,7 +30,15 @@ Nanotune's project configuration is stored in `.nanotune/config.json`. This file
     "batchSize": 4,
     "numLayers": 16,
     "stepsPerEval": 50,
-    "saveEvery": 50
+    "saveEvery": 50,
+    "fineTuneType": "lora",
+    "loraRank": 8,
+    "loraAlpha": 20,
+    "loraDropout": 0,
+    "maxSeqLength": 2048,
+    "gradCheckpoint": false,
+    "valBatches": 25,
+    "seed": 0
   },
   "export": {
     "quantization": "q4_k_m",
@@ -64,6 +72,14 @@ Nanotune's project configuration is stored in `.nanotune/config.json`. This file
 | `numLayers` | number | 16 | Number of LoRA layers to train |
 | `stepsPerEval` | number | 50 | Run validation every N steps |
 | `saveEvery` | number | 50 | Save a checkpoint every N steps |
+| `fineTuneType` | string | `lora` | Fine-tuning type: `lora`, `dora`, or `full` |
+| `loraRank` | number | 8 | LoRA rank |
+| `loraAlpha` | number | 20 | LoRA alpha (scaling factor) |
+| `loraDropout` | number | 0 | LoRA dropout |
+| `maxSeqLength` | number | 2048 | Maximum sequence length |
+| `gradCheckpoint` | boolean | false | Enable gradient checkpointing to reduce memory use |
+| `valBatches` | number | 25 | Number of validation batches |
+| `seed` | number | 0 | Random seed for mlx_lm's training run (override with `--train-seed`, not `--seed`, which seeds the train/validation split) |
 
 ### Export
 

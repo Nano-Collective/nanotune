@@ -156,22 +156,50 @@ test("resolveSamplingOptions honours an explicit seed, including zero", (t) => {
   t.is(resolveSamplingOptions({ seed: "0" }).seed, 0);
 });
 
-test("resolveSamplingOptions falls back to defaults for unparseable values", (t) => {
+test("resolveSamplingOptions reports an error for each unparseable value", (t) => {
+  // Silently defaulting would run a greedy suite under a --temperature the
+  // user believed had enabled sampling, and record settings they never typed.
   const resolved = resolveSamplingOptions({
     temperature: "hot",
     seed: "later",
     samples: "many",
   });
 
-  t.is(resolved.temperature, DEFAULT_BENCHMARK_TEMPERATURE);
-  t.is(resolved.seed, DEFAULT_BENCHMARK_SEED);
-  t.is(resolved.samples, 1);
+  t.is(resolved.errors.length, 3);
+  t.true(resolved.errors[0].includes("--temperature"));
+  t.true(resolved.errors[1].includes("--seed"));
+  t.true(resolved.errors[2].includes("--samples"));
+});
+
+test("resolveSamplingOptions rejects trailing garbage rather than truncating it", (t) => {
+  t.is(resolveSamplingOptions({ samples: "5abc" }).errors.length, 1);
+  t.is(resolveSamplingOptions({ seed: "42abc" }).errors.length, 1);
+  t.is(resolveSamplingOptions({ temperature: "0.8xyz" }).errors.length, 1);
+});
+
+test("resolveSamplingOptions rejects a blank value", (t) => {
+  t.is(resolveSamplingOptions({ seed: "   " }).errors.length, 1);
 });
 
 test("resolveSamplingOptions parses samples and rejects non-positive counts", (t) => {
   t.is(resolveSamplingOptions({ samples: "5" }).samples, 5);
-  t.is(resolveSamplingOptions({ samples: "0" }).samples, 1);
-  t.is(resolveSamplingOptions({ samples: "-3" }).samples, 1);
+  t.is(resolveSamplingOptions({ samples: "5" }).errors.length, 0);
+  t.is(resolveSamplingOptions({ samples: "0" }).errors.length, 1);
+  t.is(resolveSamplingOptions({ samples: "-3" }).errors.length, 1);
+  t.is(resolveSamplingOptions({ samples: "2.5" }).errors.length, 1);
+});
+
+test("resolveSamplingOptions rejects a negative temperature but allows zero", (t) => {
+  t.is(resolveSamplingOptions({ temperature: "-1" }).errors.length, 1);
+  t.is(resolveSamplingOptions({ temperature: "0" }).errors.length, 0);
+});
+
+test("resolveSamplingOptions rejects a fractional seed", (t) => {
+  t.is(resolveSamplingOptions({ seed: "3.7" }).errors.length, 1);
+});
+
+test("resolveSamplingOptions reports no errors when every flag is absent", (t) => {
+  t.deepEqual(resolveSamplingOptions({}).errors, []);
 });
 
 // ── summarizeSamples ────────────────────────────────────────────────

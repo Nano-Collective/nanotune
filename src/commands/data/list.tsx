@@ -56,8 +56,8 @@ export function DataListCommand({isEval = false}: Props) {
 					assistantOutput,
 				),
 			};
-			updateTrainingExample(editIndex, updated);
-			setData(loadTrainingData());
+			updateTrainingExample(editIndex, updated, isEval);
+			setData(loadTrainingData(isEval));
 			setExpandedIndex(null);
 			setEditIndex(null);
 			setEditError(null);
@@ -69,10 +69,13 @@ export function DataListCommand({isEval = false}: Props) {
 	};
 
 	const handleEditInputSubmit = (value: string) => {
-		if (value.trim()) {
-			setEditInput(value.trim());
-			setEditField('output');
+		if (!value.trim()) {
+			setEditError('Input cannot be empty');
+			return;
 		}
+		setEditError(null);
+		setEditInput(value.trim());
+		setEditField('output');
 	};
 
 	const handleEditOutputSubmit = (value: string) => {

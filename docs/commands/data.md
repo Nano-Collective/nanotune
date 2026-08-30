@@ -84,6 +84,7 @@ Export training data to a file. Uses the same formats as `data import`, selected
 | Flag | Description |
 |------|-------------|
 | `-y, --yes` | Skip the overwrite confirmation prompt |
+| `-e, --eval` | Export the validation set (`valid.jsonl`) instead of training data |
 
 JSONL and JSON exports preserve every example exactly, including multi-turn conversations and per-example context messages — feeding the output back into `data import` reproduces the original data. **CSV has no way to represent multi-turn examples**, so any example with more than one turn is skipped (not truncated) during a CSV export, and reported in the summary.
 
@@ -91,6 +92,7 @@ If the target file already exists, you're asked to confirm before it's overwritt
 
 ```bash
 nanotune data export backup.jsonl --yes
+nanotune data export valid-backup.jsonl --eval --yes
 ```
 
 ## nanotune data list
