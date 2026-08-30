@@ -74,7 +74,7 @@
 	"dependencies": {
 		"@ai-sdk/anthropic": "^4.0.1",
 		"@ai-sdk/google": "^4.0.8",
-		"@ai-sdk/openai-compatible": "^2.0.30",
+		"@ai-sdk/openai-compatible": "^3.0.35",
 		"@inkjs/ui": "^2.0.0",
 		"ai": "^7.0.15",
 		"commander": "^15.0.0",
