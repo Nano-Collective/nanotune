@@ -1,11 +1,4 @@
-import {
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	renameSync,
-	rmSync,
-	writeFileSync,
-} from 'node:fs';
+import {existsSync, mkdirSync, readFileSync, renameSync, rmSync} from 'node:fs';
 import {dirname, join} from 'node:path';
 import {Spinner, StatusMessage} from '@inkjs/ui';
 import {Box, Text, useApp} from 'ink';
@@ -28,10 +21,11 @@ import {
 } from '../lib/benchmark-utils.js';
 import {
 	configExists,
+	ensureBenchmarksDir,
 	findLatestGGUF,
-	getBenchmarksDir,
 	loadConfig,
 	resolveContextMessage,
+	writeFileAtomic,
 } from '../lib/config.js';
 import {
 	callJudge,
@@ -299,7 +293,7 @@ export function BenchmarkCommand({options}: Props) {
 			} catch {
 				// Minimal config (e.g., external benchmark runner) — no context message needed
 			}
-			const benchmarksDir = getBenchmarksDir();
+			const benchmarksDir = ensureBenchmarksDir();
 
 			if (options.model && options.base) {
 				setError(
@@ -461,7 +455,7 @@ export function BenchmarkCommand({options}: Props) {
 						match: 'startsWith',
 					},
 				];
-				writeFileSync(datasetPath, JSON.stringify(tests, null, 2));
+				writeFileAtomic(datasetPath, JSON.stringify(tests, null, 2));
 				setError(
 					`No benchmark dataset found. Created sample at ${datasetPath}`,
 				);
@@ -841,13 +835,13 @@ export function BenchmarkCommand({options}: Props) {
 				.toISOString()
 				.replace(/[:.]/g, '-')}.json`;
 			const resultPath = join(benchmarksDir, resultFilename);
-			writeFileSync(resultPath, JSON.stringify(finalResult, null, 2));
+			writeFileAtomic(resultPath, JSON.stringify(finalResult, null, 2));
 
 			// Save human-readable markdown report
 			const reportFilename = resultFilename.replace('.json', '.md');
 			const reportPath = join(benchmarksDir, reportFilename);
 			const report = generateMarkdownReport(finalResult, contextMsg);
-			writeFileSync(reportPath, report);
+			writeFileAtomic(reportPath, report);
 
 			setResults(finalResult);
 			setStatus('done');

@@ -3,6 +3,8 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	renameSync,
+	rmSync,
 	statSync,
 	writeFileSync,
 } from 'node:fs';
@@ -40,6 +42,20 @@ export function getModelsDir(): string {
 
 export function getBenchmarksDir(): string {
 	return join(getProjectDir(), 'benchmarks');
+}
+
+/**
+ * Return the project's benchmarks directory, creating it if it is missing.
+ * `.nanotune/.gitignore` lists `benchmarks/`, so `initializeProjectDirs` during
+ * `nanotune init` is the only thing that ever creates it — a project obtained
+ * by cloning has no benchmarks directory at all, and every write under it dies
+ * with a bare ENOENT. Use this rather than `getBenchmarksDir` anywhere you are
+ * about to write.
+ */
+export function ensureBenchmarksDir(): string {
+	const dir = getBenchmarksDir();
+	mkdirSync(dir, {recursive: true});
+	return dir;
 }
 
 export function getChatsDir(): string {
@@ -189,6 +205,24 @@ export function saveConfig(config: Config): void {
 	}
 	const path = getConfigPath();
 	writeFileSync(path, JSON.stringify(config, null, 2));
+}
+
+/**
+ * Write `contents` to `path` via a sibling temp file renamed into place.
+ * rename(2) is atomic, so an interrupted or failed write leaves either the
+ * previous file or the complete new one — never a truncated file that a later
+ * read mistakes for a whole one. The temp carries the pid so concurrent runs
+ * cannot scribble over each other's, and the `finally` clears it on the paths
+ * where the rename never happened.
+ */
+export function writeFileAtomic(path: string, contents: string): void {
+	const tmp = `${path}.tmp-${process.pid}`;
+	try {
+		writeFileSync(tmp, contents);
+		renameSync(tmp, path);
+	} finally {
+		rmSync(tmp, {force: true});
+	}
 }
 
 const GITIGNORE_CONTENTS = `# Nanotune project artifacts
