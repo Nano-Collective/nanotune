@@ -305,9 +305,9 @@ program
 		// Only require --yes when there's actually a confirmation to answer —
 		// "nothing to clean" and "not a project" are safe to just report.
 		if (!options.yes && !supportsRawMode()) {
-			const {configExists, getFusedModelDir} = await import('./lib/config.js');
-			const {existsSync} = await import('node:fs');
-			if (configExists() && existsSync(getFusedModelDir())) {
+			const {configExists, getFusedModelDir, hasUsableFusedModel} =
+				await import('./lib/config.js');
+			if (configExists() && hasUsableFusedModel(getFusedModelDir())) {
 				console.error(interactiveRequiredMessage('clean'));
 				console.error('Pass --yes to clean without confirmation.');
 				process.exitCode = 1;

@@ -2,6 +2,7 @@ import {existsSync, readdirSync, statSync} from 'node:fs';
 import {join} from 'node:path';
 import {StatusMessage} from '@inkjs/ui';
 import {Box, Text, useApp} from 'ink';
+import {useMemo} from 'react';
 import {
 	ExitHint,
 	Header,
@@ -42,6 +43,12 @@ function formatRelativeTime(date: Date): string {
 export function StatusCommand() {
 	const {exit} = useApp();
 	const hasConfig = configExists();
+	const fusedDir = getFusedModelDir();
+	const fusedExists = hasConfig && existsSync(fusedDir);
+	const fusedDirSize = useMemo(
+		() => (fusedExists ? getDirectorySize(fusedDir) : 0),
+		[fusedExists, fusedDir],
+	);
 
 	useKeyInput((input, key) => {
 		if (key.escape || key.return || input === 'q') {
@@ -100,11 +107,7 @@ export function StatusCommand() {
 		: [];
 
 	// Fused model cache
-	const fusedDir = getFusedModelDir();
-	const fusedExists = existsSync(fusedDir);
-	const fusedSize = fusedExists
-		? formatFileSize(getDirectorySize(fusedDir))
-		: null;
+	const fusedSize = fusedExists ? formatFileSize(fusedDirSize) : null;
 
 	// Latest benchmark
 	let latestBenchmark: BenchmarkResult | null = null;

@@ -18,6 +18,7 @@ import {
 	getDirectorySize,
 	getFusedModelDir,
 	getModelsDir,
+	hasUsableFusedModel,
 	loadConfig,
 } from '../lib/config.js';
 import {
@@ -125,7 +126,7 @@ export function ExportCommand({options}: Props) {
 			// model on disk (e.g. after `nanotune clean`).
 			const skipFuseError = skipFuseValidationError(
 				options.skipFuse,
-				existsSync(fusedModelPath),
+				hasUsableFusedModel(fusedModelPath),
 			);
 			if (skipFuseError) {
 				setError(skipFuseError);
@@ -199,7 +200,7 @@ export function ExportCommand({options}: Props) {
 
 			// The fused model cache is kept for faster re-exports via
 			// --skip-fuse; surface its size so it isn't a silent disk cost.
-			if (existsSync(fusedModelPath)) {
+			if (hasUsableFusedModel(fusedModelPath)) {
 				setFusedCacheInfo(formatFileSize(getDirectorySize(fusedModelPath)));
 			}
 

@@ -69,6 +69,14 @@ function writeFusedModel() {
   writeFileSync(join(fusedDir, "model.safetensors"), "x".repeat(1024));
 }
 
+// Simulates an export interrupted before mlx_lm.fuse finished writing
+// weights: the directory exists but has no .safetensors file yet.
+function writeIncompleteFusedModel() {
+  const fusedDir = join(NANOTUNE_DIR, "models", "fused");
+  mkdirSync(fusedDir, { recursive: true });
+  writeFileSync(join(fusedDir, "config.json"), "{}");
+}
+
 function writeEvalExamples(lines: object[]) {
   writeFileSync(
     join(DATA_DIR, "valid.jsonl"),
@@ -348,6 +356,105 @@ test.serial("CleanCommand without yes waits for confirmation before deleting", a
     t.false(output.includes("Removed fused model cache"));
     t.true(existsSync(fusedDir));
   } finally {
+    teardown();
+  }
+});
+
+test.serial("CleanCommand treats a leftover incomplete fused/ as nothing to clean", async (t) => {
+  try {
+    setupProject();
+    writeIncompleteFusedModel();
+    const fusedDir = getFusedModelDir();
+    const output = await renderCommand(
+      <CleanCommand options={{}} />,
+      "Nothing to clean",
+    );
+    t.true(output.includes("Nothing to clean"));
+    t.false(output.includes("Remove it?"));
+    // The (non-safetensors) leftover directory is left alone, not deleted.
+    t.true(existsSync(fusedDir));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("CleanCommand deletes the cache on a confirming 'y' keypress", async (t) => {
+  const originalIsTTY = process.stdin.isTTY;
+  try {
+    process.stdin.isTTY = true as true;
+    setupProject();
+    writeFusedModel();
+    const fusedDir = getFusedModelDir();
+    const instance = render(<CleanCommand options={{}} />);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    t.true(instance.frames.join("\n").includes("Remove it?"));
+
+    instance.stdin.write("y");
+    const timeout = 2000;
+    const pollInterval = 10;
+    const startTime = Date.now();
+    while (Date.now() - startTime < timeout) {
+      if (instance.frames.join("\n").includes("Removed fused model cache")) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollInterval));
+    }
+    const output = instance.frames.join("\n");
+    instance.unmount();
+
+    t.true(output.includes("Removed fused model cache"));
+    t.true(output.includes("Freed:"));
+    t.false(existsSync(fusedDir));
+  } finally {
+    process.stdin.isTTY = originalIsTTY;
+    teardown();
+  }
+});
+
+test.serial("CleanCommand leaves the cache in place on an 'n' keypress", async (t) => {
+  const originalIsTTY = process.stdin.isTTY;
+  try {
+    process.stdin.isTTY = true as true;
+    setupProject();
+    writeFusedModel();
+    const fusedDir = getFusedModelDir();
+    const instance = render(<CleanCommand options={{}} />);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    t.true(instance.frames.join("\n").includes("Remove it?"));
+
+    instance.stdin.write("n");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const output = instance.frames.join("\n");
+    instance.unmount();
+
+    t.false(output.includes("Removed fused model cache"));
+    t.true(existsSync(fusedDir));
+  } finally {
+    process.stdin.isTTY = originalIsTTY;
+    teardown();
+  }
+});
+
+test.serial("CleanCommand leaves the cache in place on Escape", async (t) => {
+  const originalIsTTY = process.stdin.isTTY;
+  try {
+    process.stdin.isTTY = true as true;
+    setupProject();
+    writeFusedModel();
+    const fusedDir = getFusedModelDir();
+    const instance = render(<CleanCommand options={{}} />);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    t.true(instance.frames.join("\n").includes("Remove it?"));
+
+    instance.stdin.write("\x1b");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const output = instance.frames.join("\n");
+    instance.unmount();
+
+    t.false(output.includes("Removed fused model cache"));
+    t.true(existsSync(fusedDir));
+  } finally {
+    process.stdin.isTTY = originalIsTTY;
     teardown();
   }
 });
