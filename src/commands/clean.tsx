@@ -37,7 +37,7 @@ export function CleanCommand({options}: Props) {
 		return options.yes ? 'cleaning' : 'confirm';
 	});
 	const [error, setError] = useState<string | null>(null);
-	const [sizeLabel] = useState<string | null>(
+	const [sizeLabel] = useState<string | null>(() =>
 		fusedExists ? formatFileSize(getDirectorySize(fusedDir)) : null,
 	);
 

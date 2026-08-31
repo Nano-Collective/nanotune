@@ -482,6 +482,20 @@ test.serial("StatusCommand omits the fused model cache line when absent", async 
   }
 });
 
+test.serial("StatusCommand omits the fused model cache line for a leftover incomplete fused/", async (t) => {
+  // Regression: status used existsSync while clean used hasUsableFusedModel,
+  // so an interrupted export made status report a cache that clean then
+  // said didn't exist. Both must agree.
+  try {
+    setupProject();
+    writeIncompleteFusedModel();
+    const output = await renderCommand(<StatusCommand />, "Exports:");
+    t.false(output.includes("Fused model cache"));
+  } finally {
+    teardown();
+  }
+});
+
 // ── chat streaming preview ────────────────────────────────────────────
 
 test("streamPreview passes short content through untouched", (t) => {
