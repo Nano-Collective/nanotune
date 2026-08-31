@@ -79,11 +79,31 @@ export function getDirectorySize(dirPath: string): number {
 	let total = 0;
 	for (const entry of readdirSync(dirPath, {withFileTypes: true})) {
 		const entryPath = join(dirPath, entry.name);
-		total += entry.isDirectory()
-			? getDirectorySize(entryPath)
-			: statSync(entryPath).size;
+		try {
+			if (entry.isDirectory()) {
+				total += getDirectorySize(entryPath);
+			} else if (entry.isFile()) {
+				total += statSync(entryPath).size;
+			}
+		} catch {
+			// Broken symlink or unreadable entry (permissions, race with a
+			// concurrent delete) — skip it rather than failing the whole walk.
+		}
 	}
 	return total;
+}
+
+/**
+ * Whether `dirPath` contains a real fused-model artifact rather than just an
+ * empty or partially-written directory. `mlx_lm.fuse` creates `--save-path`
+ * before it finishes writing weights, so directory existence alone isn't a
+ * reliable signal that a fuse completed.
+ */
+export function hasUsableFusedModel(dirPath: string): boolean {
+	if (!existsSync(dirPath)) {
+		return false;
+	}
+	return readdirSync(dirPath).some(name => name.endsWith('.safetensors'));
 }
 
 export function formatFileSize(bytes: number): string {

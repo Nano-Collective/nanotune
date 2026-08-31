@@ -1,4 +1,4 @@
-import {existsSync, rmSync} from 'node:fs';
+import {rmSync} from 'node:fs';
 import {StatusMessage} from '@inkjs/ui';
 import {Box, Text, useApp} from 'ink';
 import {useCallback, useEffect, useState} from 'react';
@@ -13,6 +13,7 @@ import {
 	formatFileSize,
 	getDirectorySize,
 	getFusedModelDir,
+	hasUsableFusedModel,
 } from '../lib/config.js';
 
 interface Props {
@@ -26,18 +27,16 @@ type Status = 'confirm' | 'cleaning' | 'nothing' | 'done' | 'error';
 
 export function CleanCommand({options}: Props) {
 	const {exit} = useApp();
-	const fusedDir = getFusedModelDir();
 	const hasProject = configExists();
-	const fusedExists = hasProject && existsSync(fusedDir);
+	const fusedDir = getFusedModelDir();
+	const fusedExists = hasProject && hasUsableFusedModel(fusedDir);
 
 	const [status, setStatus] = useState<Status>(() => {
 		if (!hasProject) return 'error';
 		if (!fusedExists) return 'nothing';
 		return options.yes ? 'cleaning' : 'confirm';
 	});
-	const [errorMessage, setErrorMessage] = useState(
-		'Not a Nanotune project. Run `nanotune init` first.',
-	);
+	const [error, setError] = useState<string | null>(null);
 	const [sizeLabel] = useState<string | null>(
 		fusedExists ? formatFileSize(getDirectorySize(fusedDir)) : null,
 	);
@@ -47,7 +46,7 @@ export function CleanCommand({options}: Props) {
 			rmSync(fusedDir, {recursive: true, force: true});
 			setStatus('done');
 		} catch (err) {
-			setErrorMessage(
+			setError(
 				err instanceof Error
 					? err.message
 					: 'Failed to remove fused model cache',
@@ -85,11 +84,13 @@ export function CleanCommand({options}: Props) {
 		status === 'error',
 	);
 
-	if (status === 'error' && !hasProject) {
+	if (!hasProject) {
 		return (
 			<Box flexDirection="column" padding={1}>
 				<Header title="Clean" />
-				<StatusMessage variant="error">{errorMessage}</StatusMessage>
+				<StatusMessage variant="error">
+					Not a Nanotune project. Run `nanotune init` first.
+				</StatusMessage>
 			</Box>
 		);
 	}
@@ -143,9 +144,9 @@ export function CleanCommand({options}: Props) {
 				</Box>
 			)}
 
-			{status === 'error' && hasProject && (
+			{status === 'error' && (
 				<Box flexDirection="column">
-					<StatusMessage variant="error">{errorMessage}</StatusMessage>
+					<StatusMessage variant="error">{error}</StatusMessage>
 					<Text> </Text>
 					<ExitHint>Press any key to exit</ExitHint>
 				</Box>
