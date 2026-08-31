@@ -106,6 +106,22 @@ export function hasUsableFusedModel(dirPath: string): boolean {
 	return readdirSync(dirPath).some(name => name.endsWith('.safetensors'));
 }
 
+/**
+ * `--skip-fuse` relies on a fused model from a previous export. Lives here
+ * rather than in `commands/export.tsx` so it's testable without importing
+ * that file's `ExportCommand` component, which asserts Apple Silicon up
+ * front and so can never actually render in CI.
+ */
+export function skipFuseValidationError(
+	skipFuse: boolean | undefined,
+	fusedModelExists: boolean,
+): string | null {
+	if (skipFuse && !fusedModelExists) {
+		return 'No fused model found at .nanotune/models/fused. Run `nanotune export` without --skip-fuse first.';
+	}
+	return null;
+}
+
 export function formatFileSize(bytes: number): string {
 	if (bytes < 1024) return `${bytes} B`;
 	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;

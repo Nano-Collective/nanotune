@@ -20,6 +20,7 @@ import {
 	getModelsDir,
 	hasUsableFusedModel,
 	loadConfig,
+	skipFuseValidationError,
 } from '../lib/config.js';
 import {
 	checkLlamaCppInstalled,
@@ -49,21 +50,6 @@ type Status =
 interface Step {
 	name: string;
 	status: 'pending' | 'running' | 'done' | 'error';
-}
-
-/**
- * `--skip-fuse` relies on a fused model from a previous export. Pulled out
- * as a pure function so it's testable without rendering the full command
- * (which asserts Apple Silicon up front).
- */
-export function skipFuseValidationError(
-	skipFuse: boolean | undefined,
-	fusedModelExists: boolean,
-): string | null {
-	if (skipFuse && !fusedModelExists) {
-		return 'No fused model found at .nanotune/models/fused. Run `nanotune export` without --skip-fuse first.';
-	}
-	return null;
 }
 
 export function ExportCommand({options}: Props) {
