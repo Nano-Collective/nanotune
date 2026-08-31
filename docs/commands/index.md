@@ -12,6 +12,7 @@ A complete reference for all Nanotune CLI commands.
 |---------|-------------|
 | [`nanotune init`](init.md) | Initialize a new fine-tuning project |
 | [`nanotune status`](status.md) | Show current project status |
+| [`nanotune clean`](clean.md) | Remove the cached fused model to reclaim disk space |
 | [`nanotune data add`](data.md) | Add training examples interactively |
 | [`nanotune data import`](data.md) | Import training data from a file |
 | [`nanotune data list`](data.md) | View and manage training data |
