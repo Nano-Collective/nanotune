@@ -19,6 +19,7 @@ import {
 	getDirectorySize,
 	getFusedModelDir,
 	getModelsDir,
+	hasUsableFusedModel,
 	loadBenchmark,
 	loadConfig,
 } from '../lib/config.js';
@@ -44,7 +45,7 @@ export function StatusCommand() {
 	const {exit} = useApp();
 	const hasConfig = configExists();
 	const fusedDir = getFusedModelDir();
-	const fusedExists = hasConfig && existsSync(fusedDir);
+	const fusedExists = hasConfig && hasUsableFusedModel(fusedDir);
 	const fusedDirSize = useMemo(
 		() => (fusedExists ? getDirectorySize(fusedDir) : 0),
 		[fusedExists, fusedDir],
