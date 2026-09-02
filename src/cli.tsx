@@ -1,13 +1,31 @@
 #!/usr/bin/env node
 import {readFileSync} from 'node:fs';
 import {Command} from 'commander';
-import {render} from 'ink';
+import {render as inkRender} from 'ink';
 import type {ReactElement} from 'react';
 import {interactiveRequiredMessage, supportsRawMode} from './lib/tty.js';
 
 const pkg = JSON.parse(
 	readFileSync(new URL('../package.json', import.meta.url), 'utf-8'),
 ) as {version: string};
+
+/**
+ * `render`, plus a backstop for anything that throws while rendering. Ink
+ * catches those in its own error boundary and rejects `waitUntilExit()`
+ * rather than letting them reach a process-level handler, and because the
+ * render never completes, the effect that would set a non-zero exit code
+ * never runs — so the command dies with a reconciler trace and still exits 0.
+ */
+function render(
+	node: ReactElement,
+	options?: Parameters<typeof inkRender>[1],
+): void {
+	const instance = inkRender(node, options);
+	instance.waitUntilExit().catch((err: unknown) => {
+		console.error(err instanceof Error ? err.message : String(err));
+		process.exitCode = 1;
+	});
+}
 
 /**
  * Render a command that cannot work without a keyboard (prompts, menus, the

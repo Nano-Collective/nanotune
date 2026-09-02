@@ -184,7 +184,16 @@ export function loadConfig(): Config {
 	if (!existsSync(path)) {
 		throw new Error('Not a Nanotune project. Run `nanotune init` first.');
 	}
-	const raw = JSON.parse(readFileSync(path, 'utf-8'));
+	let raw: unknown;
+	try {
+		raw = JSON.parse(readFileSync(path, 'utf-8'));
+	} catch (err) {
+		// A truncated or hand-edited file reaches the UI as a bare parser
+		// message ("Unterminated string in JSON at position 38") that names
+		// neither the file nor the command. Say which file is unreadable.
+		const detail = err instanceof Error ? err.message : String(err);
+		throw new Error(`Invalid ${CONFIG_FILE}: not valid JSON (${detail})`);
+	}
 	for (const warning of findUnknownConfigKeys(raw)) {
 		if (!warnedKeys.has(warning)) {
 			warnedKeys.add(warning);
@@ -196,6 +205,24 @@ export function loadConfig(): Config {
 		throw new Error(formatConfigIssues(result.error));
 	}
 	return result.data;
+}
+
+/**
+ * `loadConfig` for a component's render body, where a throw escapes the
+ * command's own try/catch and lands in Ink's error boundary — which aborts
+ * the render, so the effect that sets a non-zero exit code never runs and the
+ * command dies with a reconciler trace and status 0. Returning the failure
+ * lets the caller render it as an ordinary error state.
+ */
+export function tryLoadConfig(): {config: Config | null; error: string | null} {
+	try {
+		return {config: loadConfig(), error: null};
+	} catch (err) {
+		return {
+			config: null,
+			error: err instanceof Error ? err.message : 'Failed to load config',
+		};
+	}
 }
 
 export function saveConfig(config: Config): void {

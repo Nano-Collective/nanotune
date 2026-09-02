@@ -16,6 +16,7 @@ import {
 	getAdaptersDir,
 	getModelsDir,
 	loadConfig,
+	tryLoadConfig,
 } from '../lib/config.js';
 import {
 	checkLlamaCppInstalled,
@@ -178,18 +179,18 @@ export function ExportCommand({options}: Props) {
 		run();
 	}, [run]);
 
-	if (!configExists()) {
+	// Never `loadConfig()` here: a throw in the render body escapes the
+	// run callback's own error handling and aborts the render, so the
+	// effect that sets a non-zero exit code never runs.
+	const {config, error: configError} = tryLoadConfig();
+	if (!config) {
 		return (
 			<Box flexDirection="column" padding={1}>
 				<Header title="Export" />
-				<StatusMessage variant="error">
-					Not a Nanotune project. Run `nanotune init` first.
-				</StatusMessage>
+				<StatusMessage variant="error">{configError}</StatusMessage>
 			</Box>
 		);
 	}
-
-	const config = loadConfig();
 	const quantization = options.quantization || config.export.quantization;
 
 	return (
