@@ -20,6 +20,7 @@ import {
   findUnknownConfigKeys,
   loadConfig,
   resolveContextMessage,
+  tryLoadConfig,
   writeFileAtomic,
 } from "./config.js";
 
@@ -681,6 +682,66 @@ test.serial("loadConfig prints each unknown key once across loads", (t) => {
   }
 });
 
+
+// ── malformed config.json ─────────────────────────────────────────────
+
+const BAD_CONFIG_DIR = join(ORIG_CWD, ".test-config-malformed");
+
+function withBadConfig(contents: string, run: () => void) {
+  rmSync(BAD_CONFIG_DIR, { recursive: true, force: true });
+  mkdirSync(join(BAD_CONFIG_DIR, ".nanotune"), { recursive: true });
+  if (contents) {
+    writeFileSync(join(BAD_CONFIG_DIR, ".nanotune", "config.json"), contents);
+  }
+  process.chdir(BAD_CONFIG_DIR);
+  try {
+    run();
+  } finally {
+    process.chdir(ORIG_CWD);
+    rmSync(BAD_CONFIG_DIR, { recursive: true, force: true });
+  }
+}
+
+test.serial("loadConfig names the file when it is not valid JSON", (t) => {
+  withBadConfig('{"name":"v","baseMod', () => {
+    const err = t.throws(() => loadConfig());
+    // The bare parser message ("Unterminated string in JSON at position 20")
+    // names neither the file nor the command that ran into it.
+    t.true(err?.message.startsWith("Invalid config.json: not valid JSON"));
+  });
+});
+
+test.serial("tryLoadConfig reports malformed JSON instead of throwing", (t) => {
+  withBadConfig('{"name":"v","baseMod', () => {
+    const { config, error } = tryLoadConfig();
+    t.is(config, null);
+    t.true(error?.startsWith("Invalid config.json: not valid JSON"));
+  });
+});
+
+test.serial("tryLoadConfig reports a schema-invalid config", (t) => {
+  withBadConfig(JSON.stringify({ name: "v", version: "1.0.0" }), () => {
+    const { config, error } = tryLoadConfig();
+    t.is(config, null);
+    t.true(error?.includes("baseModel"));
+  });
+});
+
+test.serial("tryLoadConfig reports a missing project", (t) => {
+  withBadConfig("", () => {
+    const { config, error } = tryLoadConfig();
+    t.is(config, null);
+    t.is(error, "Not a Nanotune project. Run `nanotune init` first.");
+  });
+});
+
+test.serial("tryLoadConfig returns the config when it is valid", (t) => {
+  withBadConfig(JSON.stringify(KNOWN_KEYS_CONFIG), () => {
+    const { config, error } = tryLoadConfig();
+    t.is(error, null);
+    t.is(config?.name, KNOWN_KEYS_CONFIG.name);
+  });
+});
 
 // ── ensureBenchmarksDir ───────────────────────────────────────────────
 //

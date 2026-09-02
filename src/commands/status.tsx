@@ -10,13 +10,12 @@ import {
 	useKeyInput,
 } from '../components/index.js';
 import {
-	configExists,
 	findLatestBenchmark,
 	getAdaptersDir,
 	getDataDir,
 	getModelsDir,
 	loadBenchmark,
-	loadConfig,
+	tryLoadConfig,
 } from '../lib/config.js';
 import {countExamples} from '../lib/data.js';
 import type {BenchmarkResult} from '../types/index.js';
@@ -46,7 +45,7 @@ function formatFileSize(bytes: number): string {
 
 export function StatusCommand() {
 	const {exit} = useApp();
-	const hasConfig = configExists();
+	const {config, error: configError} = tryLoadConfig();
 
 	useKeyInput((input, key) => {
 		if (key.escape || key.return || input === 'q') {
@@ -55,20 +54,17 @@ export function StatusCommand() {
 	});
 
 	// Nothing to wait for without a keyboard — render the report and leave.
-	useAutoExit(true, !hasConfig);
+	useAutoExit(true, !config);
 
-	if (!hasConfig) {
+	if (!config) {
 		return (
 			<Box flexDirection="column" padding={1}>
 				<Header title="Project Status" />
-				<StatusMessage variant="error">
-					Not a Nanotune project. Run `nanotune init` first.
-				</StatusMessage>
+				<StatusMessage variant="error">{configError}</StatusMessage>
 			</Box>
 		);
 	}
 
-	const config = loadConfig();
 	const dataDir = getDataDir();
 	const adaptersDir = getAdaptersDir();
 	const modelsDir = getModelsDir();

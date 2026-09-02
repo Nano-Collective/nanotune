@@ -9,6 +9,7 @@ import {
 	countTurns,
 	deleteExample,
 	loadTrainingData,
+	parseTrainingData,
 	mergeEditedTurn,
 	updateTrainingExample,
 } from '../../lib/data.js';
@@ -27,7 +28,10 @@ export function DataListCommand({isEval = false}: Props) {
 	const [page, setPage] = useState(0);
 	const [selectedIndex, setSelectedIndex] = useState(0);
 	const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
-	const [data, setData] = useState(() => loadTrainingData(isEval));
+	// Parse without throwing so a malformed line renders the rest of the set
+	// instead of taking the whole command down during the first render.
+	const [parsed] = useState(() => parseTrainingData(isEval));
+	const [data, setData] = useState(parsed.examples);
 	const [otherCount] = useState(() => countExamples(!isEval));
 	const [message, setMessage] = useState<{
 		type: 'success' | 'error';
@@ -289,6 +293,14 @@ export function DataListCommand({isEval = false}: Props) {
 			{message && (
 				<Box marginBottom={1}>
 					<StatusMessage variant={message.type}>{message.text}</StatusMessage>
+				</Box>
+			)}
+
+			{parsed.errors.length > 0 && (
+				<Box marginBottom={1}>
+					<StatusMessage variant="warning">
+						{`${parsed.errors.length} unreadable line${parsed.errors.length > 1 ? 's' : ''} skipped. Run \`nanotune data validate\` to see which; editing and deleting stay blocked until they are fixed.`}
+					</StatusMessage>
 				</Box>
 			)}
 

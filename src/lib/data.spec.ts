@@ -23,6 +23,7 @@ import {
   loadTrainingData,
   mergeEditedTurn,
   parseCSV,
+  parseTrainingData,
   splitTrainValidation,
   updateTrainingExample,
   validateTrainingData,
@@ -526,6 +527,85 @@ test.serial("importFromJSON rejects non-array JSON", (t) => {
   const result = importFromJSON(jsonPath, SYSTEM_CTX);
   t.is(result.imported, 0);
   t.true(result.errors[0].includes("Expected JSON array"));
+});
+
+// ── malformed train.jsonl ─────────────────────────────────────────────
+
+const GOOD_LINE = JSON.stringify({
+  messages: [
+    SYSTEM_CTX,
+    { role: "user", content: "A" },
+    { role: "assistant", content: "B" },
+  ],
+});
+
+function writeRawTrain(contents: string) {
+  writeFileSync(join(DATA_DIR, "train.jsonl"), contents);
+}
+
+test.serial("parseTrainingData reports a bad line instead of throwing", (t) => {
+  writeRawTrain(GOOD_LINE + "\nnot json at all\n" + GOOD_LINE + "\n");
+
+  const { examples, errors } = parseTrainingData(false);
+  t.is(examples.length, 2);
+  t.deepEqual(errors, ["Example 2: invalid JSON"]);
+});
+
+test.serial("parseTrainingData numbers bad lines by file position", (t) => {
+  writeRawTrain("bad\n" + GOOD_LINE + "\nalso bad\n");
+
+  const { examples, errors } = parseTrainingData(false);
+  t.is(examples.length, 1);
+  t.deepEqual(errors, ["Example 1: invalid JSON", "Example 3: invalid JSON"]);
+});
+
+test.serial("parseTrainingData reports nothing on clean data", (t) => {
+  writeRawTrain(GOOD_LINE + "\n");
+
+  const { examples, errors } = parseTrainingData(false);
+  t.is(examples.length, 1);
+  t.deepEqual(errors, []);
+});
+
+test.serial("loadTrainingData still throws, naming the bad line", (t) => {
+  writeRawTrain(GOOD_LINE + "\nnope\n");
+
+  // Deliberately strict: the mutating helpers load, transform and write the
+  // whole file back, so skipping the line here would delete it on save.
+  const err = t.throws(() => loadTrainingData(false));
+  t.is(err?.message, "Example 2: invalid JSON");
+});
+
+test.serial("a malformed line survives a failed delete", (t) => {
+  writeRawTrain(GOOD_LINE + "\nnope\n");
+  const before = readFileSync(join(DATA_DIR, "train.jsonl"), "utf-8");
+
+  t.throws(() => deleteExample(0, false));
+  t.is(readFileSync(join(DATA_DIR, "train.jsonl"), "utf-8"), before);
+});
+
+test.serial("a malformed line survives a failed dedupe", (t) => {
+  writeRawTrain(GOOD_LINE + "\n" + GOOD_LINE + "\nnope\n");
+  const before = readFileSync(join(DATA_DIR, "train.jsonl"), "utf-8");
+
+  t.throws(() => dedupeExamples(false));
+  t.is(readFileSync(join(DATA_DIR, "train.jsonl"), "utf-8"), before);
+});
+
+test.serial("validateTrainingData reports a bad line as an error", (t) => {
+  writeRawTrain(GOOD_LINE + "\nnot json at all\n");
+
+  const result = validateTrainingData(SYSTEM_CTX, false);
+  t.false(result.valid);
+  t.true(result.errors.includes("Example 2: invalid JSON"));
+});
+
+test.serial("validateTrainingData does not call a malformed file empty", (t) => {
+  writeRawTrain("not json at all\n");
+
+  const result = validateTrainingData(SYSTEM_CTX, false);
+  t.false(result.valid);
+  t.deepEqual(result.errors, ["Example 1: invalid JSON"]);
 });
 
 // ── importData ────────────────────────────────────────────────────────

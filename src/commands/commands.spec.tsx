@@ -308,6 +308,107 @@ test("streamPreview clips a single very long line by characters", (t) => {
   t.is(text.length, 2000);
 });
 
+// ── malformed JSON is reported, not thrown ───────────────────────────
+//
+// A throw from a render body escapes the command's own try/catch and lands in
+// Ink's error boundary. The render never completes, so useAutoExit never runs
+// and the command dies with a reconciler trace while still exiting 0.
+
+function writeRawConfig(contents: string) {
+  writeFileSync(join(NANOTUNE_DIR, "config.json"), contents);
+}
+
+function writeRawTrain(contents: string) {
+  writeFileSync(join(DATA_DIR, "train.jsonl"), contents);
+}
+
+test.serial("StatusCommand reports a malformed config and exits non-zero", async (t) => {
+  try {
+    setupProject();
+    writeRawConfig('{"name":"v","baseMod');
+    process.exitCode = 0;
+
+    const output = await renderCommand(<StatusCommand />, "not valid JSON");
+    t.true(output.includes("Invalid config.json: not valid JSON"));
+    t.false(output.includes("react_stack_bottom_frame"));
+    t.is(process.exitCode, 1);
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("DataValidateCommand reports a malformed config and exits non-zero", async (t) => {
+  try {
+    setupProject();
+    writeRawConfig('{"name":"v","baseMod');
+    process.exitCode = 0;
+
+    const output = await renderCommand(<DataValidateCommand />, "not valid JSON");
+    t.true(output.includes("Invalid config.json: not valid JSON"));
+    t.is(process.exitCode, 1);
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("DataValidateCommand reports a malformed example and exits non-zero", async (t) => {
+  try {
+    setupProject();
+    writeRawTrain(
+      JSON.stringify(example("one")) + "\nnot json at all\n" +
+        JSON.stringify(example("two")) + "\n",
+    );
+    process.exitCode = 0;
+
+    // The command whose whole purpose is finding malformed training data has
+    // to survive encountering some.
+    const output = await renderCommand(<DataValidateCommand />, "invalid JSON");
+    t.true(output.includes("Example 2: invalid JSON"));
+    t.false(output.includes("react_stack_bottom_frame"));
+    t.is(process.exitCode, 1);
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("DataValidateCommand --fix leaves a malformed file untouched", async (t) => {
+  try {
+    setupProject();
+    const contents =
+      JSON.stringify(example("one")) + "\n" +
+      JSON.stringify(example("one")) + "\nnope\n";
+    writeRawTrain(contents);
+
+    // Dedupe rewrites the whole file, so running it here would silently drop
+    // the line the report is meant to point at.
+    await renderCommand(<DataValidateCommand fix />, "invalid JSON");
+    t.is(readFileSync(join(DATA_DIR, "train.jsonl"), "utf-8"), contents);
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("DataListCommand renders the readable rows and flags the rest", async (t) => {
+  const originalTTY = process.stdin.isTTY;
+  try {
+    setupProject();
+    writeRawTrain(
+      JSON.stringify(example("one")) + "\nnot json at all\n" +
+        JSON.stringify(example("two")) + "\n",
+    );
+    process.stdin.isTTY = true;
+
+    const output = await renderCommand(<DataListCommand />, "unreadable line");
+    t.true(output.includes("one"));
+    t.true(output.includes("two"));
+    t.true(output.includes("1 unreadable line"));
+    t.false(output.includes("react_stack_bottom_frame"));
+  } finally {
+    process.stdin.isTTY = originalTTY;
+    teardown();
+  }
+});
+
 // ── data list edits the set it was opened on ──────────────────────────
 
 test.serial(

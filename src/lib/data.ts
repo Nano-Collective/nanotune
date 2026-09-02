@@ -39,19 +39,51 @@ export function countExamples(isEval = false): number {
 	return content.split('\n').filter(line => line.trim()).length;
 }
 
-export function loadTrainingData(isEval = false): TrainingExample[] {
+export interface ParsedTrainingData {
+	examples: TrainingExample[];
+	/** One `Example N: invalid JSON` per unparseable line, in file order. */
+	errors: string[];
+}
+
+/**
+ * Read the dataset without throwing, collecting unparseable lines as errors
+ * instead. `data validate` exists to find malformed training data, so it has
+ * to survive encountering some and report the offending line like any other
+ * check; the same goes for `data list`, which renders whatever it can.
+ */
+export function parseTrainingData(isEval = false): ParsedTrainingData {
+	const examples: TrainingExample[] = [];
+	const errors: string[] = [];
 	const path = isEval ? getEvalDataPath() : getTrainDataPath();
 	if (!existsSync(path)) {
-		return [];
+		return {examples, errors};
 	}
 	const content = readFileSync(path, 'utf-8').trim();
 	if (!content) {
-		return [];
+		return {examples, errors};
 	}
-	return content
-		.split('\n')
-		.filter(line => line.trim())
-		.map(line => JSON.parse(line) as TrainingExample);
+	const lines = content.split('\n').filter(line => line.trim());
+	lines.forEach((line, i) => {
+		try {
+			examples.push(JSON.parse(line) as TrainingExample);
+		} catch {
+			errors.push(`Example ${i + 1}: invalid JSON`);
+		}
+	});
+	return {examples, errors};
+}
+
+/**
+ * Every example, or a throw naming the first bad line. Kept strict because
+ * the mutating helpers load, transform and write the whole file back, so
+ * quietly skipping a line here would delete it on the next save.
+ */
+export function loadTrainingData(isEval = false): TrainingExample[] {
+	const {examples, errors} = parseTrainingData(isEval);
+	if (errors.length > 0) {
+		throw new Error(errors[0]);
+	}
+	return examples;
 }
 
 export function appendTrainingExample(
@@ -176,12 +208,17 @@ export function validateTrainingData(
 	contextMessage: ChatMessage,
 	isEval = false,
 ): ValidationResult {
-	const errors: string[] = [];
 	const warnings: string[] = [];
-	const examples = loadTrainingData(isEval);
+	const {examples, errors} = parseTrainingData(isEval);
 
 	if (examples.length === 0) {
-		errors.push(isEval ? 'No validation data found' : 'No training data found');
+		// "No data" would be a lie when the file is full of lines we could not
+		// parse - the parse errors already say what is wrong.
+		if (errors.length === 0) {
+			errors.push(
+				isEval ? 'No validation data found' : 'No training data found',
+			);
+		}
 		return {valid: false, errors, warnings};
 	}
 
