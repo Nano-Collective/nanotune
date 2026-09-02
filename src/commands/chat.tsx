@@ -408,12 +408,8 @@ export function ChatCommand({options}: Props) {
 						return;
 					}
 					try {
-						// `/keep` has no --eval counterpart: chat always saves to the
-						// training set.
-						appendToTrainingData(
-							{contextMessage: systemMessage, ...exchange},
-							false,
-						);
+						const kept = {contextMessage: systemMessage, ...exchange};
+						appendToTrainingData(kept, false);
 						appendTurn({
 							role: 'info',
 							content: `Kept last exchange (${countExamples()} examples total).`,
