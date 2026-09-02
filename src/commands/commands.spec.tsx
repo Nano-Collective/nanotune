@@ -1,4 +1,12 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { createServer, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import test from "ava";
 import { Text } from "ink";
@@ -10,7 +18,8 @@ import { DataExportCommand } from "./data/export.js";
 import { DataImportCommand } from "./data/import.js";
 import { DataListCommand } from "./data/list.js";
 import { DataValidateCommand } from "./data/validate.js";
-import { JudgeConfigureCommand } from "./judge.js";
+import { PROVIDER_TEMPLATES } from "../lib/judge-templates.js";
+import { JudgeConfigureCommand, JudgeTestCommand } from "./judge.js";
 import { StatusCommand } from "./status.js";
 
 const ORIG_CWD = process.cwd();
@@ -407,6 +416,306 @@ test.serial("DataExportCommand with --eval exports the validation set", async (t
     t.true(written.includes("valid-one"));
     t.false(written.includes("train-one"));
   } finally {
+    teardown();
+  }
+});
+
+// ── judge test: the states it reaches without a live judge ──────────
+
+test.serial("JudgeTestCommand renders its error state with no project", async (t) => {
+  try {
+    setupEmptyDir();
+    const output = await renderCommand(<JudgeTestCommand />, "Not a Nanotune project");
+    t.true(output.includes("Not a Nanotune project"));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("JudgeTestCommand reports an unconfigured judge inside a project", async (t) => {
+  try {
+    setupProject();
+    const output = await renderCommand(
+      <JudgeTestCommand />,
+      "LLM judge is not configured",
+    );
+    t.true(output.includes("nanotune judge configure"));
+  } finally {
+    teardown();
+  }
+});
+
+// ── driving the interactive judge configure flow ────────────────────
+//
+// @inkjs/ui swallows the first keypress that lands on a freshly mounted
+// TextInput, so these helpers drive the form by watching the rendered frame
+// rather than by counting keystrokes.
+
+const ENTER = "\r";
+const DOWN = "\x1B[B";
+
+type Rendered = ReturnType<typeof render>;
+
+async function withTTY<T>(run: () => Promise<T>): Promise<T> {
+  const original = process.stdin.isTTY;
+  process.stdin.isTTY = true as true;
+  try {
+    return await run();
+  } finally {
+    process.stdin.isTTY = original;
+  }
+}
+
+async function write(instance: Rendered, text: string) {
+  instance.stdin.write(text);
+  await settle();
+}
+
+/** Wait for `text` to show up in any frame rendered so far. */
+async function waitForFrame(instance: Rendered, text: string) {
+  for (let i = 0; i < 50; i++) {
+    if (instance.frames.join("\n").includes(text)) return true;
+    await settle();
+  }
+  return false;
+}
+
+async function selectProvider(instance: Rendered, id: string) {
+  const index = PROVIDER_TEMPLATES.findIndex((template) => template.id === id);
+  for (let i = 0; i < index; i++) await write(instance, DOWN);
+  await write(instance, ENTER);
+}
+
+/** Fill in the field whose prompt is on screen, then submit it. */
+async function answer(instance: Rendered, prompt: string, value = "") {
+  for (let i = 0; i < 30 && !instance.lastFrame()?.includes(prompt); i++) {
+    await settle();
+  }
+  for (let i = 0; i < 5 && value && !instance.lastFrame()?.includes(value); i++) {
+    await write(instance, value);
+  }
+  for (let i = 0; i < 5; i++) {
+    await write(instance, ENTER);
+    if (!instance.lastFrame()?.includes(prompt)) return;
+  }
+}
+
+async function confirmSave(instance: Rendered) {
+  for (let i = 0; i < 5; i++) {
+    await write(instance, "y");
+    if (!instance.lastFrame()?.includes("Save and test connection?")) return;
+  }
+}
+
+test.serial("JudgeConfigureCommand walks a templated provider to the summary", async (t) => {
+  try {
+    setupProject();
+    await withTTY(async () => {
+      const instance = render(<JudgeConfigureCommand />);
+      await settle();
+      // Ollama defaults both the provider name and the base URL; the model
+      // has no default and is required.
+      await selectProvider(instance, "ollama");
+      await answer(instance, "Provider name");
+      await answer(instance, "Base URL");
+
+      // An empty required field must not advance the form.
+      await write(instance, ENTER);
+      await write(instance, ENTER);
+      t.true(instance.lastFrame()?.includes("Model name"));
+
+      await answer(instance, "Model name", "qwen2.5:0.5b");
+
+      const summary = instance.lastFrame() ?? "";
+      instance.unmount();
+      t.true(summary.includes("Configuration Summary"));
+      t.true(summary.includes("qwen2.5:0.5b"));
+      t.true(summary.includes("http://localhost:11434/v1"));
+      // Ollama needs no key, so the summary says so rather than masking.
+      t.true(summary.includes("(none)"));
+      t.true(summary.includes("Save and test connection?"));
+    });
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("JudgeConfigureCommand masks the API key on the summary", async (t) => {
+  try {
+    setupProject();
+    await withTTY(async () => {
+      const instance = render(<JudgeConfigureCommand />);
+      await settle();
+      await selectProvider(instance, "gemini");
+      await answer(instance, "API Key", "sk-should-not-be-shown");
+      await answer(instance, "Model name");
+      await answer(instance, "Provider name");
+
+      const summary = instance.lastFrame() ?? "";
+      instance.unmount();
+      t.true(summary.includes("Configuration Summary"));
+      t.false(summary.includes("sk-should-not-be-shown"));
+      t.true(summary.includes("API Key: ***"));
+      t.true(summary.includes("SDK Provider: google"));
+    });
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("JudgeConfigureCommand rejects a malformed base URL", async (t) => {
+  try {
+    setupProject();
+    await withTTY(async () => {
+      // The custom template leaves the base URL empty, so what is typed is
+      // exactly what the validator sees.
+      const instance = render(<JudgeConfigureCommand />);
+      await settle();
+      await selectProvider(instance, "custom");
+      await answer(instance, "Provider name", "stub");
+      await answer(instance, "Base URL", "not-a-url");
+
+      const frame = instance.lastFrame() ?? "";
+      instance.unmount();
+      t.true(frame.includes("Invalid URL format"));
+      t.false(frame.includes("Configuration Summary"));
+    });
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("JudgeConfigureCommand writes nothing when the answer is n", async (t) => {
+  try {
+    setupProject();
+    await withTTY(async () => {
+      const instance = render(<JudgeConfigureCommand />);
+      await settle();
+      await selectProvider(instance, "ollama");
+      await answer(instance, "Provider name");
+      await answer(instance, "Base URL");
+      await answer(instance, "Model name", "some-model");
+      t.true(instance.lastFrame()?.includes("Configuration Summary"));
+
+      await write(instance, "n");
+      instance.unmount();
+    });
+    t.false(existsSync(join(NANOTUNE_DIR, "judge.json")));
+  } finally {
+    teardown();
+  }
+});
+
+// ── judge configure: connection test vs. save ───────────────────────
+//
+// The save used to sit inside the connection-test try block, so an ENOENT
+// from the write surfaced as "Connection test failed". These two pin each
+// failure to its own message, against a stub judge on localhost.
+
+interface StubJudge {
+  url: string;
+  close: () => Promise<void>;
+}
+
+async function startStubJudge(
+  respond: (res: ServerResponse) => void,
+): Promise<StubJudge> {
+  const server = createServer((_req, res) => respond(res));
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  return {
+    url: `http://127.0.0.1:${port}/v1`,
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
+  };
+}
+
+function chatCompletion(res: ServerResponse) {
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(
+    JSON.stringify({
+      id: "stub",
+      object: "chat.completion",
+      created: 0,
+      model: "stub-model",
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant",
+            content:
+              '{"scores":{"helpful":9},"overall":9,"reasoning":"fine","pass":true}',
+          },
+          finish_reason: "stop",
+        },
+      ],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    }),
+  );
+}
+
+async function configureAgainst(baseUrl: string) {
+  const instance = render(<JudgeConfigureCommand />);
+  await settle();
+  await selectProvider(instance, "custom");
+  await answer(instance, "Provider name", "stub");
+  await answer(instance, "Base URL", baseUrl);
+  await answer(instance, "API Key (optional)");
+  await answer(instance, "Model name", "stub-model");
+  return instance;
+}
+
+test.serial("JudgeConfigureCommand reports a failed connection as a connection failure", async (t) => {
+  const judge = await startStubJudge((res) => {
+    res.writeHead(400, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: { message: "nope" } }));
+  });
+  try {
+    setupProject();
+    await withTTY(async () => {
+      const instance = await configureAgainst(judge.url);
+      t.true(instance.lastFrame()?.includes("Configuration Summary"));
+
+      await confirmSave(instance);
+      t.true(await waitForFrame(instance, "Connection test failed"));
+
+      const frame = instance.lastFrame() ?? "";
+      instance.unmount();
+      t.false(frame.includes("Failed to save judge config"));
+    });
+    // A connection that never worked must not leave a config behind.
+    t.false(existsSync(join(NANOTUNE_DIR, "judge.json")));
+  } finally {
+    await judge.close();
+    teardown();
+  }
+});
+
+test.serial("JudgeConfigureCommand reports a failed save as a save failure", async (t) => {
+  const judge = await startStubJudge(chatCompletion);
+  try {
+    setupProject();
+    // A non-empty directory where judge.json belongs: the connection test
+    // passes and only the rename fails, which is the case that used to be
+    // reported as a connection failure.
+    mkdirSync(join(NANOTUNE_DIR, "judge.json", "blocker"), { recursive: true });
+
+    await withTTY(async () => {
+      const instance = await configureAgainst(judge.url);
+      t.true(instance.lastFrame()?.includes("Configuration Summary"));
+
+      await confirmSave(instance);
+      t.true(await waitForFrame(instance, "Failed to save judge config"));
+
+      const frame = instance.lastFrame() ?? "";
+      instance.unmount();
+      t.false(frame.includes("Connection test failed"));
+    });
+  } finally {
+    await judge.close();
     teardown();
   }
 });
