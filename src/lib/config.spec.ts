@@ -18,6 +18,7 @@ import {
   listBenchmarks,
   resolveBenchmarkPath,
   findUnknownConfigKeys,
+  initializeProjectDirs,
   loadConfig,
   resolveContextMessage,
   writeFileAtomic,
@@ -791,6 +792,99 @@ test.serial("writeFileAtomic surfaces a missing parent rather than inventing one
     const missing = join(BENCH_TEST_DIR, "nope", "tests.json");
     t.throws(() => writeFileAtomic(missing, "[]"), { code: "ENOENT" });
     t.false(existsSync(join(BENCH_TEST_DIR, "nope")));
+  } finally {
+    teardownBenchTest();
+  }
+});
+
+// ── initializeProjectDirs .gitignore back-fill ────────────────────────
+//
+// Entries join GITIGNORE_CONTENTS over releases, but a project keeps the
+// .gitignore it was initialised with. judge.json can hold a literal API key,
+// so an un-backfilled file leaves that key where `git add .` will take it.
+
+const GITIGNORE_PATH = join(BENCH_TEST_DIR, ".nanotune", ".gitignore");
+
+function writeExistingGitignore(contents: string) {
+  mkdirSync(join(BENCH_TEST_DIR, ".nanotune"), { recursive: true });
+  writeFileSync(GITIGNORE_PATH, contents);
+}
+
+function gitignoreLines() {
+  return readFileSync(GITIGNORE_PATH, "utf-8")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+test.serial("initializeProjectDirs writes the full .gitignore for a new project", (t) => {
+  setupBenchTest();
+  try {
+    initializeProjectDirs();
+    t.deepEqual(gitignoreLines(), [
+      "# Nanotune project artifacts",
+      "adapters/",
+      "models/",
+      "benchmarks/",
+      "chats/",
+      "judge.json*",
+    ]);
+  } finally {
+    teardownBenchTest();
+  }
+});
+
+test.serial("initializeProjectDirs back-fills a pre-1.4.0 .gitignore", (t) => {
+  setupBenchTest();
+  try {
+    // What `nanotune init` wrote before judge.json joined the list.
+    writeExistingGitignore("# Nanotune project artifacts\nadapters/\nmodels/\n");
+
+    initializeProjectDirs();
+
+    const lines = gitignoreLines();
+    t.true(lines.includes("judge.json*"));
+    t.true(lines.includes("benchmarks/"));
+    t.true(lines.includes("chats/"));
+    // Entries already there are neither lost nor repeated.
+    t.is(lines.filter((line) => line === "adapters/").length, 1);
+    t.is(lines.filter((line) => line === "# Nanotune project artifacts").length, 1);
+  } finally {
+    teardownBenchTest();
+  }
+});
+
+test.serial("initializeProjectDirs upgrades a bare judge.json entry to the glob", (t) => {
+  setupBenchTest();
+  try {
+    // 1.4.0-1.6.x ignored judge.json but not the judge.json.tmp an interrupted
+    // save leaves behind, which holds the same key.
+    writeExistingGitignore(
+      "# Nanotune project artifacts\nadapters/\nmodels/\nbenchmarks/\nchats/\njudge.json\n",
+    );
+
+    initializeProjectDirs();
+
+    t.true(gitignoreLines().includes("judge.json*"));
+  } finally {
+    teardownBenchTest();
+  }
+});
+
+test.serial("initializeProjectDirs keeps hand-written entries and back-fills only once", (t) => {
+  setupBenchTest();
+  try {
+    // No trailing newline: the appended block must not run onto this line.
+    writeExistingGitignore("scratch/");
+
+    initializeProjectDirs();
+    const first = readFileSync(GITIGNORE_PATH, "utf-8");
+    initializeProjectDirs();
+
+    t.is(readFileSync(GITIGNORE_PATH, "utf-8"), first);
+    const lines = gitignoreLines();
+    t.true(lines.includes("scratch/"));
+    t.is(lines.filter((line) => line === "judge.json*").length, 1);
   } finally {
     teardownBenchTest();
   }

@@ -10,6 +10,7 @@ import { DataExportCommand } from "./data/export.js";
 import { DataImportCommand } from "./data/import.js";
 import { DataListCommand } from "./data/list.js";
 import { DataValidateCommand } from "./data/validate.js";
+import { JudgeConfigureCommand } from "./judge.js";
 import { StatusCommand } from "./status.js";
 
 const ORIG_CWD = process.cwd();
@@ -137,6 +138,29 @@ test.serial("DataListCommand renders its error state with no project", async (t)
     setupEmptyDir();
     const output = await renderCommand(<DataListCommand />, "Not a Nanotune project");
     t.true(output.includes("Not a Nanotune project"));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("JudgeConfigureCommand renders its error state with no project", async (t) => {
+  try {
+    setupEmptyDir();
+    // The guard has to come before the provider prompt: the save lands in
+    // .nanotune/, so without it the key is asked for, tested, and discarded.
+    const output = await renderCommand(<JudgeConfigureCommand />, "Not a Nanotune project");
+    t.true(output.includes("Not a Nanotune project"));
+    t.false(output.includes("Select a provider"));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("JudgeConfigureCommand prompts for a provider inside a project", async (t) => {
+  try {
+    setupProject();
+    const output = await renderCommand(<JudgeConfigureCommand />, "Select a provider");
+    t.true(output.includes("Select a provider"));
   } finally {
     teardown();
   }
