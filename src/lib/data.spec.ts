@@ -528,6 +528,82 @@ test.serial("importFromJSON rejects non-array JSON", (t) => {
   t.true(result.errors[0].includes("Expected JSON array"));
 });
 
+// ── importer skip paths ───────────────────────────────────────────
+// Every importer counts a row it cannot use rather than dropping it
+// silently, so `skipped` plus `imported` always accounts for the input.
+
+test.serial("importFromCSV skips a row with an empty input or output", (t) => {
+  const csvPath = join(TEST_DIR, "blanks.csv");
+  writeFileSync(csvPath, '"a","b"\n"","out"\n"in",""\n');
+
+  const result = importFromCSV(csvPath, SYSTEM_CTX, false);
+  t.is(result.imported, 1);
+  t.is(result.skipped, 2);
+  t.is(result.errors.length, 2);
+  t.true(result.errors.every((e) => e.includes("Empty input or output")));
+  t.is(countExamples(false), 1);
+});
+
+test.serial("importFromCSV on an empty file imports nothing", (t) => {
+  const csvPath = join(TEST_DIR, "empty.csv");
+  writeFileSync(csvPath, "");
+
+  const result = importFromCSV(csvPath, SYSTEM_CTX, false);
+  t.deepEqual(result, { imported: 0, skipped: 0, errors: [] });
+  t.is(countExamples(false), 0);
+});
+
+test.serial("importFromJSONL skips a messages array with no user/assistant pair", (t) => {
+  const jsonlPath = join(TEST_DIR, "no-pair.jsonl");
+  writeFileSync(
+    jsonlPath,
+    '{"messages":[{"role":"system","content":"a"},{"role":"user","content":"b"}]}\n',
+  );
+
+  const result = importFromJSONL(jsonlPath, SYSTEM_CTX, false);
+  t.is(result.imported, 0);
+  t.is(result.skipped, 1);
+  t.true(result.errors[0].includes("missing user/assistant"));
+});
+
+test.serial("importFromJSONL skips a line in neither supported shape", (t) => {
+  const jsonlPath = join(TEST_DIR, "unknown.jsonl");
+  writeFileSync(jsonlPath, '{"prompt":"a","completion":"b"}\n');
+
+  const result = importFromJSONL(jsonlPath, SYSTEM_CTX, false);
+  t.is(result.imported, 0);
+  t.is(result.skipped, 1);
+  t.true(result.errors[0].includes("Unrecognized format"));
+});
+
+test.serial("importFromJSON skips items that are unusable", (t) => {
+  const jsonPath = join(TEST_DIR, "mixed.json");
+  writeFileSync(
+    jsonPath,
+    JSON.stringify([
+      { messages: [{ role: "user", content: "only-user" }] },
+      { prompt: "a", completion: "b" },
+      { input: "good-in", output: "good-out" },
+    ]),
+  );
+
+  const result = importFromJSON(jsonPath, SYSTEM_CTX, false);
+  t.is(result.imported, 1);
+  t.is(result.skipped, 2);
+  t.true(result.errors.some((e) => e.includes("missing user/assistant")));
+  t.true(result.errors.some((e) => e.includes("Unrecognized format")));
+  t.is(countExamples(false), 1);
+});
+
+test.serial("importData dispatches .json to importFromJSON", (t) => {
+  const jsonPath = join(TEST_DIR, "dispatch.json");
+  writeFileSync(jsonPath, JSON.stringify([{ input: "a", output: "b" }]));
+
+  const result = importData(jsonPath, SYSTEM_CTX, false);
+  t.is(result.imported, 1);
+  t.is(loadTrainingData(false)[0].messages[1].content, "a");
+});
+
 // ── importData ────────────────────────────────────────────────────────
 
 test.serial("importData dispatches to correct importer by extension", (t) => {
