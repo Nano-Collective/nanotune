@@ -1,11 +1,16 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "ava";
-import type { BenchmarkTest, BenchmarkTestResult } from "../types/index.js";
+import type {
+  BenchmarkResult,
+  BenchmarkTest,
+  BenchmarkTestResult,
+} from "../types/index.js";
 import {
   type BenchmarkRunOptions,
   type CategoryResult,
   formatEventForStderr,
+  generateMarkdownReport,
   resolveRunOptions,
   runBenchmark,
   summarizeResults,
@@ -400,4 +405,242 @@ test.serial("runBenchmark requires a judge when a test uses llm-judge", async (t
   const error = await t.throwsAsync(() => drain({ model: modelPath }));
 
   t.true(error?.message.includes("judge configure"));
+});
+
+// ── generateMarkdownReport ────────────────────────────────────────────
+
+const CONTEXT = { role: "system", content: "You are helpful." };
+
+function report(over: Partial<BenchmarkResult> = {}): BenchmarkResult {
+  return {
+    model: "/models/my-bot-q4_k_m.gguf",
+    timestamp: "2026-09-03T19:40:02.113Z",
+    summary: { total: 2, passed: 1, failed: 1, passRate: 0.5 },
+    categories: { basic: { passed: 1, total: 2 } },
+    results: [],
+    failures: [],
+    ...over,
+  };
+}
+
+test("generateMarkdownReport heads the report with the model and run type", (t) => {
+  const md = generateMarkdownReport(report({ isBase: true }), CONTEXT);
+
+  t.true(md.startsWith("# Benchmark Report"));
+  // Only the basename — the full path is noise in a shared report.
+  t.true(md.includes("**Model:** my-bot-q4_k_m.gguf"));
+  t.true(md.includes("Base model (control)"));
+});
+
+test("generateMarkdownReport labels a fine-tuned run", (t) => {
+  const md = generateMarkdownReport(report(), CONTEXT);
+
+  t.true(md.includes("**Run Type:** Fine-tuned"));
+});
+
+test("generateMarkdownReport calls out a run that stopped early", (t) => {
+  const md = generateMarkdownReport(
+    report({ warning: "llama-server exited after 4 of 50 tests" }),
+    CONTEXT,
+  );
+
+  t.true(md.includes("**Incomplete run:**"));
+  t.true(md.includes("4 of 50 tests"));
+});
+
+test("generateMarkdownReport omits the incomplete notice on a clean run", (t) => {
+  t.false(generateMarkdownReport(report(), CONTEXT).includes("Incomplete run"));
+});
+
+test("generateMarkdownReport records the sampling configuration", (t) => {
+  const md = generateMarkdownReport(
+    report({ config: { temperature: 0.8, seed: 7, samples: 5 } }),
+    CONTEXT,
+  );
+
+  t.true(md.includes("- **Temperature:** 0.8"));
+  t.true(md.includes("- **Seed:** 7"));
+  t.true(md.includes("- **Samples per test:** 5"));
+});
+
+test("generateMarkdownReport omits the configuration section when absent", (t) => {
+  t.false(generateMarkdownReport(report(), CONTEXT).includes("## Configuration"));
+});
+
+test("generateMarkdownReport reports the summary and per-category totals", (t) => {
+  const md = generateMarkdownReport(
+    report({
+      summary: {
+        total: 2,
+        passed: 1,
+        failed: 1,
+        passRate: 0.5,
+        avgLatencyMs: 120,
+        avgTokensPerSecond: 42.5,
+        avgTtftMs: 30,
+        avgJudgeScore: 7.5,
+        judgeModel: "openai/gpt-4o-mini",
+      },
+      categories: { basic: { passed: 1, total: 2 }, hard: { passed: 3, total: 3 } },
+    }),
+    CONTEXT,
+  );
+
+  t.true(md.includes("- **Pass Rate:** 50%"));
+  t.true(md.includes("- **Avg Latency:** 120ms"));
+  t.true(md.includes("- **Avg Tokens/sec:** 42.50"));
+  t.true(md.includes("- **Avg TTFT:** 30ms"));
+  t.true(md.includes("- **Avg Judge Score:** 7.5/10"));
+  t.true(md.includes("- **Judge Model:** openai/gpt-4o-mini"));
+  t.true(md.includes("- **basic:** 1/2 (50%)"));
+  t.true(md.includes("- **hard:** 3/3 (100%)"));
+});
+
+test("generateMarkdownReport includes the context message and its role", (t) => {
+  const md = generateMarkdownReport(report(), {
+    role: "developer",
+    content: "You are a code assistant.",
+  });
+
+  t.true(md.includes("## Context Message (developer)"));
+  t.true(md.includes("You are a code assistant."));
+});
+
+test("generateMarkdownReport marks passing and failing tests", (t) => {
+  const md = generateMarkdownReport(
+    report({
+      results: [
+        result({ id: 1, prompt: "list files", passed: true }),
+        result({ id: 2, prompt: "delete all", passed: false }),
+      ],
+    }),
+    CONTEXT,
+  );
+
+  t.true(md.includes("### ✅ Test #1: list files"));
+  t.true(md.includes("### ❌ Test #2: delete all"));
+});
+
+test("generateMarkdownReport writes a multi-turn test as a conversation", (t) => {
+  const md = generateMarkdownReport(
+    report({
+      results: [
+        result({
+          id: 3,
+          messages: [
+            { role: "user", content: "hi" },
+            { role: "assistant", content: "hello" },
+          ],
+        }),
+      ],
+    }),
+    CONTEXT,
+  );
+
+  t.true(md.includes("Test #3: [2-msg conversation]"));
+  t.true(md.includes("**Conversation:**"));
+  t.true(md.includes("> **User:** hi"));
+  t.true(md.includes("> **Assistant:** hello"));
+});
+
+test("generateMarkdownReport reports per-test timings and sampling stats", (t) => {
+  const md = generateMarkdownReport(
+    report({
+      results: [
+        result({
+          latencyMs: 250,
+          ttftMs: 40,
+          generationTimeMs: 210,
+          tokensGenerated: 33,
+          tokensPerSecond: 15.5,
+          samples: 5,
+          samplePassRate: 0.6,
+          sampleVariance: 0.24,
+          expected: ["ls", "ls -la"],
+        }),
+      ],
+    }),
+    CONTEXT,
+  );
+
+  t.true(md.includes("**Total Latency:** 250ms"));
+  t.true(md.includes("**Time to First Token:** 40ms"));
+  t.true(md.includes("**Generation Time:** 210ms"));
+  t.true(md.includes("**Tokens Generated:** 33"));
+  t.true(md.includes("**Tokens/Second:** 15.50"));
+  t.true(md.includes("**Samples:** 5"));
+  t.true(md.includes("**Sample Pass Rate:** 60%"));
+  t.true(md.includes("**Sample Variance:** 0.2400"));
+  t.true(md.includes("- `ls -la`"));
+});
+
+test("generateMarkdownReport includes judge scores, criteria and reasoning", (t) => {
+  const md = generateMarkdownReport(
+    report({
+      results: [
+        result({
+          judgeScore: 9,
+          judgeCriteriaScores: { helpful: 9, accurate: 8 },
+          judgeReasoning: "Answered directly.",
+        }),
+      ],
+    }),
+    CONTEXT,
+  );
+
+  t.true(md.includes("**Judge Score:** 9/10"));
+  t.true(md.includes("- helpful: 9/10"));
+  t.true(md.includes("- accurate: 8/10"));
+  t.true(md.includes("**Judge Reasoning:** Answered directly."));
+});
+
+test("generateMarkdownReport tabulates failures and escapes the pipe separator", (t) => {
+  const md = generateMarkdownReport(
+    report({
+      failures: [
+        {
+          id: 4,
+          prompt: "list files",
+          expected: ["ls", "ls -la"],
+          actual: "rm -rf /\nsecond line",
+        },
+      ],
+    }),
+    CONTEXT,
+  );
+
+  t.true(md.includes("## Failed Tests Summary"));
+  // A raw pipe would break the Markdown table.
+  t.true(md.includes("ls \\| ls -la"));
+  // Newlines are flattened so the row stays one line.
+  t.true(md.includes("rm -rf / second line"));
+});
+
+test("generateMarkdownReport labels a multi-turn failure in the table", (t) => {
+  const md = generateMarkdownReport(
+    report({
+      failures: [
+        {
+          id: 5,
+          prompt: "unused",
+          messages: [
+            { role: "user", content: "a" },
+            { role: "assistant", content: "b" },
+            { role: "user", content: "c" },
+          ],
+          expected: [],
+          actual: "nope",
+        },
+      ],
+    }),
+    CONTEXT,
+  );
+
+  t.true(md.includes("| 5 | [3-msg conversation] |"));
+});
+
+test("generateMarkdownReport omits the failures table on a clean sweep", (t) => {
+  t.false(
+    generateMarkdownReport(report(), CONTEXT).includes("Failed Tests Summary"),
+  );
 });

@@ -249,7 +249,14 @@ const SAMPLE_TESTS: BenchmarkTest[] = [
 	},
 ];
 
-function generateMarkdownReport(
+/**
+ * Render a run as the Markdown report saved next to the JSON results.
+ *
+ * Exported for tests: it produces a user-facing artefact from a large branchy
+ * template, and lived unexercised inside the command component until the run
+ * moved here.
+ */
+export function generateMarkdownReport(
 	result: BenchmarkResult,
 	contextMessage: ChatMessage,
 ): string {
