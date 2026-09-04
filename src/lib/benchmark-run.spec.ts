@@ -1,12 +1,23 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import test from "ava";
+import type { ServerHandle } from "./llama-cpp.js";
 import type {
   BenchmarkResult,
   BenchmarkTest,
   BenchmarkTestResult,
+  ChatMessage,
 } from "../types/index.js";
 import {
+  type BenchmarkDeps,
+  type BenchmarkEvent,
   type BenchmarkRunOptions,
   type CategoryResult,
   formatEventForStderr,
@@ -239,6 +250,15 @@ test("summarizeResults keeps errored tests in the judge average", (t) => {
   );
 
   t.is(summary.avgJudgeScore, 5);
+});
+
+test("summarizeResults reports a zero pass rate for an empty run", (t) => {
+  // 0/0 is NaN, which JSON.stringify writes as null — a documented `number`
+  // field must not arrive as null.
+  const summary = summarizeResults([], {});
+
+  t.is(summary.passRate, 0);
+  t.is(JSON.parse(JSON.stringify(summary)).passRate, 0);
 });
 
 test("summarizeResults records the judge model when one was used", (t) => {
@@ -643,4 +663,331 @@ test("generateMarkdownReport omits the failures table on a clean sweep", (t) => 
   t.false(
     generateMarkdownReport(report(), CONTEXT).includes("Failed Tests Summary"),
   );
+});
+
+// ── runBenchmark: the scoring loop, against a fake server ─────────────
+
+interface FakeSpec {
+  /** Text the fake model returns for call `n` (0-based). */
+  respond?: (call: number) => string;
+  /** Calls that should throw, as a timeout or transport failure would. */
+  failCalls?: number[];
+  /** Settle the server's `exited` promise after this many completions. */
+  dieAfterCalls?: number;
+  /** Judge verdict, when a test uses llm-judge. */
+  judge?: (response: string) => { pass: boolean; score: number };
+}
+
+interface FakeLog {
+  seeds: number[];
+  prompts: string[];
+  completions: number;
+  stopped: number;
+}
+
+function makeDeps(spec: FakeSpec = {}): { deps: BenchmarkDeps; log: FakeLog } {
+  const log: FakeLog = { seeds: [], prompts: [], completions: 0, stopped: 0 };
+  let settleExited: () => void = () => {};
+  const exited = new Promise<unknown>((resolve) => {
+    settleExited = () => resolve(undefined);
+  });
+
+  const deps = {
+    startLlamaServer: async () =>
+      ({ port: 1234, process: {}, exited }) as unknown as ServerHandle,
+    chatCompletion: async (
+      _handle: unknown,
+      messages: ChatMessage[],
+      options: { seed?: number },
+    ) => {
+      const call = log.completions++;
+      log.seeds.push(options.seed ?? -1);
+      log.prompts.push(messages.at(-1)?.content ?? "");
+      if (spec.dieAfterCalls !== undefined && call + 1 >= spec.dieAfterCalls) {
+        settleExited();
+      }
+      if (spec.failCalls?.includes(call)) {
+        throw new Error("timeout");
+      }
+      return {
+        text: spec.respond ? spec.respond(call) : "ls",
+        ttftMs: 10,
+        generationTimeMs: 90,
+        tokensGenerated: 20,
+        tokensPerSecond: 22.2,
+      };
+    },
+    stopLlamaServer: async () => {
+      log.stopped++;
+    },
+    callJudge: async (_p: string, response: string) => {
+      const verdict = spec.judge?.(response) ?? { pass: true, score: 9 };
+      return {
+        pass: verdict.pass,
+        score: verdict.score,
+        reasoning: "because",
+        criteriaScores: { helpful: verdict.score },
+      };
+    },
+  } as unknown as BenchmarkDeps;
+
+  return { deps, log };
+}
+
+function writeDataset(tests: BenchmarkTest[]) {
+  writeFileSync(join(BENCHMARKS_DIR, "tests.json"), JSON.stringify(tests));
+}
+
+function writeModel(): string {
+  const path = join(MODELS_DIR, "test.gguf");
+  writeFileSync(path, "gguf");
+  return path;
+}
+
+/** Run to completion, returning the final result and every event seen. */
+async function collect(
+  options: BenchmarkRunOptions,
+  deps: BenchmarkDeps,
+): Promise<{ result: BenchmarkResult; events: BenchmarkEvent[] }> {
+  const events: BenchmarkEvent[] = [];
+  let result: BenchmarkResult | null = null;
+  for await (const event of runBenchmark(options, deps)) {
+    events.push(event);
+    if (event.type === "done") {
+      result = event.result;
+    }
+  }
+  if (!result) {
+    throw new Error("run produced no result");
+  }
+  return { result, events };
+}
+
+test.serial("runBenchmark scores matching responses as passes", async (t) => {
+  const model = writeModel();
+  writeDataset([
+    { id: 1, prompt: "list files", acceptable: ["ls"], category: "basic" },
+    { id: 2, prompt: "where am I", acceptable: ["pwd"], category: "nav" },
+  ]);
+  const { deps } = makeDeps({ respond: (n) => (n === 0 ? "ls" : "pwd") });
+
+  const { result } = await collect({ model }, deps);
+
+  t.is(result.summary.total, 2);
+  t.is(result.summary.passed, 2);
+  t.is(result.summary.passRate, 1);
+  t.deepEqual(result.categories, {
+    basic: { passed: 1, total: 1 },
+    nav: { passed: 1, total: 1 },
+  });
+  t.deepEqual(result.failures, []);
+});
+
+test.serial("runBenchmark records a non-matching response as a failure", async (t) => {
+  const model = writeModel();
+  writeDataset([
+    { id: 7, prompt: "list files", acceptable: ["ls"], category: "basic" },
+  ]);
+  const { deps } = makeDeps({ respond: () => "rm -rf /" });
+
+  const { result } = await collect({ model }, deps);
+
+  t.is(result.summary.passed, 0);
+  t.is(result.failures.length, 1);
+  t.is(result.failures[0].id, 7);
+  t.deepEqual(result.failures[0].expected, ["ls"]);
+  t.is(result.failures[0].actual, "rm -rf /");
+});
+
+test.serial("runBenchmark carries per-test timings onto the result", async (t) => {
+  const model = writeModel();
+  writeDataset([{ id: 1, prompt: "p", acceptable: ["ls"], category: "basic" }]);
+  const { deps } = makeDeps();
+
+  const { result } = await collect({ model }, deps);
+
+  t.is(result.results[0].ttftMs, 10);
+  t.is(result.results[0].generationTimeMs, 90);
+  t.is(result.results[0].tokensGenerated, 20);
+  t.is(result.results[0].tokensPerSecond, 22.2);
+  t.is(result.summary.avgTokensPerSecond, 22.2);
+});
+
+test.serial("runBenchmark turns a timed-out call into a failed test, not a crash", async (t) => {
+  const model = writeModel();
+  writeDataset([{ id: 1, prompt: "p", acceptable: ["ls"], category: "basic" }]);
+  const { deps } = makeDeps({ failCalls: [0] });
+
+  const { result } = await collect({ model }, deps);
+
+  t.false(result.results[0].passed);
+  t.true(result.results[0].actual.startsWith("Error:"));
+  // A timeout's latency is not the model's speed, so it is left out.
+  t.is(result.summary.avgTokensPerSecond, undefined);
+});
+
+test.serial("runBenchmark varies the seed per sample and records the spread", async (t) => {
+  const model = writeModel();
+  writeDataset([{ id: 1, prompt: "p", acceptable: ["ls"], category: "basic" }]);
+  // Two of three samples match, so this is a flaky test, not a clean pass.
+  const { deps, log } = makeDeps({
+    respond: (n) => (n === 1 ? "nope" : "ls"),
+  });
+
+  const { result } = await collect(
+    { model, samples: "3", temperature: "0.8", seed: "100" },
+    deps,
+  );
+
+  t.deepEqual(log.seeds, [100, 101, 102]);
+  t.is(result.results[0].samples, 3);
+  t.is(Math.round((result.results[0].samplePassRate ?? 0) * 100), 67);
+  t.true((result.results[0].sampleVariance ?? 0) > 0);
+});
+
+test.serial("runBenchmark omits sampling stats on a single-sample run", async (t) => {
+  const model = writeModel();
+  writeDataset([{ id: 1, prompt: "p", acceptable: ["ls"], category: "basic" }]);
+  const { deps } = makeDeps();
+
+  const { result } = await collect({ model }, deps);
+
+  t.is(result.results[0].samples, undefined);
+  t.is(result.results[0].samplePassRate, undefined);
+});
+
+test.serial("runBenchmark scores an llm-judge test through the judge", async (t) => {
+  writeFileSync(
+    join(NANOTUNE_DIR, "judge.json"),
+    JSON.stringify({
+      name: "Fake",
+      baseUrl: "https://example.invalid",
+      model: "fake/judge-1",
+    }),
+  );
+  const model = writeModel();
+  writeDataset([
+    { id: 1, prompt: "explain recursion", category: "open", match: "llm-judge" },
+  ]);
+  const { deps } = makeDeps({ judge: () => ({ pass: true, score: 8 }) });
+
+  const { result } = await collect({ model }, deps);
+
+  t.true(result.results[0].passed);
+  t.is(result.results[0].judgeScore, 8);
+  t.is(result.results[0].judgeReasoning, "because");
+  t.is(result.summary.avgJudgeScore, 8);
+  t.is(result.summary.judgeModel, "fake/judge-1");
+});
+
+test.serial("runBenchmark saves partial results when the server dies mid-run", async (t) => {
+  const model = writeModel();
+  writeDataset([
+    { id: 1, prompt: "a", acceptable: ["ls"], category: "basic" },
+    { id: 2, prompt: "b", acceptable: ["ls"], category: "basic" },
+    { id: 3, prompt: "c", acceptable: ["ls"], category: "basic" },
+  ]);
+  const { deps } = makeDeps({ dieAfterCalls: 1 });
+
+  const { result, events } = await collect({ model }, deps);
+
+  // Scored against what actually ran, not the dataset length.
+  t.is(result.summary.total, 1);
+  t.true(events.some((e) => e.type === "warning"));
+  // Without this a saved partial run is indistinguishable from a complete one.
+  t.true(result.warning?.includes("1 of 3 tests"));
+});
+
+test.serial("runBenchmark leaves warning unset on a complete run", async (t) => {
+  const model = writeModel();
+  writeDataset([{ id: 1, prompt: "p", acceptable: ["ls"], category: "basic" }]);
+  const { deps } = makeDeps();
+
+  const { result } = await collect({ model }, deps);
+
+  t.is(result.warning, undefined);
+});
+
+test.serial("runBenchmark writes both the JSON result and the Markdown report", async (t) => {
+  const model = writeModel();
+  writeDataset([{ id: 1, prompt: "p", acceptable: ["ls"], category: "basic" }]);
+  const { deps } = makeDeps();
+
+  const { result } = await collect({ model }, deps);
+
+  const written = readdirSync(BENCHMARKS_DIR);
+  const json = written.find((f) => f.startsWith("benchmark-") && f.endsWith(".json"));
+  const md = written.find((f) => f.startsWith("benchmark-") && f.endsWith(".md"));
+  t.truthy(json);
+  t.truthy(md);
+  // The saved document is the same one --json prints.
+  t.deepEqual(
+    JSON.parse(readFileSync(join(BENCHMARKS_DIR, json as string), "utf-8")),
+    JSON.parse(JSON.stringify(result)),
+  );
+});
+
+test.serial("runBenchmark records the sampling config it ran under", async (t) => {
+  const model = writeModel();
+  writeDataset([{ id: 1, prompt: "p", acceptable: ["ls"], category: "basic" }]);
+  const { deps } = makeDeps();
+
+  const { result } = await collect(
+    { model, temperature: "0.5", seed: "9", samples: "2" },
+    deps,
+  );
+
+  t.deepEqual(result.config, { temperature: 0.5, seed: 9, samples: 2 });
+  t.false(result.isBase);
+});
+
+test.serial("runBenchmark stops the server even when a test throws", async (t) => {
+  const model = writeModel();
+  writeDataset([{ id: 1, prompt: "p", acceptable: ["ls"], category: "basic" }]);
+  const { deps, log } = makeDeps({ failCalls: [0] });
+
+  await collect({ model }, deps);
+
+  t.is(log.stopped, 1);
+});
+
+test.serial("runBenchmark emits a test-start and test-end for every test", async (t) => {
+  const model = writeModel();
+  writeDataset([
+    { id: 1, prompt: "first", acceptable: ["ls"], category: "basic" },
+    { id: 2, prompt: "second", acceptable: ["ls"], category: "basic" },
+  ]);
+  const { deps } = makeDeps();
+
+  const { events } = await collect({ model }, deps);
+
+  const starts = events.filter((e) => e.type === "test-start");
+  t.is(starts.length, 2);
+  t.deepEqual(
+    starts.map((e) => (e.type === "test-start" ? e.prompt : "")),
+    ["first", "second"],
+  );
+  t.is(events.filter((e) => e.type === "test-end").length, 2);
+  t.is(events.at(-1)?.type, "done");
+});
+
+test.serial("runBenchmark sends multi-turn messages through to the model", async (t) => {
+  const model = writeModel();
+  writeDataset([
+    {
+      id: 1,
+      messages: [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: "hello" },
+        { role: "user", content: "and now?" },
+      ],
+      acceptable: ["ls"],
+      category: "multi",
+    },
+  ]);
+  const { deps, log } = makeDeps();
+
+  await collect({ model }, deps);
+
+  t.is(log.prompts[0], "and now?");
 });
