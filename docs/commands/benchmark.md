@@ -32,7 +32,7 @@ Use `--preset <name>` to quickly configure for your hardware:
 | `--preset <name>` | Use a hardware profile: `low`, `medium`, `high`, `ultra` |
 | `-m, --model <path>` | Path to model file |
 | `-d, --dataset <path>` | Path to benchmark dataset |
-| `-t, --timeout <ms>` | Timeout per test (default: 30000) |
+| `-t, --timeout <ms>` | Timeout per model call — generation, and the LLM-judge call that scores it (default: 30000) |
 | `--threads <n>` | CPU threads (default: auto) |
 | `--gpu-layers <n>` | GPU layers to offload (default: max) |
 | `--ctx-size <n>` | Context size in tokens (default: 4096) |

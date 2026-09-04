@@ -7,11 +7,14 @@ import {
 	statSync,
 	writeFileSync,
 } from 'node:fs';
+import {createServer, type Server} from 'node:http';
+import type {AddressInfo, Socket} from 'node:net';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'ava';
 import {
 	buildJudgePrompt,
+	callJudge,
 	getJudgeConfigPath,
 	JUDGE_CRITERIA,
 	parseJudgeResponse,
@@ -332,5 +335,117 @@ test.serial('saveJudgeConfig - recovers from a stale temp file', t => {
 	} finally {
 		process.chdir(originalCwd);
 		rmSync(dir, {recursive: true, force: true});
+	}
+});
+
+// callJudge
+
+/**
+ * Start a local OpenAI-compatible endpoint and hand back its base URL plus a
+ * teardown. `respond` is left undefined to model the failure this guards
+ * against: a server that accepts the connection and never answers, which is
+ * what a hung model server or a slow rate-limit backoff looks like from here.
+ */
+async function startJudgeEndpoint(respond?: (content: string) => string) {
+	const sockets: Socket[] = [];
+	const server: Server = createServer((_req, res) => {
+		if (!respond) return;
+		res.writeHead(200, {'content-type': 'application/json'});
+		res.end(respond(''));
+	});
+	server.on('connection', socket => sockets.push(socket));
+	await new Promise<void>(resolve => {
+		server.listen(0, '127.0.0.1', resolve);
+	});
+	const {port} = server.address() as AddressInfo;
+	return {
+		baseUrl: `http://127.0.0.1:${port}/v1`,
+		async close() {
+			// A never-answered request holds its socket open, so the server would
+			// never finish closing and the test worker would never exit.
+			for (const socket of sockets) socket.destroy();
+			await new Promise<void>(resolve => {
+				server.close(() => resolve());
+			});
+		},
+	};
+}
+
+test.serial('callJudge - an abort signal cancels a judge that never replies', async t => {
+	// Before the fix callJudge took no signal and forwarded none into
+	// generateText, so this await never settled and `benchmark --timeout` had
+	// nothing to say about it.
+	const endpoint = await startJudgeEndpoint();
+	const controller = new AbortController();
+	const timeoutId = setTimeout(() => controller.abort(), 250);
+	const startedAt = Date.now();
+	try {
+		await t.throwsAsync(
+			callJudge(
+				'What is 2+2?',
+				'4',
+				resolveCriteria(['helpful']),
+				{
+					name: 'Stalled',
+					baseUrl: endpoint.baseUrl,
+					model: 'test-model',
+				},
+				7,
+				undefined,
+				controller.signal,
+			),
+		);
+		// Not just "it threw": it threw on the budget. The AI SDK retries a
+		// failed call by default, so an unaborted attempt would still be
+		// waiting here rather than having given up.
+		t.true(
+			Date.now() - startedAt < 3000,
+			'judge call outlived the abort budget',
+		);
+	} finally {
+		clearTimeout(timeoutId);
+		await endpoint.close();
+	}
+});
+
+test.serial('callJudge - returns the judge verdict when the provider answers', async t => {
+	// The signal is optional and must stay out of the way: a judge that
+	// replies inside its budget still scores the response normally.
+	const verdict =
+		'{"scores": {"helpful": 9}, "overall": 9, "reasoning": "Correct.", "pass": true}';
+	const endpoint = await startJudgeEndpoint(() =>
+		JSON.stringify({
+			id: 'chatcmpl-test',
+			object: 'chat.completion',
+			created: 0,
+			model: 'test-model',
+			choices: [
+				{
+					index: 0,
+					message: {role: 'assistant', content: verdict},
+					finish_reason: 'stop',
+				},
+			],
+			usage: {prompt_tokens: 1, completion_tokens: 1, total_tokens: 2},
+		}),
+	);
+	const controller = new AbortController();
+	const timeoutId = setTimeout(() => controller.abort(), 5000);
+	try {
+		const result = await callJudge(
+			'What is 2+2?',
+			'4',
+			resolveCriteria(['helpful']),
+			{name: 'Local', baseUrl: endpoint.baseUrl, model: 'test-model'},
+			7,
+			undefined,
+			controller.signal,
+		);
+		t.true(result.pass);
+		t.is(result.score, 9);
+		t.is(result.criteriaScores.helpful, 9);
+	} finally {
+		clearTimeout(timeoutId);
+		await endpoint.close();
 	}
 });
