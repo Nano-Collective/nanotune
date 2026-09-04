@@ -6,6 +6,7 @@ import {
   appendToTrainingData,
   appendTrainingExample,
   clampPagination,
+  collectValidation,
   countExamples,
   countTurns,
   dedupeExamples,
@@ -1432,4 +1433,155 @@ test.serial("clampPagination keeps mid-page selection after a deletion", (t) => 
 
 test.serial("clampPagination handles a page size of one", (t) => {
   t.deepEqual(clampPagination(3, 3, 0, 1), { page: 2, selectedIndex: 0 });
+});
+
+// ── validateTrainingData structured counts ────────────────────────────
+
+test.serial("validateTrainingData reports duplicate and context counts as numbers", (t) => {
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "same", assistantOutput: "A" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "same", assistantOutput: "B" });
+  appendToTrainingData({ contextMessage: DEV_CTX, userInput: "other", assistantOutput: "C" });
+
+  const result = validateTrainingData(SYSTEM_CTX);
+
+  // Consumers read these rather than pattern-matching the warning text.
+  t.is(result.duplicateInputs, 1);
+  t.is(result.inconsistentContextMessages, 1);
+});
+
+test.serial("validateTrainingData reports zero counts when there is no data", (t) => {
+  rmSync(join(DATA_DIR, "train.jsonl"), { force: true });
+
+  const result = validateTrainingData(SYSTEM_CTX);
+
+  t.is(result.duplicateInputs, 0);
+  t.is(result.inconsistentContextMessages, 0);
+});
+
+// ── collectValidation ─────────────────────────────────────────────────
+
+const VALIDATE_CONFIG = {
+  name: "test-project",
+  version: "1.0.0",
+  baseModel: "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+  contextMessage: SYSTEM_CTX,
+  training: {},
+  export: { quantization: "q4_k_m", outputName: "test" },
+};
+
+function writeConfig() {
+  writeFileSync(
+    join(TEST_DIR, ".nanotune", "config.json"),
+    JSON.stringify(VALIDATE_CONFIG, null, 2),
+  );
+}
+
+test.serial("collectValidation reports a clean training set", (t) => {
+  writeConfig();
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" });
+
+  const report = collectValidation();
+
+  t.is(report.set, "train");
+  t.is(report.examples, 1);
+  t.true(report.valid);
+  t.deepEqual(report.errors, []);
+  t.true(report.checks.dataFileExists);
+  t.true(report.checks.validJsonStructure);
+  t.true(report.checks.contextMessageConsistency);
+  t.true(report.checks.noDuplicateInputs);
+});
+
+test.serial("collectValidation flags duplicates through checks, not warning text", (t) => {
+  writeConfig();
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "same", assistantOutput: "A" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "same", assistantOutput: "B" });
+
+  const report = collectValidation();
+
+  t.false(report.checks.noDuplicateInputs);
+  t.true(report.valid); // duplicates are a warning, not an error
+});
+
+test.serial("collectValidation flags a mismatched context message", (t) => {
+  writeConfig();
+  appendToTrainingData({ contextMessage: DEV_CTX, userInput: "A", assistantOutput: "B" });
+
+  const report = collectValidation();
+
+  t.false(report.checks.contextMessageConsistency);
+});
+
+test.serial("collectValidation applies the 50-example floor to a training set", (t) => {
+  writeConfig();
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" });
+
+  const report = collectValidation();
+
+  t.false(report.checks.minimumExampleCount);
+});
+
+test.serial("collectValidation exempts a validation set from the 50-example floor", (t) => {
+  writeConfig();
+  appendToTrainingData(
+    { contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" },
+    true,
+  );
+
+  const report = collectValidation({ isEval: true });
+
+  // A validation set is a slice of the training data, so the floor is a
+  // training-set rule — matching what validateTrainingData already warns on.
+  t.is(report.set, "eval");
+  t.true(report.checks.minimumExampleCount);
+  t.true(report.valid);
+});
+
+test.serial("collectValidation reports no fixes when neither fix flag is passed", (t) => {
+  writeConfig();
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" });
+
+  t.is(collectValidation().fixes, null);
+});
+
+test.serial("collectValidation re-validates after --fix removes duplicates", (t) => {
+  writeConfig();
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" });
+
+  const report = collectValidation({ fix: true });
+
+  t.is(report.fixes?.duplicatesRemoved, 1);
+  t.is(report.examples, 1);
+  // The report describes the data left on disk, not the state on entry.
+  t.true(report.checks.noDuplicateInputs);
+});
+
+test.serial("collectValidation reports context rewrites from --rewrite-context", (t) => {
+  writeConfig();
+  appendToTrainingData({ contextMessage: DEV_CTX, userInput: "A", assistantOutput: "B" });
+
+  const report = collectValidation({ rewriteContext: true });
+
+  t.is(report.fixes?.contextMessagesRewritten, 1);
+  t.is(report.fixes?.duplicatesRemoved, 0);
+  t.true(report.checks.contextMessageConsistency);
+});
+
+test.serial("collectValidation surfaces errors for a malformed example", (t) => {
+  writeConfig();
+  const bad: TrainingExample = { messages: [{ role: "user", content: "lonely" }] };
+  writeFileSync(join(DATA_DIR, "train.jsonl"), `${JSON.stringify(bad)}\n`);
+
+  const report = collectValidation();
+
+  t.false(report.valid);
+  t.false(report.checks.validJsonStructure);
+  t.true(report.errors.some((e) => e.includes("at least 2 messages")));
+});
+
+test.serial("collectValidation throws the init hint outside a project", (t) => {
+  const error = t.throws(() => collectValidation());
+
+  t.true(error?.message.includes("Not a Nanotune project"));
 });

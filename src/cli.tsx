@@ -3,6 +3,7 @@ import {readFileSync} from 'node:fs';
 import {Command} from 'commander';
 import {render} from 'ink';
 import type {ReactElement} from 'react';
+import type {BenchmarkRunOptions} from './lib/benchmark-run.js';
 import {interactiveRequiredMessage, supportsRawMode} from './lib/tty.js';
 
 const pkg = JSON.parse(
@@ -116,12 +117,30 @@ dataCommand
 		"Rewrite each example's context message to match the current config",
 	)
 	.option('-e, --eval', 'Validate the validation set instead of training data')
+	.option('--json', 'Print the validation report as JSON on stdout')
 	.action(
 		async (options: {
 			fix?: boolean;
 			rewriteContext?: boolean;
 			eval?: boolean;
+			json?: boolean;
 		}) => {
+			if (options.json) {
+				const {collectValidation} = await import('./lib/data.js');
+				const {emitJson} = await import('./lib/json-output.js');
+				// Invalid data still prints its report — the report is the useful
+				// part — but exits non-zero, matching the Ink path's exit code.
+				await emitJson(
+					() =>
+						collectValidation({
+							fix: options.fix,
+							rewriteContext: options.rewriteContext,
+							isEval: options.eval,
+						}),
+					report => !report.valid,
+				);
+				return;
+			}
 			const {DataValidateCommand} = await import('./commands/data/validate.js');
 			render(
 				<DataValidateCommand
@@ -215,7 +234,30 @@ const benchmarkCommand = program
 		'--samples <n>',
 		'Run each test n times and report pass rate and variance (default: 1)',
 	)
-	.action(async options => {
+	.option('--json', 'Print the benchmark result as JSON on stdout')
+	.action(async (options: BenchmarkRunOptions & {json?: boolean}) => {
+		if (options.json) {
+			const {formatEventForStderr, runBenchmark} = await import(
+				'./lib/benchmark-run.js'
+			);
+			const {emitJson} = await import('./lib/json-output.js');
+			// A suite can run for minutes, so progress goes to stderr rather than
+			// leaving the caller staring at nothing — stdout stays empty until
+			// the one JSON document.
+			await emitJson(async () => {
+				for await (const event of runBenchmark(options)) {
+					if (event.type === 'done') {
+						return event.result;
+					}
+					const line = formatEventForStderr(event);
+					if (line) {
+						process.stderr.write(`${line}\n`);
+					}
+				}
+				throw new Error('Benchmark finished without producing a result.');
+			});
+			return;
+		}
 		const {BenchmarkCommand} = await import('./commands/benchmark.js');
 		render(<BenchmarkCommand options={options} />);
 	});
@@ -288,7 +330,17 @@ judgeCommand
 program
 	.command('status')
 	.description('Show current project status')
-	.action(async () => {
+	.option('--json', 'Print the status report as JSON on stdout')
+	.action(async (options: {json?: boolean}) => {
+		// Ink must never mount in JSON mode: `render` writes to stdout as soon
+		// as it does, and a box-drawn frame in the middle of the document is not
+		// something a consumer can recover from.
+		if (options.json) {
+			const {collectStatus} = await import('./lib/status.js');
+			const {emitJson} = await import('./lib/json-output.js');
+			await emitJson(collectStatus);
+			return;
+		}
 		const {StatusCommand} = await import('./commands/status.js');
 		render(<StatusCommand />);
 	});

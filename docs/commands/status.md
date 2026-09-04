@@ -20,3 +20,21 @@ nanotune status
 - **Training progress** — Current state and last training run
 - **Exports** — Available GGUF files
 - **Benchmark results** — Latest benchmark summary
+
+## Options
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Print the status report as JSON on stdout instead of the interactive report |
+
+## JSON Output
+
+`--json` prints a single JSON document to stdout, for scripts and CI:
+
+```bash
+nanotune status --json | jq '.benchmarks.latest.passRate'
+```
+
+Outside a project the command writes nothing to stdout, reports the reason on
+stderr, and exits `1`. See [JSON Output](../guides/json-output.md) for the full
+schema and the guarantees it comes with.
