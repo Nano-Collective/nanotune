@@ -116,12 +116,30 @@ dataCommand
 		"Rewrite each example's context message to match the current config",
 	)
 	.option('-e, --eval', 'Validate the validation set instead of training data')
+	.option('--json', 'Print the validation report as JSON on stdout')
 	.action(
 		async (options: {
 			fix?: boolean;
 			rewriteContext?: boolean;
 			eval?: boolean;
+			json?: boolean;
 		}) => {
+			if (options.json) {
+				const {collectValidation} = await import('./lib/data.js');
+				const {emitJson} = await import('./lib/json-output.js');
+				// Invalid data still prints its report — the report is the useful
+				// part — but exits non-zero, matching the Ink path's exit code.
+				emitJson(
+					() =>
+						collectValidation({
+							fix: options.fix,
+							rewriteContext: options.rewriteContext,
+							isEval: options.eval,
+						}),
+					report => !report.valid,
+				);
+				return;
+			}
 			const {DataValidateCommand} = await import('./commands/data/validate.js');
 			render(
 				<DataValidateCommand
@@ -288,7 +306,17 @@ judgeCommand
 program
 	.command('status')
 	.description('Show current project status')
-	.action(async () => {
+	.option('--json', 'Print the status report as JSON on stdout')
+	.action(async (options: {json?: boolean}) => {
+		// Ink must never mount in JSON mode: `render` writes to stdout as soon
+		// as it does, and a box-drawn frame in the middle of the document is not
+		// something a consumer can recover from.
+		if (options.json) {
+			const {collectStatus} = await import('./lib/status.js');
+			const {emitJson} = await import('./lib/json-output.js');
+			emitJson(collectStatus);
+			return;
+		}
 		const {StatusCommand} = await import('./commands/status.js');
 		render(<StatusCommand />);
 	});
