@@ -1,5 +1,5 @@
 import test from 'ava';
-import {substituteEnvVars} from './env-substitution.js';
+import {isUnresolvedEnvRef, substituteEnvVars} from './env-substitution.js';
 
 // Suppress console.error noise from missing env var warnings
 const originalConsoleError = console.error;
@@ -19,10 +19,11 @@ test('substituteEnvVars - returns string with existing env var', t => {
 	delete process.env.TEST_VAR;
 });
 
-test('substituteEnvVars - returns string with unbraced env var', t => {
+test('substituteEnvVars - leaves an unbraced $NAME alone', t => {
+	// The `$NAME` form is gone: it matched any `$` before an uppercase letter,
+	// which is a shape real API keys have.
 	process.env.MY_VAR = 'my_value';
-	const result = substituteEnvVars('$MY_VAR');
-	t.is(result, 'my_value');
+	t.is(substituteEnvVars('$MY_VAR'), '$MY_VAR');
 	delete process.env.MY_VAR;
 });
 
@@ -31,27 +32,40 @@ test('substituteEnvVars - uses default value when env var not set', t => {
 	t.is(result, 'default_value');
 });
 
-test('substituteEnvVars - returns empty string when env var not found and no default', t => {
-	const result = substituteEnvVars('${NONEXISTENT_VAR_XYZ}');
-	t.is(result, '');
+test('substituteEnvVars - leaves the reference intact when the var is unset', t => {
+	// Not '': a blank credential reaches the provider as a 401 that blames the
+	// user's account. The intact reference lets loadJudgeConfig name the variable.
+	t.is(substituteEnvVars('${NONEXISTENT_VAR_XYZ}'), '${NONEXISTENT_VAR_XYZ}');
 });
 
-test('substituteEnvVars - substitutes multiple vars in one string', t => {
+test('substituteEnvVars - resolves a variable that is set but empty', t => {
+	// Set-but-empty is still set, so it wins over both the default and the
+	// leave-it-alone fallback.
+	process.env.EMPTY_VAR = '';
+	t.is(substituteEnvVars('${EMPTY_VAR}'), '');
+	delete process.env.EMPTY_VAR;
+});
+
+test('substituteEnvVars - honours an empty default', t => {
+	t.is(substituteEnvVars('${NONEXISTENT_VAR_XYZ:-}'), '');
+});
+
+test('substituteEnvVars - leaves a string holding several references alone', t => {
+	// Only a whole-value reference substitutes, so this is a literal now.
 	process.env.FIRST = 'hello';
 	process.env.SECOND = 'world';
-	const result = substituteEnvVars('${FIRST} ${SECOND}');
-	t.is(result, 'hello world');
+	t.is(substituteEnvVars('${FIRST} ${SECOND}'), '${FIRST} ${SECOND}');
 	delete process.env.FIRST;
 	delete process.env.SECOND;
 });
 
-test('substituteEnvVars - handles mixed braced and unbraced vars', t => {
-	process.env.VAR1 = 'a';
-	process.env.VAR2 = 'b';
-	const result = substituteEnvVars('${VAR1} and $VAR2');
-	t.is(result, 'a and b');
-	delete process.env.VAR1;
-	delete process.env.VAR2;
+test('substituteEnvVars - leaves an embedded reference alone', t => {
+	process.env.HOST_VAR = 'example.com';
+	t.is(
+		substituteEnvVars('https://${HOST_VAR}/v1'),
+		'https://${HOST_VAR}/v1',
+	);
+	delete process.env.HOST_VAR;
 });
 
 // Non-string input
@@ -80,8 +94,8 @@ test('substituteEnvVars - returns undefined unchanged', t => {
 
 test('substituteEnvVars - substitutes vars in array of strings', t => {
 	process.env.ARRAY_VAR = 'array_value';
-	const result = substituteEnvVars(['prefix-${ARRAY_VAR}-suffix']);
-	t.deepEqual(result, ['prefix-array_value-suffix']);
+	const result = substituteEnvVars(['${ARRAY_VAR}', 'prefix-${ARRAY_VAR}']);
+	t.deepEqual(result, ['array_value', 'prefix-${ARRAY_VAR}']);
 	delete process.env.ARRAY_VAR;
 });
 
@@ -133,8 +147,77 @@ test('substituteEnvVars - complex config object', t => {
 	t.deepEqual(result, {
 		server: {host: 'localhost', port: '8080', ssl: true},
 		fallback: 'fallback_url',
-		endpoints: ['localhost/api', 'localhost/health'],
+		// Embedded, so literal.
+		endpoints: ['${HOST}/api', '${HOST}/health'],
 	});
 	delete process.env.HOST;
 	delete process.env.PORT;
+});
+
+// Literal API keys
+
+// Every shape below reached expandEnvVar's old unbraced `$NAME` branch and came
+// back truncated, on every load, while judge.json still read correctly on disk.
+for (const key of [
+	'sk-live$SECRET_PART-abc123',
+	'sk-ant-api03-AB$CD-EF',
+	'sk-live$secret-abc123',
+	'sk-$A$B$C',
+	'$LEADING-dollar',
+	'trailing-dollar$',
+]) {
+	test(`substituteEnvVars - literal key round-trips: ${key}`, t => {
+		// Set, so a surviving expansion swaps in a value rather than '' and the
+		// assertion cannot pass by the variable happening to be unset.
+		process.env.SECRET_PART = 'LEAKED';
+		process.env.CD = 'LEAKED';
+		process.env.A = 'LEAKED';
+		process.env.LEADING = 'LEAKED';
+		t.is(substituteEnvVars(key), key);
+		t.false(substituteEnvVars(key).includes('LEAKED'));
+		for (const name of ['SECRET_PART', 'CD', 'A', 'LEADING']) {
+			delete process.env[name];
+		}
+	});
+}
+
+test('substituteEnvVars - a literal key survives inside a judge config', t => {
+	// The path that actually broke: loadJudgeConfig hands the whole parsed
+	// judge.json through, so the key is corrupted in transit rather than on disk.
+	process.env.CD = 'LEAKED';
+	t.deepEqual(
+		substituteEnvVars({
+			name: 'Anthropic',
+			baseUrl: 'https://api.anthropic.com/v1',
+			apiKey: 'sk-ant-api03-AB$CD-EF',
+			model: 'claude-haiku',
+		}),
+		{
+			name: 'Anthropic',
+			baseUrl: 'https://api.anthropic.com/v1',
+			apiKey: 'sk-ant-api03-AB$CD-EF',
+			model: 'claude-haiku',
+		},
+	);
+	delete process.env.CD;
+});
+
+// isUnresolvedEnvRef
+
+test('isUnresolvedEnvRef - true for a bare reference', t => {
+	t.true(isUnresolvedEnvRef('${SOME_VAR}'));
+});
+
+test('isUnresolvedEnvRef - false for a literal key that contains a dollar', t => {
+	// The guard must never reject a key the user pasted verbatim.
+	t.false(isUnresolvedEnvRef('sk-ant-api03-AB$CD-EF'));
+	t.false(isUnresolvedEnvRef('https://${HOST}/v1'));
+	t.false(isUnresolvedEnvRef(''));
+	t.false(isUnresolvedEnvRef(undefined));
+});
+
+test('isUnresolvedEnvRef - false once the reference has resolved', t => {
+	process.env.RESOLVED_VAR = 'a-real-value';
+	t.false(isUnresolvedEnvRef(substituteEnvVars('${RESOLVED_VAR}')));
+	delete process.env.RESOLVED_VAR;
 });
