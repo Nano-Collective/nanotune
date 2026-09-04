@@ -90,6 +90,28 @@ export type BenchmarkEvent =
 	| {type: 'warning'; message: string}
 	| {type: 'done'; result: BenchmarkResult};
 
+/**
+ * The llama-server and judge calls a run makes.
+ *
+ * Injectable so the scoring loop — sampling, timeouts, judge-vs-match
+ * dispatch, category tallying, failure recording — can be exercised against a
+ * fake instead of a live server and a real model. Production always takes the
+ * default; only tests pass this.
+ */
+export interface BenchmarkDeps {
+	startLlamaServer: typeof startLlamaServer;
+	chatCompletion: typeof chatCompletion;
+	stopLlamaServer: typeof stopLlamaServer;
+	callJudge: typeof callJudge;
+}
+
+const DEFAULT_DEPS: BenchmarkDeps = {
+	startLlamaServer,
+	chatCompletion,
+	stopLlamaServer,
+	callJudge,
+};
+
 const VALID_PRESETS: BenchmarkPreset[] = ['low', 'medium', 'high', 'ultra'];
 
 /**
@@ -219,7 +241,10 @@ export function summarizeResults(
 		total: totalTests,
 		passed: totalPassed,
 		failed: totalTests - totalPassed,
-		passRate: totalPassed / totalTests,
+		// Guarded: an empty dataset makes this 0/0, and `JSON.stringify` writes
+		// NaN as `null` — a documented `number` field arriving as null is worse
+		// for a consumer than an honest zero.
+		passRate: totalTests > 0 ? totalPassed / totalTests : 0,
 		avgLatencyMs: averageOver(allResults, r => r.latencyMs, Math.round),
 		avgTokensPerSecond: averageOver(
 			allResults,
@@ -439,6 +464,7 @@ export function generateMarkdownReport(
  */
 export async function* runBenchmark(
 	options: BenchmarkRunOptions,
+	deps: BenchmarkDeps = DEFAULT_DEPS,
 ): AsyncGenerator<BenchmarkEvent> {
 	if (!configExists()) {
 		throw new Error('Not a Nanotune project. Run `nanotune init` first.');
@@ -638,7 +664,7 @@ export async function* runBenchmark(
 
 	// Start llama-server once for the whole run — cold-starting per test would
 	// multiply latency by N and cache the model from disk N times.
-	const serverHandle = await startLlamaServer(modelPath, serverOptions);
+	const serverHandle = await deps.startLlamaServer(modelPath, serverOptions);
 
 	// The server can die under us mid-run (OOM, an incompatible GGUF, an
 	// external kill). `exited` settles the moment it does — stop there and
@@ -701,7 +727,7 @@ export async function* runBenchmark(
 					let sampleResponse = '';
 					let sampleFailed = false;
 					try {
-						const inferenceResult = await chatCompletion(
+						const inferenceResult = await deps.chatCompletion(
 							serverHandle,
 							requestMessages,
 							{
@@ -748,7 +774,7 @@ export async function* runBenchmark(
 						const judgePrompt = test.messages
 							? formatConversationForJudge(test.messages, contextMsg)
 							: (test.prompt as string);
-						const judgeResult = await callJudge(
+						const judgeResult = await deps.callJudge(
 							judgePrompt,
 							sampleResponse.trim(),
 							criteria,
@@ -829,7 +855,7 @@ export async function* runBenchmark(
 			yield {type: 'test-end', categories: {...categoryResults}};
 		}
 	} finally {
-		await stopLlamaServer(serverHandle);
+		await deps.stopLlamaServer(serverHandle);
 	}
 
 	if (abortReason && allResults.length === 0) {
