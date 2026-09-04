@@ -1,5 +1,6 @@
 import {StatusMessage} from '@inkjs/ui';
 import {Box, Text, useApp} from 'ink';
+import {useRef} from 'react';
 import {
 	ExitHint,
 	Header,
@@ -18,8 +19,16 @@ import {
 	type DedupeResult,
 	dedupeExamples,
 	fixContextMessages,
+	type ValidationResult,
 	validateTrainingData,
 } from '../../lib/data.js';
+
+interface Report {
+	dedupeResult: DedupeResult | null;
+	contextFixResult: ContextFixResult | null;
+	count: number;
+	result: ValidationResult | null;
+}
 
 interface Props {
 	fix?: boolean;
@@ -44,28 +53,48 @@ export function DataValidateCommand({
 	const setName = isEval ? 'Validation data' : 'Training data';
 	const title = isEval ? 'Validate Validation Data' : 'Validate Training Data';
 
-	let dedupeResult: DedupeResult | null = null;
-	let contextFixResult: ContextFixResult | null = null;
-	if (hasConfig) {
-		// Rewrite context first: examples that only become identical after
-		// context normalization must still be caught by dedupe in this pass.
-		if (rewriteContext) {
-			contextFixResult = fixContextMessages(
-				resolveContextMessage(loadConfig()),
-				isEval,
-			);
+	// Everything that touches the dataset happens once per invocation, here.
+	// `--fix` and `--rewrite-context` rewrite train.jsonl, and a render body
+	// carries no promise about how many times it runs. Nothing re-renders this
+	// component today — it holds no state and sits at the root of the tree — but
+	// that is a fact about the current tree, not a guarantee. Any state, context
+	// or parent re-render added later would replay the write silently, with no
+	// user action behind it.
+	//
+	// A ref rather than an effect: the fixes have to land before the first frame
+	// reports on them, and before useAutoExit below reads result.valid to decide
+	// the exit code. An effect would run after both.
+	const reportRef = useRef<Report | null>(null);
+	if (reportRef.current === null) {
+		let dedupeResult: DedupeResult | null = null;
+		let contextFixResult: ContextFixResult | null = null;
+		if (hasConfig) {
+			// Rewrite context first: examples that only become identical after
+			// context normalization must still be caught by dedupe in this pass.
+			if (rewriteContext) {
+				contextFixResult = fixContextMessages(
+					resolveContextMessage(loadConfig()),
+					isEval,
+				);
+			}
+			if (fix) {
+				dedupeResult = dedupeExamples(isEval);
+			}
 		}
-		if (fix) {
-			dedupeResult = dedupeExamples(isEval);
-		}
+
+		reportRef.current = {
+			dedupeResult,
+			contextFixResult,
+			// Re-validate after fixes are applied so the report reflects the data
+			// actually left on disk.
+			count: hasConfig ? countExamples(isEval) : 0,
+			result: hasConfig
+				? validateTrainingData(resolveContextMessage(loadConfig()), isEval)
+				: null,
+		};
 	}
 
-	// Re-validate after fixes are applied so the report reflects the data
-	// actually left on disk.
-	const count = hasConfig ? countExamples(isEval) : 0;
-	const result = hasConfig
-		? validateTrainingData(resolveContextMessage(loadConfig()), isEval)
-		: null;
+	const {dedupeResult, contextFixResult, count, result} = reportRef.current;
 
 	// Report is fully rendered on first pass — without a keyboard there is
 	// nothing to wait for. Invalid data exits non-zero so CI can gate on it.

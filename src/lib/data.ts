@@ -7,7 +7,7 @@ import {
 } from 'node:fs';
 import {join} from 'node:path';
 import type {ChatMessage, TrainingExample} from '../types/index.js';
-import {getDataDir} from './config.js';
+import {getDataDir, writeFileAtomic} from './config.js';
 
 function ensureDataDir(): void {
 	const dataDir = getDataDir();
@@ -94,7 +94,10 @@ export function saveTrainingData(
 	ensureDataDir();
 	const path = isEval ? getEvalDataPath() : getTrainDataPath();
 	const content = `${examples.map(ex => JSON.stringify(ex)).join('\n')}\n`;
-	writeFileSync(path, content);
+	// Temp-file-and-rename: this rewrites the user's whole dataset, so a crash,
+	// a full disk or a kill between truncate and write would otherwise leave
+	// train.jsonl short of the examples it started with.
+	writeFileAtomic(path, content);
 }
 
 export function deleteExample(index: number, isEval = false): void {

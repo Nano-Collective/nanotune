@@ -243,6 +243,79 @@ test.serial("DataValidateCommand reports errors and warnings", async (t) => {
   }
 });
 
+// ── data validate writes once per invocation ─────────────────
+
+// The fixes used to sit loose in the render body, where nothing bounded how
+// often they ran. No event reaches this component today — a terminal resize
+// drives Ink's output pass, not React's reconciler — so this guards the next
+// state or context someone adds here, and these are the tests that would catch
+// it. Forcing a second render pass asserts the invariant directly: put the bad
+// data back in between, and a write that re-runs cleans it up again where a
+// write that ran once leaves it.
+
+test.serial("DataValidateCommand dedupes once, not on every render", async (t) => {
+  const originalTTY = process.stdin.isTTY;
+  try {
+    // A real terminal, so useAutoExit parks on "Press any key to exit" and the
+    // component stays mounted across the second pass, exactly as the bug needs.
+    process.stdin.isTTY = true;
+    setupProject();
+    const duplicated = [example("hello"), example("hello"), example("goodbye")];
+    writeExamples(duplicated);
+
+    const instance = render(<DataValidateCommand fix />);
+    await settle();
+    t.is(loadTrainingData().length, 2, "first pass should dedupe");
+
+    // Re-introduce the duplicate behind the mounted component's back.
+    writeExamples(duplicated);
+    instance.rerender(<DataValidateCommand fix />);
+    await settle();
+
+    t.is(loadTrainingData().length, 3, "second render pass must not dedupe again");
+    instance.unmount();
+  } finally {
+    process.stdin.isTTY = originalTTY;
+    teardown();
+  }
+});
+
+test.serial("DataValidateCommand rewrites context once, not on every render", async (t) => {
+  const originalTTY = process.stdin.isTTY;
+  try {
+    process.stdin.isTTY = true;
+    setupProject();
+    const stale = [
+      {
+        messages: [
+          { role: "system", content: "Stale context." },
+          { role: "user", content: "hello" },
+          { role: "assistant", content: "reply to hello" },
+        ],
+      },
+    ];
+    writeExamples(stale);
+
+    const instance = render(<DataValidateCommand rewriteContext />);
+    await settle();
+    t.is(loadTrainingData()[0].messages[0].content, "You are helpful.");
+
+    writeExamples(stale);
+    instance.rerender(<DataValidateCommand rewriteContext />);
+    await settle();
+
+    t.is(
+      loadTrainingData()[0].messages[0].content,
+      "Stale context.",
+      "second render pass must not rewrite again",
+    );
+    instance.unmount();
+  } finally {
+    process.stdin.isTTY = originalTTY;
+    teardown();
+  }
+});
+
 // ── data import --yes ───────────────────────────────────────────────
 
 test.serial("DataImportCommand with yes skips the confirmation step", async (t) => {
