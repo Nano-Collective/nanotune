@@ -799,8 +799,8 @@ test.serial("writeFileAtomic surfaces a missing parent rather than inventing one
 
 // ── sweepStaleAtomicWrites ────────────────────────────────────────────
 
-// Above the macOS/Linux pid ceiling, so it can never name a live process.
-const DEAD_PID = 999_999;
+// Intentionally above common pid_max values (e.g. Linux default 4,194,304), so it is extremely unlikely to name a live process.
+const DEAD_PID = 9_999_999;
 
 test.serial("sweepStaleAtomicWrites is a no-op when the benchmarks directory doesn't exist", (t) => {
   setupBenchTest();
