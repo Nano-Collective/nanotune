@@ -38,7 +38,7 @@ export function getBaseModelCachePath(
  * no such process, while `EPERM` means it exists but is owned by someone
  * else — still alive, so still not ours to clean up.
  */
-function isProcessAlive(pid: number): boolean {
+export function isProcessAlive(pid: number): boolean {
 	try {
 		process.kill(pid, 0);
 		return true;

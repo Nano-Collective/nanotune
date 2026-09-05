@@ -20,6 +20,7 @@ import {
   findUnknownConfigKeys,
   loadConfig,
   resolveContextMessage,
+  sweepStaleAtomicWrites,
   writeFileAtomic,
 } from "./config.js";
 
@@ -791,6 +792,81 @@ test.serial("writeFileAtomic surfaces a missing parent rather than inventing one
     const missing = join(BENCH_TEST_DIR, "nope", "tests.json");
     t.throws(() => writeFileAtomic(missing, "[]"), { code: "ENOENT" });
     t.false(existsSync(join(BENCH_TEST_DIR, "nope")));
+  } finally {
+    teardownBenchTest();
+  }
+});
+
+// ── sweepStaleAtomicWrites ────────────────────────────────────────────
+
+// Intentionally above common pid_max values (e.g. Linux default 4,194,304), so it is extremely unlikely to name a live process.
+const DEAD_PID = 9_999_999;
+
+test.serial("sweepStaleAtomicWrites is a no-op when the benchmarks directory doesn't exist", (t) => {
+  setupBenchTest();
+  try {
+    t.notThrows(() => sweepStaleAtomicWrites(BENCH_DIR));
+  } finally {
+    teardownBenchTest();
+  }
+});
+
+test.serial("sweepStaleAtomicWrites removes stale .tmp-<pid> leftovers from a killed run", (t) => {
+  setupBenchTest();
+  try {
+    mkdirSync(BENCH_DIR, { recursive: true });
+    const stale = join(
+      BENCH_DIR,
+      `benchmark-2026-01-01T00-00-00-000Z.json.tmp-${DEAD_PID}`,
+    );
+    const live = join(
+      BENCH_DIR,
+      `benchmark-2026-01-01T00-00-00-000Z.json.tmp-${process.pid}`,
+    );
+    const kept = join(BENCH_DIR, "benchmark-2026-01-01T00-00-00-000Z.json");
+    writeFileSync(stale, "stub");
+    writeFileSync(live, "stub");
+    writeFileSync(kept, "stub");
+
+    sweepStaleAtomicWrites(BENCH_DIR);
+
+    t.false(existsSync(stale));
+    t.true(existsSync(live));
+    t.true(existsSync(kept));
+  } finally {
+    teardownBenchTest();
+  }
+});
+
+test.serial("writeFileAtomic clears a temp left by a previously killed write to the same file", (t) => {
+  setupBenchTest();
+  try {
+    const dir = ensureBenchmarksDir();
+    const stale = join(dir, `tests.json.tmp-${DEAD_PID}`);
+    writeFileSync(stale, "stale partial write");
+
+    writeFileAtomic(join(dir, "tests.json"), "[1,2]");
+
+    t.false(existsSync(stale));
+    t.is(readFileSync(join(dir, "tests.json"), "utf-8"), "[1,2]");
+  } finally {
+    teardownBenchTest();
+  }
+});
+
+test.serial("writeFileAtomic sweeps only its own target's dead-pid temps", (t) => {
+  setupBenchTest();
+  try {
+    const dir = ensureBenchmarksDir();
+    const unrelated = join(dir, `notes.txt.tmp-${DEAD_PID}`);
+    const noPid = join(dir, "tests.json.tmp");
+    writeFileSync(unrelated, "stub");
+    writeFileSync(noPid, "stub");
+
+    writeFileAtomic(join(dir, "tests.json"), "[1]");
+
+    t.true(existsSync(unrelated));
+    t.true(existsSync(noPid));
   } finally {
     teardownBenchTest();
   }
