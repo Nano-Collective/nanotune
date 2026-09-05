@@ -5,7 +5,7 @@ import { Text } from "ink";
 import { render } from "ink-testing-library";
 import { useKeyInput } from "../components/index.js";
 import { loadTrainingData } from "../lib/data.js";
-import { streamPreview } from "./chat.js";
+import { ChatCommand, streamPreview } from "./chat.js";
 import { DataExportCommand } from "./data/export.js";
 import { DataImportCommand } from "./data/import.js";
 import { DataListCommand } from "./data/list.js";
@@ -382,6 +382,41 @@ test.serial("DataExportCommand with --eval exports the validation set", async (t
     t.is(written.split("\n").length, 1);
     t.true(written.includes("valid-one"));
     t.false(written.includes("train-one"));
+  } finally {
+    teardown();
+  }
+});
+
+// ── numeric flags are rejected before any server work ─────────────────
+
+test.serial("ChatCommand rejects a non-numeric flag before touching the model", async (t) => {
+  try {
+    // No project and no model here: getting the flag error rather than
+    // "Not a Nanotune project" proves the check runs before anything else,
+    // so "NaN" never reaches llama-server's argv.
+    setupEmptyDir();
+    const output = await renderCommand(
+      <ChatCommand options={{ gpuLayers: "abc" }} />,
+      "--gpu-layers",
+    );
+
+    t.true(output.includes("Invalid value for --gpu-layers"));
+    t.false(output.includes("Not a Nanotune project"));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("ChatCommand rejects a partially parseable flag", async (t) => {
+  try {
+    setupEmptyDir();
+    const output = await renderCommand(
+      <ChatCommand options={{ ctxSize: "4096x" }} />,
+      "--ctx-size",
+    );
+
+    // Number.parseInt would have accepted this as 4096.
+    t.true(output.includes("Invalid value for --ctx-size"));
   } finally {
     teardown();
   }
