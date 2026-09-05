@@ -16,6 +16,7 @@ import {
 	buildMessages,
 	formatConversationForJudge,
 	getTestDisplayPrompt,
+	resolveBenchmarkFlags,
 	resolveSamplingOptions,
 	summarizeSamples,
 } from '../lib/benchmark-utils.js';
@@ -37,9 +38,7 @@ import {
 	chatCompletion,
 	checkLlamaCppInstalled,
 	exportModel,
-	type GenerateOptions,
 	installLlamaCpp,
-	type ServerOptions,
 	startLlamaServer,
 	stopLlamaServer,
 } from '../lib/llama-cpp.js';
@@ -50,8 +49,6 @@ import {
 } from '../lib/model-cache.js';
 import {assertSupportedPlatform} from '../lib/platform.js';
 import {
-	BENCHMARK_PRESETS,
-	type BenchmarkPreset,
 	type BenchmarkResult,
 	type BenchmarkTest,
 	type BenchmarkTestResult,
@@ -329,6 +326,30 @@ export function BenchmarkCommand({options}: Props) {
 				return;
 			}
 
+			// The llama-server flags get the same treatment, for the same
+			// reason: unchecked, a typo'd --ctx-size is either truncated
+			// ("4096x" quietly becomes 4096) or reaches llama-server as the
+			// literal argument "NaN" — minutes from now, after the download.
+			const flags = resolveBenchmarkFlags(
+				{
+					preset: options.preset,
+					threads: options.threads,
+					gpuLayers: options.gpuLayers,
+					ctxSize: options.ctxSize,
+					batchSize: options.batchSize,
+					cpuOnly: options.cpuOnly,
+					maxTokens: options.maxTokens,
+					timeout: options.timeout,
+				},
+				sampling,
+			);
+			if (flags.errors.length > 0) {
+				setError(flags.errors[0]);
+				setStatus('error');
+				return;
+			}
+			const {serverOptions, generateOptions, timeout} = flags;
+
 			// Find model
 			let modelPath: string | null;
 			if (options.base) {
@@ -472,64 +493,6 @@ export function BenchmarkCommand({options}: Props) {
 				}
 			}
 
-			let serverOptions: ServerOptions;
-			let generateOptions: GenerateOptions;
-
-			if (options.preset) {
-				// Validate preset
-				const validPresets: BenchmarkPreset[] = [
-					'low',
-					'medium',
-					'high',
-					'ultra',
-				];
-				if (!validPresets.includes(options.preset as BenchmarkPreset)) {
-					setError(
-						`Invalid preset: ${options.preset}. Valid presets: ${validPresets.join(', ')}`,
-					);
-					setStatus('error');
-					return;
-				}
-
-				// Apply preset configuration
-				const preset = BENCHMARK_PRESETS[options.preset as BenchmarkPreset];
-				serverOptions = {
-					threads: preset.threads,
-					gpuLayers: preset.gpuLayers,
-					ctxSize: preset.ctxSize,
-					batchSize: preset.batchSize,
-					cpuOnly: preset.gpuLayers === 0,
-				};
-				generateOptions = {
-					maxTokens: preset.maxTokens,
-					temperature: sampling.temperature,
-					seed: sampling.seed,
-				};
-			} else {
-				serverOptions = {
-					threads: options.threads
-						? Number.parseInt(options.threads, 10)
-						: undefined,
-					gpuLayers: options.gpuLayers
-						? Number.parseInt(options.gpuLayers, 10)
-						: undefined,
-					ctxSize: options.ctxSize
-						? Number.parseInt(options.ctxSize, 10)
-						: 4096,
-					batchSize: options.batchSize
-						? Number.parseInt(options.batchSize, 10)
-						: 2048,
-					cpuOnly: options.cpuOnly,
-				};
-				generateOptions = {
-					maxTokens: options.maxTokens
-						? Number.parseInt(options.maxTokens, 10)
-						: 50,
-					temperature: sampling.temperature,
-					seed: sampling.seed,
-				};
-			}
-
 			// Check if any tests use llm-judge and load judge config if needed
 			const hasJudgeTests = tests.some(t => t.match === 'llm-judge');
 			let judgeConfig: JudgeProviderConfig | null = null;
@@ -547,9 +510,6 @@ export function BenchmarkCommand({options}: Props) {
 
 			// Run benchmarks
 			setStatus('running');
-			const timeout = options.timeout
-				? Number.parseInt(options.timeout, 10)
-				: 30000;
 
 			const failures: BenchmarkResult['failures'] = [];
 			const allResults: BenchmarkTestResult[] = [];

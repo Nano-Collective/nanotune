@@ -63,6 +63,8 @@ nanotune chat
 
 Hardware flags are the same as [`nanotune benchmark`](benchmark.md), and a `--preset` overrides the individual flags.
 
+Every numeric flag is rejected outright if it can't be parsed, rather than falling back to the default or being truncated: `--ctx-size 4096x` fails with a message naming the flag instead of quietly starting the server at 4096.
+
 ## Per-Turn Stats
 
 Each assistant reply is followed by a dim stat line:

@@ -24,33 +24,91 @@ export interface ChatRawOptions {
 }
 
 /**
+ * Parse a numeric CLI flag, pushing an "Invalid value for --flag" message onto
+ * `errors` instead of returning a value when it doesn't parse. Callers report
+ * the first error and bail, so a bad flag fails before any subprocess or
+ * network work rather than reaching llama-server as the literal argument
+ * "NaN" or as a null field in the completion request body.
+ *
+ * Number() rather than parseInt/parseFloat so trailing garbage ("4096x")
+ * is rejected instead of being silently truncated to 4096; a blank value is
+ * screened out first because Number('') is 0. `integer` flags reject a
+ * fractional value for the same reason — llama-server wants "4096", not
+ * "4096.5", and parseInt used to hide the difference.
+ */
+export function parseNumericFlag(
+	raw: string | undefined,
+	flag: string,
+	errors: string[],
+	integer = false,
+): number | undefined {
+	if (raw === undefined) {
+		return undefined;
+	}
+	const trimmed = raw.trim();
+	const value = trimmed === '' ? Number.NaN : Number(trimmed);
+	if (!Number.isFinite(value) || (integer && !Number.isInteger(value))) {
+		errors.push(
+			`Invalid value for ${flag}: expected ${
+				integer ? 'an integer' : 'a number'
+			}, got "${raw}".`,
+		);
+		return undefined;
+	}
+	return value;
+}
+
+/**
  * Build a `ServerOptions` for `startLlamaServer` from the chat command's CLI
  * flags. A `--preset` wins over individual flags when both are given (matching
- * the benchmark command's behaviour).
+ * the benchmark command's behaviour), but every flag the user typed is still
+ * parsed so a typo is reported rather than silently discarded.
  */
-export function buildServerOptions(options: ChatRawOptions): ServerOptions {
-	if (options.preset) {
-		const preset = BENCHMARK_PRESETS[options.preset as BenchmarkPreset];
-		if (preset) {
-			return {
+export function buildServerOptions(options: ChatRawOptions): {
+	options: ServerOptions;
+	errors: string[];
+} {
+	const errors: string[] = [];
+	const threads = parseNumericFlag(options.threads, '--threads', errors, true);
+	const gpuLayers = parseNumericFlag(
+		options.gpuLayers,
+		'--gpu-layers',
+		errors,
+		true,
+	);
+	const ctxSize = parseNumericFlag(options.ctxSize, '--ctx-size', errors, true);
+	const batchSize = parseNumericFlag(
+		options.batchSize,
+		'--batch-size',
+		errors,
+		true,
+	);
+
+	const preset = options.preset
+		? BENCHMARK_PRESETS[options.preset as BenchmarkPreset]
+		: undefined;
+	if (preset) {
+		return {
+			options: {
 				threads: preset.threads,
 				gpuLayers: preset.gpuLayers,
 				ctxSize: preset.ctxSize,
 				batchSize: preset.batchSize,
 				cpuOnly: preset.gpuLayers === 0,
-			};
-		}
+			},
+			errors,
+		};
 	}
+
 	return {
-		threads: options.threads ? Number.parseInt(options.threads, 10) : undefined,
-		gpuLayers: options.gpuLayers
-			? Number.parseInt(options.gpuLayers, 10)
-			: undefined,
-		ctxSize: options.ctxSize ? Number.parseInt(options.ctxSize, 10) : 4096,
-		batchSize: options.batchSize
-			? Number.parseInt(options.batchSize, 10)
-			: 2048,
-		cpuOnly: options.cpuOnly,
+		options: {
+			threads,
+			gpuLayers,
+			ctxSize: ctxSize ?? 4096,
+			batchSize: batchSize ?? 2048,
+			cpuOnly: options.cpuOnly,
+		},
+		errors,
 	};
 }
 
@@ -59,19 +117,26 @@ export function buildServerOptions(options: ChatRawOptions): ServerOptions {
  * 256 max tokens for a chat REPL (vs benchmark's 50 — replies need to be
  * long enough to be useful); preset values override the default.
  */
-export function buildGenerateOptions(options: ChatRawOptions): GenerateOptions {
+export function buildGenerateOptions(options: ChatRawOptions): {
+	options: GenerateOptions;
+	errors: string[];
+} {
 	const presetMax = options.preset
 		? BENCHMARK_PRESETS[options.preset as BenchmarkPreset]?.maxTokens
 		: undefined;
+	const errors: string[] = [];
 	return {
-		maxTokens: options.maxTokens
-			? Number.parseInt(options.maxTokens, 10)
-			: (presetMax ?? 256),
-		temperature: options.temperature
-			? Number.parseFloat(options.temperature)
-			: 0.8,
-		topP: options.topP ? Number.parseFloat(options.topP) : 0.9,
-		seed: options.seed ? Number.parseInt(options.seed, 10) : undefined,
+		options: {
+			maxTokens:
+				parseNumericFlag(options.maxTokens, '--max-tokens', errors, true) ??
+				presetMax ??
+				256,
+			temperature:
+				parseNumericFlag(options.temperature, '--temperature', errors) ?? 0.8,
+			topP: parseNumericFlag(options.topP, '--top-p', errors) ?? 0.9,
+			seed: parseNumericFlag(options.seed, '--seed', errors, true),
+		},
+		errors,
 	};
 }
 
