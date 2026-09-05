@@ -3,6 +3,7 @@ import {readFileSync} from 'node:fs';
 import {Command} from 'commander';
 import {render} from 'ink';
 import type {ReactElement} from 'react';
+import {getBenchmarksDir, sweepStaleAtomicWrites} from './lib/config.js';
 import {interactiveRequiredMessage, supportsRawMode} from './lib/tty.js';
 
 const pkg = JSON.parse(
@@ -292,5 +293,10 @@ program
 		const {StatusCommand} = await import('./commands/status.js');
 		render(<StatusCommand />);
 	});
+
+// Reap `.tmp-<pid>` leftovers from a previous run that was killed mid-write
+// before its own cleanup could run. Cheap (no-op when the directory doesn't
+// exist) and keeps a crashed `benchmark` from accumulating garbage forever.
+sweepStaleAtomicWrites(getBenchmarksDir());
 
 program.parse();
