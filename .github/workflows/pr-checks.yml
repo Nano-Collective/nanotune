@@ -17,6 +17,7 @@ jobs:
   pr-checks:
     uses: Nano-Collective/.github/.github/workflows/pr-checks.yml@main
     with:
+      validate-changesets: true
       # TEMPORARY. The org standard is 80. nanotune is at 71.46%, so the floor
       # is pinned just under current coverage and fail-on-drop (on by default)
       # ratchets it — coverage cannot regress, and the gap closes deliberately.
