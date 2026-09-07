@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "ava";
 import type { TrainingExample } from "../types/index.js";
@@ -23,6 +23,7 @@ import {
   loadTrainingData,
   mergeEditedTurn,
   parseCSV,
+  saveTrainingData,
   splitTrainValidation,
   updateTrainingExample,
   validateTrainingData,
@@ -1181,6 +1182,57 @@ test.serial(
     const result = splitTrainValidation(0.1, 1);
     t.is(result.validCount, 1);
     t.is(result.trainCount, 1);
+  },
+);
+
+// ── splitTrainValidation crash-safety (#162) ──────────────────────────
+
+test.serial(
+  "splitTrainValidation leaves train.jsonl fully intact when the write to valid.jsonl fails",
+  (t) => {
+    seedExamples(10);
+
+    // Deterministic stand-in for the issue's repro (mkdir over valid.jsonl,
+    // then Ctrl+C between the two writes): occupy valid.jsonl's path with a
+    // non-empty directory so the atomic rename inside saveTrainingData
+    // reliably fails, the same way it does not to lose data.
+    const validPath = join(DATA_DIR, "valid.jsonl");
+    mkdirSync(validPath, { recursive: true });
+    writeFileSync(join(validPath, "keep.txt"), "keep");
+
+    t.throws(() => splitTrainValidation(0.1, 1));
+
+    // valid.jsonl is written before train.jsonl is touched, so the failed
+    // first write must leave every original example still in train.jsonl —
+    // nothing removed, nothing held only in memory.
+    t.is(countExamples(false), 10);
+    const remaining = loadTrainingData(false)
+      .map((ex) => ex.messages[1].content)
+      .sort();
+    t.deepEqual(
+      remaining,
+      Array.from({ length: 10 }, (_, i) => `q${i}`).sort(),
+    );
+  },
+);
+
+test.serial(
+  "saveTrainingData leaves no temp file behind when the underlying write fails",
+  (t) => {
+    seedExamples(1);
+
+    const trainPath = join(DATA_DIR, "train.jsonl");
+    rmSync(trainPath, { force: true });
+    mkdirSync(trainPath, { recursive: true });
+    writeFileSync(join(trainPath, "keep.txt"), "keep");
+
+    t.throws(() => saveTrainingData([], false));
+
+    // The temp file created by writeFileAtomic must be cleaned up even
+    // though the rename never landed - no `train.jsonl.tmp-*` sibling left
+    // behind in the data directory.
+    const entries = readdirSync(DATA_DIR);
+    t.false(entries.some((name) => name.startsWith("train.jsonl.tmp-")));
   },
 );
 
