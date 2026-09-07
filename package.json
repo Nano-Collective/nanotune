@@ -26,7 +26,9 @@
 		"test:all": "pnpm test:lint && pnpm test:format && pnpm test:types && pnpm test:knip && pnpm test:security && pnpm test:audit && pnpm test:ava",
 		"test:security": "semgrep scan --config auto --error",
 		"test:audit": "pnpm audit --audit-level=high",
-		"format": "biome check --write ."
+		"format": "biome check --write .",
+		"changeset": "changeset",
+		"changeset:version": "changeset version"
 	},
 	"ava": {
 		"extensions": [
@@ -85,6 +87,7 @@
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.3.13",
+		"@changesets/cli": "^3.0.1",
 		"@types/node": "^26.0.0",
 		"@types/react": "^19.2.10",
 		"ava": "^8.0.1",
