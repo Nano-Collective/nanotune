@@ -233,6 +233,39 @@ chats/
 judge.json*
 `;
 
+/**
+ * Write .gitignore inside .nanotune/ to protect API keys and keep multi-GB
+ * adapters/models out of the user's git history, back-filling entries into a
+ * file that already exists rather than leaving it as it was found. Entries get
+ * added to this list over time and a project keeps whatever .gitignore it was
+ * initialised with: one from 1.3.x or earlier has no judge.json line at all,
+ * and one from 1.4.0-1.6.x has a bare `judge.json` that misses the
+ * judge.json.tmp an interrupted save leaves behind. Both of those files can
+ * hold a literal API key that `git add .` would commit.
+ */
+function writeProjectGitignore(): void {
+	const gitignorePath = join(getProjectDir(), '.gitignore');
+	if (!existsSync(gitignorePath)) {
+		writeFileSync(gitignorePath, GITIGNORE_CONTENTS);
+		return;
+	}
+
+	const existing = readFileSync(gitignorePath, 'utf-8');
+	const present = new Set(existing.split('\n').map(line => line.trim()));
+	const missing = GITIGNORE_CONTENTS.split('\n')
+		.map(line => line.trim())
+		.filter(line => line && !present.has(line));
+	if (missing.length === 0) {
+		return;
+	}
+
+	const separator = existing === '' || existing.endsWith('\n') ? '' : '\n';
+	writeFileSync(
+		gitignorePath,
+		`${existing}${separator}${missing.join('\n')}\n`,
+	);
+}
+
 export function initializeProjectDirs(): void {
 	const dirs = [
 		getProjectDir(),
@@ -248,12 +281,7 @@ export function initializeProjectDirs(): void {
 		}
 	}
 
-	// Write .gitignore inside .nanotune/ to protect API keys and keep
-	// multi-GB adapters/models out of the user's git history.
-	const gitignorePath = join(getProjectDir(), '.gitignore');
-	if (!existsSync(gitignorePath)) {
-		writeFileSync(gitignorePath, GITIGNORE_CONTENTS);
-	}
+	writeProjectGitignore();
 }
 
 /**

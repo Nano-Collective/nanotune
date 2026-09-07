@@ -28,7 +28,12 @@ type ConfigureStep =
 
 export function JudgeConfigureCommand() {
 	const {exit} = useApp();
-	const [step, setStep] = useState<ConfigureStep>('select-provider');
+	// Guard before the first prompt: saveJudgeConfig writes into .nanotune/, so
+	// with no project the key the user typed is asked for, used, and thrown
+	// away. Every other command reports this the same way.
+	const [step, setStep] = useState<ConfigureStep>(() =>
+		configExists() ? 'select-provider' : 'error',
+	);
 	const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(
 		null,
 	);
@@ -37,7 +42,9 @@ export function JudgeConfigureCommand() {
 	const [builtConfig, setBuiltConfig] = useState<JudgeProviderConfig | null>(
 		null,
 	);
-	const [errorMessage, setErrorMessage] = useState('');
+	const [errorMessage, setErrorMessage] = useState(
+		'Not a Nanotune project. Run `nanotune init` first.',
+	);
 
 	useKeyInput((_input, key) => {
 		if (key.escape) {
@@ -118,12 +125,6 @@ export function JudgeConfigureCommand() {
 					builtConfig,
 					5,
 				);
-
-				if (!cancelled) {
-					saveJudgeConfig(builtConfig);
-					setStep('done');
-					setTimeout(() => exit(), 100);
-				}
 			} catch (err) {
 				if (!cancelled) {
 					setErrorMessage(
@@ -131,7 +132,26 @@ export function JudgeConfigureCommand() {
 					);
 					setStep('error');
 				}
+				return;
 			}
+
+			if (cancelled) return;
+
+			// Saved outside the try above: a failed write is a failed write, and
+			// reporting it as a connection failure sends the user off debugging
+			// their network or their key after both already worked.
+			try {
+				saveJudgeConfig(builtConfig);
+			} catch (err) {
+				setErrorMessage(
+					`Failed to save judge config: ${err instanceof Error ? err.message : 'Unknown error'}`,
+				);
+				setStep('error');
+				return;
+			}
+
+			setStep('done');
+			setTimeout(() => exit(), 100);
 		};
 
 		testConnection();
