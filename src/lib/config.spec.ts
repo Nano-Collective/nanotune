@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import test from "ava";
+import { z } from "zod";
 import { ConfigSchema, TrainingConfigSchema } from "../types/index.js";
 import {
   createDefaultConfig,
@@ -589,6 +590,36 @@ test("findUnknownConfigKeys walks every nested object", (t) => {
   t.deepEqual(warnings, [
     'unknown key "contextMessage.text" in config.json — ignored.',
     'unknown key "export.outputname" in config.json — ignored. Did you mean "outputName"?',
+  ]);
+});
+
+test("findUnknownConfigKeys walks nested array objects and union branches", (t) => {
+  const schema = z.object({
+    pipelines: z.array(
+      z.object({
+        steps: z.array(
+          z.union([
+            z.object({ type: z.literal("local"), path: z.string() }),
+            z.object({ type: z.literal("remote"), url: z.string() }),
+          ]),
+        ),
+      }),
+    ),
+  });
+
+  const warnings = findUnknownConfigKeys(
+    {
+      pipelines: [
+        {
+          steps: [{ type: "local", paht: "." }],
+        },
+      ],
+    },
+    schema,
+  );
+
+  t.deepEqual(warnings, [
+    'unknown key "pipelines[0].steps[0].paht" in config.json — ignored. Did you mean "path"?',
   ]);
 });
 
