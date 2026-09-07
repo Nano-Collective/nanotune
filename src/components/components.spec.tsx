@@ -1,13 +1,25 @@
 import test from 'ava';
 import {render} from 'ink-testing-library';
+
 import {LossChart} from './LossChart.js';
 import {Progress} from './Progress.js';
+
+/**
+ * Ink emits colour when the environment reports terminal support, and CI sets
+ * FORCE_COLOR — so the same frame carries ANSI escapes there and none locally.
+ * Every assertion below reads through this, or it would pass on a laptop and
+ * fail in CI.
+ */
+function stripAnsi(text: string | undefined): string {
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: matching ANSI.
+	return (text ?? '').replace(/\u001B\[[0-9;]*m/g, '');
+}
 
 // --- Progress ---------------------------------------------------------------
 
 test('Progress renders a bar of exactly the requested width', t => {
 	const {lastFrame} = render(<Progress percent={50} width={10} />);
-	const frame = lastFrame() ?? '';
+	const frame = stripAnsi(lastFrame());
 	const filled = (frame.match(/█/g) ?? []).length;
 	const empty = (frame.match(/░/g) ?? []).length;
 	t.is(filled + empty, 10);
@@ -18,7 +30,7 @@ test('Progress clamps above 100', t => {
 	// The clamp is the point: a caller computing percent from a ratio can
 	// overshoot, and an unclamped bar would repeat() a negative count and throw.
 	const {lastFrame} = render(<Progress percent={250} width={8} />);
-	const frame = lastFrame() ?? '';
+	const frame = stripAnsi(lastFrame());
 	t.is((frame.match(/█/g) ?? []).length, 8);
 	t.is((frame.match(/░/g) ?? []).length, 0);
 	t.true(frame.includes('100%'));
@@ -26,7 +38,7 @@ test('Progress clamps above 100', t => {
 
 test('Progress clamps below 0', t => {
 	const {lastFrame} = render(<Progress percent={-40} width={8} />);
-	const frame = lastFrame() ?? '';
+	const frame = stripAnsi(lastFrame());
 	t.is((frame.match(/█/g) ?? []).length, 0);
 	t.is((frame.match(/░/g) ?? []).length, 8);
 	t.true(frame.includes('0%'));
@@ -34,35 +46,35 @@ test('Progress clamps below 0', t => {
 
 test('Progress rounds the percentage it prints', t => {
 	const {lastFrame} = render(<Progress percent={66.6} width={10} />);
-	t.true((lastFrame() ?? '').includes('67%'));
+	t.true((stripAnsi(lastFrame())).includes('67%'));
 });
 
 test('Progress shows a label only when given one', t => {
 	const labelled = render(<Progress percent={10} label="Training" />);
-	t.true((labelled.lastFrame() ?? '').includes('Training:'));
+	t.true((stripAnsi(labelled.lastFrame())).includes('Training:'));
 
 	const bare = render(<Progress percent={10} />);
-	t.false((bare.lastFrame() ?? '').includes(':'));
+	t.false((stripAnsi(bare.lastFrame())).includes(':'));
 });
 
 // --- LossChart --------------------------------------------------------------
 
 test('LossChart says so when there is no data', t => {
 	const {lastFrame} = render(<LossChart data={[]} />);
-	t.true((lastFrame() ?? '').includes('No data yet'));
+	t.true((stripAnsi(lastFrame())).includes('No data yet'));
 });
 
 test('LossChart uses the supplied label in both states', t => {
 	const empty = render(<LossChart data={[]} label="Validation" />);
-	t.true((empty.lastFrame() ?? '').includes('Validation: No data yet'));
+	t.true((stripAnsi(empty.lastFrame())).includes('Validation: No data yet'));
 
 	const withData = render(<LossChart data={[1, 2]} label="Validation" />);
-	t.true((withData.lastFrame() ?? '').includes('Validation'));
+	t.true((stripAnsi(withData.lastFrame())).includes('Validation'));
 });
 
 test('LossChart labels the axis with the real min and max, to 2dp', t => {
 	const {lastFrame} = render(<LossChart data={[0.5, 2.25, 1.125]} />);
-	const frame = lastFrame() ?? '';
+	const frame = stripAnsi(lastFrame());
 	t.true(frame.includes('2.25'), 'max');
 	t.true(frame.includes('0.50'), 'min');
 });
@@ -71,7 +83,7 @@ test('LossChart survives a flat series', t => {
 	// max - min is 0 here, and the normaliser divides by it. The `|| 1` guard is
 	// what stops every point becoming NaN and the chart rendering blank.
 	const {lastFrame} = render(<LossChart data={[1.5, 1.5, 1.5]} height={4} />);
-	const frame = lastFrame() ?? '';
+	const frame = stripAnsi(lastFrame());
 	t.false(frame.includes('NaN'));
 	t.true(frame.includes('1.50'));
 	t.true(frame.includes('●'), 'still plots points');
@@ -79,7 +91,7 @@ test('LossChart survives a flat series', t => {
 
 test('LossChart handles a single point', t => {
 	const {lastFrame} = render(<LossChart data={[0.75]} />);
-	const frame = lastFrame() ?? '';
+	const frame = stripAnsi(lastFrame());
 	t.false(frame.includes('NaN'));
 	t.true(frame.includes('0.75'));
 });
@@ -89,7 +101,7 @@ test('LossChart downsamples rather than overflowing its width', t => {
 	// bounded, which is what stops a long training run wrapping the terminal.
 	const data = Array.from({length: 200}, (_, i) => 200 - i);
 	const {lastFrame} = render(<LossChart data={data} width={20} height={5} />);
-	const rows = (lastFrame() ?? '')
+	const rows = stripAnsi(lastFrame())
 		.split('\n')
 		.map(line => line.replace(/[^●│ ]/g, ''))
 		.filter(line => line.includes('●') || line.includes('│'));
@@ -102,7 +114,7 @@ test('LossChart downsamples rather than overflowing its width', t => {
 test('LossChart draws one row per unit of height', t => {
 	const data = [4, 3, 2, 1];
 	const {lastFrame} = render(<LossChart data={data} height={6} width={10} />);
-	const plotted = (lastFrame() ?? '')
+	const plotted = stripAnsi(lastFrame())
 		.split('\n')
 		.filter(line => /[●│]/.test(line));
 	// Every plotted row comes from the height loop, so there can never be more
@@ -131,7 +143,7 @@ test('LossChart plots a descending series as a descending line', t => {
 	const {lastFrame} = render(
 		<LossChart data={[10, 5, 1]} height={5} width={10} />,
 	);
-	const rows = plotArea(lastFrame() ?? '');
+	const rows = plotArea(stripAnsi(lastFrame()));
 	const rowOf = (column: number) =>
 		rows.findIndex(row => row !== null && row[column] === '●');
 
@@ -149,7 +161,7 @@ test('LossChart plots an ascending series the other way up', t => {
 	const {lastFrame} = render(
 		<LossChart data={[1, 5, 10]} height={5} width={10} />,
 	);
-	const rows = plotArea(lastFrame() ?? '');
+	const rows = plotArea(stripAnsi(lastFrame()));
 	const rowOf = (column: number) =>
 		rows.findIndex(row => row !== null && row[column] === '●');
 	t.true(rowOf(0) > rowOf(2), 'rising loss should render bottom-left to top-right');

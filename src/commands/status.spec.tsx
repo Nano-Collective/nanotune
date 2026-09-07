@@ -84,11 +84,22 @@ function age(path: string, secondsAgo: number): void {
  * blank and only the accumulated frames hold the output. Whitespace is
  * collapsed because Ink wraps and pads to the terminal width.
  */
+/**
+ * Ink emits colour when the environment reports terminal support, and CI sets
+ * FORCE_COLOR — so the same frame carries ANSI escapes there and none locally.
+ * Matching a coloured value without stripping passes on a laptop and fails in
+ * CI, which is the worst way round.
+ */
+function stripAnsi(text: string): string {
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: matching ANSI.
+	return text.replace(/\u001B\[[0-9;]*m/g, '');
+}
+
 function frameOf(): string {
 	const instance = render(<StatusCommand />);
 	const output = instance.frames.join('\n');
 	instance.unmount();
-	return output.replace(/\s+/g, ' ');
+	return stripAnsi(output).replace(/\s+/g, ' ');
 }
 
 test.afterEach(() => {
