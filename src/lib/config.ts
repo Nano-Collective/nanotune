@@ -8,8 +8,9 @@ import {
 	statSync,
 	writeFileSync,
 } from 'node:fs';
-import {join} from 'node:path';
+import {basename, dirname, join} from 'node:path';
 import {z} from 'zod';
+import {isProcessAlive} from './model-cache.js';
 import {
 	type BenchmarkResult,
 	type ChatMessage,
@@ -208,14 +209,52 @@ export function saveConfig(config: Config): void {
 }
 
 /**
+ * Remove `.tmp-<pid>` files in `dir` whose owning process is gone. These are
+ * the atomic-write intermediates that accumulate when a process is killed
+ * between its temp write and rename — the `finally` that would normally reap
+ * them never runs. Only files whose pid is dead are swept: a live pid's temp
+ * belongs to a concurrent write (same directory, different target path).
+ * `prefix` restricts the sweep to a single target basename, so a write never
+ * touches unrelated files in a directory it shares with user data.
+ */
+function removeStaleTemps(dir: string, prefix?: string): void {
+	if (!existsSync(dir)) {
+		return;
+	}
+	for (const name of readdirSync(dir)) {
+		if (prefix && !name.startsWith(prefix)) {
+			continue;
+		}
+		const owner = name.match(/\.tmp-(\d+)$/);
+		if (!owner || isProcessAlive(Number.parseInt(owner[1], 10))) {
+			continue;
+		}
+		rmSync(join(dir, name), {force: true});
+	}
+}
+
+/**
+ * Sweep every stale `.tmp-<pid>` sibling in `dir`, regardless of which target
+ * path it belongs to. Run at startup so orphans from a crashed run are gone
+ * the next time any command starts — even when the writing command itself is
+ * never run again. A no-op if `dir` does not exist.
+ */
+export function sweepStaleAtomicWrites(dir: string): void {
+	removeStaleTemps(dir);
+}
+
+/**
  * Write `contents` to `path` via a sibling temp file renamed into place.
  * rename(2) is atomic, so an interrupted or failed write leaves either the
  * previous file or the complete new one — never a truncated file that a later
  * read mistakes for a whole one. The temp carries the pid so concurrent runs
  * cannot scribble over each other's, and the `finally` clears it on the paths
- * where the rename never happened.
+ * where the rename never happened. A process killed mid-write (SIGKILL,
+ * crash) skips that cleanup; a sweep of dead-pid leftovers for this target is
+ * done up front so the next run heals the last one.
  */
 export function writeFileAtomic(path: string, contents: string): void {
+	removeStaleTemps(dirname(path), `${basename(path)}.tmp-`);
 	const tmp = `${path}.tmp-${process.pid}`;
 	try {
 		writeFileSync(tmp, contents);
