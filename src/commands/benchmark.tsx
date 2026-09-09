@@ -470,6 +470,12 @@ export function BenchmarkCommand({options}: Props) {
 					setStatus('error');
 					return;
 				}
+
+				if (test.acceptable?.some(answer => answer.trim() === '')) {
+					setError(`Test #${test.id}: "acceptable" contains an empty string.`);
+					setStatus('error');
+					return;
+				}
 			}
 
 			let serverOptions: ServerOptions;
