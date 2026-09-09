@@ -437,6 +437,13 @@ export function BenchmarkCommand({options}: Props) {
 			if (existsSync(datasetPath)) {
 				const content = readFileSync(datasetPath, 'utf-8');
 				tests = JSON.parse(content);
+				if (tests.length === 0) {
+					setError(
+						`Benchmark dataset is empty (${datasetPath}). Add at least one test.`,
+					);
+					setStatus('error');
+					return;
+				}
 			} else {
 				// Create sample benchmark file with examples of different match modes
 				tests = [
@@ -818,7 +825,7 @@ export function BenchmarkCommand({options}: Props) {
 					total: totalTests,
 					passed: totalPassed,
 					failed: totalTests - totalPassed,
-					passRate: totalPassed / totalTests,
+					passRate: totalTests > 0 ? totalPassed / totalTests : 0,
 					avgLatencyMs,
 					avgTokensPerSecond,
 					avgTtftMs,
