@@ -7,7 +7,7 @@ import {
 } from 'node:fs';
 import {join} from 'node:path';
 import type {ChatMessage, TrainingExample} from '../types/index.js';
-import {getDataDir} from './config.js';
+import {getDataDir, writeFileAtomic} from './config.js';
 
 function ensureDataDir(): void {
 	const dataDir = getDataDir();
@@ -94,7 +94,7 @@ export function saveTrainingData(
 	ensureDataDir();
 	const path = isEval ? getEvalDataPath() : getTrainDataPath();
 	const content = `${examples.map(ex => JSON.stringify(ex)).join('\n')}\n`;
-	writeFileSync(path, content);
+	writeFileAtomic(path, content);
 }
 
 export function deleteExample(index: number, isEval = false): void {
@@ -787,9 +787,13 @@ export function splitTrainValidation(
 	const trainExamples = shuffled.slice(0, trainCount);
 	const validExamples = shuffled.slice(trainCount);
 
-	// Save both files
-	saveTrainingData(trainExamples, false);
+	// Write valid.jsonl before truncating train.jsonl. Each write is atomic
+	// (writeFileAtomic), so the only interruption window left is between the
+	// two calls - and with this order that window's worst case is both files
+	// temporarily containing the validation examples (a recoverable
+	// duplicate), never train.jsonl losing them before they land anywhere.
 	saveTrainingData(validExamples, true);
+	saveTrainingData(trainExamples, false);
 
 	return {trainCount, validCount};
 }
