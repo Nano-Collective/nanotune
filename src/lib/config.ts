@@ -62,6 +62,74 @@ export function getChatsDir(): string {
 	return join(getProjectDir(), 'chats');
 }
 
+export function getFusedModelDir(): string {
+	return join(getModelsDir(), 'fused');
+}
+
+/**
+ * Recursively sum the size of every file under `dirPath`. Returns 0 if the
+ * directory doesn't exist. Used to report the size of the fused/ model
+ * cache, which is a directory of HF-format model files rather than a
+ * single file.
+ */
+export function getDirectorySize(dirPath: string): number {
+	if (!existsSync(dirPath)) {
+		return 0;
+	}
+	let total = 0;
+	for (const entry of readdirSync(dirPath, {withFileTypes: true})) {
+		const entryPath = join(dirPath, entry.name);
+		try {
+			if (entry.isDirectory()) {
+				total += getDirectorySize(entryPath);
+			} else if (entry.isFile()) {
+				total += statSync(entryPath).size;
+			}
+		} catch {
+			// Broken symlink or unreadable entry (permissions, race with a
+			// concurrent delete) — skip it rather than failing the whole walk.
+		}
+	}
+	return total;
+}
+
+/**
+ * Whether `dirPath` contains a real fused-model artifact rather than just an
+ * empty or partially-written directory. `mlx_lm.fuse` creates `--save-path`
+ * before it finishes writing weights, so directory existence alone isn't a
+ * reliable signal that a fuse completed.
+ */
+export function hasUsableFusedModel(dirPath: string): boolean {
+	if (!existsSync(dirPath)) {
+		return false;
+	}
+	return readdirSync(dirPath).some(name => name.endsWith('.safetensors'));
+}
+
+/**
+ * `--skip-fuse` relies on a fused model from a previous export. Lives here
+ * rather than in `commands/export.tsx` so it's testable without importing
+ * that file's `ExportCommand` component, which asserts Apple Silicon up
+ * front and so can never actually render in CI.
+ */
+export function skipFuseValidationError(
+	skipFuse: boolean | undefined,
+	fusedModelExists: boolean,
+): string | null {
+	if (skipFuse && !fusedModelExists) {
+		return 'No fused model found at .nanotune/models/fused. Run `nanotune export` without --skip-fuse first.';
+	}
+	return null;
+}
+
+export function formatFileSize(bytes: number): string {
+	if (bytes < 1024) return `${bytes} B`;
+	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+	if (bytes < 1024 * 1024 * 1024)
+		return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+	return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
 export function configExists(): boolean {
 	return existsSync(getConfigPath());
 }

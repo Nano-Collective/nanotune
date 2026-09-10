@@ -2,6 +2,7 @@ import {existsSync, readdirSync, statSync} from 'node:fs';
 import {join} from 'node:path';
 import {StatusMessage} from '@inkjs/ui';
 import {Box, Text, useApp} from 'ink';
+import {useMemo} from 'react';
 import {
 	ExitHint,
 	Header,
@@ -12,9 +13,13 @@ import {
 import {
 	configExists,
 	findLatestBenchmark,
+	formatFileSize,
 	getAdaptersDir,
 	getDataDir,
+	getDirectorySize,
+	getFusedModelDir,
 	getModelsDir,
+	hasUsableFusedModel,
 	loadBenchmark,
 	loadConfig,
 } from '../lib/config.js';
@@ -36,17 +41,15 @@ function formatRelativeTime(date: Date): string {
 	return 'just now';
 }
 
-function formatFileSize(bytes: number): string {
-	if (bytes < 1024) return `${bytes} B`;
-	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-	if (bytes < 1024 * 1024 * 1024)
-		return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-	return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-}
-
 export function StatusCommand() {
 	const {exit} = useApp();
 	const hasConfig = configExists();
+	const fusedDir = getFusedModelDir();
+	const fusedExists = hasConfig && hasUsableFusedModel(fusedDir);
+	const fusedDirSize = useMemo(
+		() => (fusedExists ? getDirectorySize(fusedDir) : 0),
+		[fusedExists, fusedDir],
+	);
 
 	useKeyInput((input, key) => {
 		if (key.escape || key.return || input === 'q') {
@@ -103,6 +106,9 @@ export function StatusCommand() {
 				})
 				.sort((a, b) => b.modified.getTime() - a.modified.getTime())
 		: [];
+
+	// Fused model cache
+	const fusedSize = fusedExists ? formatFileSize(fusedDirSize) : null;
 
 	// Latest benchmark
 	let latestBenchmark: BenchmarkResult | null = null;
@@ -178,6 +184,12 @@ export function StatusCommand() {
 					))
 				) : (
 					<Text dimColor>{'  '}No exported models yet</Text>
+				)}
+				{fusedExists && (
+					<Text dimColor>
+						{'  '}Fused model cache: {fusedSize} (run{' '}
+						<Text color="cyan">nanotune clean</Text> to remove)
+					</Text>
 				)}
 
 				<Text> </Text>

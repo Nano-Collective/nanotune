@@ -14,6 +14,10 @@ import {
   createDefaultConfig,
   ensureBenchmarksDir,
   findLatestGGUF,
+  formatFileSize,
+  getDirectorySize,
+  hasUsableFusedModel,
+  skipFuseValidationError,
   formatConfigIssues,
   listBenchmarks,
   resolveBenchmarkPath,
@@ -679,6 +683,119 @@ test.serial("loadConfig prints each unknown key once across loads", (t) => {
     process.chdir(ORIG_CWD);
     rmSync(WARN_TEST_DIR, { recursive: true, force: true });
   }
+});
+
+// ── formatFileSize ──────────────────────────────────────────────────
+
+test("formatFileSize formats bytes below 1 KB", (t) => {
+  t.is(formatFileSize(0), "0 B");
+  t.is(formatFileSize(1023), "1023 B");
+});
+
+test("formatFileSize formats kilobytes", (t) => {
+  t.is(formatFileSize(1024), "1.0 KB");
+  t.is(formatFileSize(1024 * 1024 - 1), "1024.0 KB");
+});
+
+test("formatFileSize formats megabytes", (t) => {
+  t.is(formatFileSize(1024 * 1024), "1.0 MB");
+  t.is(formatFileSize(1024 * 1024 * 1024 - 1), "1024.0 MB");
+});
+
+test("formatFileSize formats gigabytes with two decimal places", (t) => {
+  t.is(formatFileSize(1024 * 1024 * 1024), "1.00 GB");
+  t.is(formatFileSize(1.5 * 1024 * 1024 * 1024), "1.50 GB");
+});
+
+// ── getDirectorySize / hasUsableFusedModel ──────────────────────────
+
+const SIZE_TEST_DIR = join(ORIG_CWD, ".test-config-dirsize");
+
+function resetSizeTestDir() {
+  rmSync(SIZE_TEST_DIR, { recursive: true, force: true });
+  mkdirSync(SIZE_TEST_DIR, { recursive: true });
+}
+
+test.serial("getDirectorySize returns 0 for a missing directory", (t) => {
+  rmSync(SIZE_TEST_DIR, { recursive: true, force: true });
+  t.is(getDirectorySize(SIZE_TEST_DIR), 0);
+});
+
+test.serial("getDirectorySize sums files in a flat directory", (t) => {
+  resetSizeTestDir();
+  try {
+    writeFileSync(join(SIZE_TEST_DIR, "a.bin"), "x".repeat(10));
+    writeFileSync(join(SIZE_TEST_DIR, "b.bin"), "x".repeat(20));
+    t.is(getDirectorySize(SIZE_TEST_DIR), 30);
+  } finally {
+    rmSync(SIZE_TEST_DIR, { recursive: true, force: true });
+  }
+});
+
+test.serial("getDirectorySize recurses into nested subdirectories", (t) => {
+  resetSizeTestDir();
+  try {
+    writeFileSync(join(SIZE_TEST_DIR, "a.bin"), "x".repeat(10));
+    const nested = join(SIZE_TEST_DIR, "nested");
+    mkdirSync(nested);
+    writeFileSync(join(nested, "b.bin"), "x".repeat(20));
+    const deeper = join(nested, "deeper");
+    mkdirSync(deeper);
+    writeFileSync(join(deeper, "c.bin"), "x".repeat(5));
+    t.is(getDirectorySize(SIZE_TEST_DIR), 35);
+  } finally {
+    rmSync(SIZE_TEST_DIR, { recursive: true, force: true });
+  }
+});
+
+test.serial("hasUsableFusedModel is false for a missing directory", (t) => {
+  rmSync(SIZE_TEST_DIR, { recursive: true, force: true });
+  t.false(hasUsableFusedModel(SIZE_TEST_DIR));
+});
+
+test.serial(
+  "hasUsableFusedModel is false when the directory has no .safetensors file",
+  (t) => {
+    resetSizeTestDir();
+    try {
+      writeFileSync(join(SIZE_TEST_DIR, "config.json"), "{}");
+      t.false(hasUsableFusedModel(SIZE_TEST_DIR));
+    } finally {
+      rmSync(SIZE_TEST_DIR, { recursive: true, force: true });
+    }
+  },
+);
+
+test.serial(
+  "hasUsableFusedModel is true once a .safetensors file is present",
+  (t) => {
+    resetSizeTestDir();
+    try {
+      writeFileSync(join(SIZE_TEST_DIR, "config.json"), "{}");
+      writeFileSync(join(SIZE_TEST_DIR, "model.safetensors"), "x");
+      t.true(hasUsableFusedModel(SIZE_TEST_DIR));
+    } finally {
+      rmSync(SIZE_TEST_DIR, { recursive: true, force: true });
+    }
+  },
+);
+
+// ── skipFuseValidationError ─────────────────────────────────────────
+
+test("skipFuseValidationError is null when --skip-fuse is not set", (t) => {
+  t.is(skipFuseValidationError(false, false), null);
+  t.is(skipFuseValidationError(undefined, false), null);
+});
+
+test("skipFuseValidationError is null when --skip-fuse is set and fused/ exists", (t) => {
+  t.is(skipFuseValidationError(true, true), null);
+});
+
+test("skipFuseValidationError reports a clear error when --skip-fuse is set but fused/ is missing", (t) => {
+  const message = skipFuseValidationError(true, false);
+  t.truthy(message);
+  t.true(message!.includes("--skip-fuse"));
+  t.true(message!.includes("fused"));
 });
 
 
