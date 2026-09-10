@@ -1,4 +1,5 @@
 import {rmSync} from 'node:fs';
+import {homedir} from 'node:os';
 import {StatusMessage} from '@inkjs/ui';
 import {Box, Text, useApp} from 'ink';
 import {useCallback, useEffect, useState} from 'react';
@@ -15,45 +16,139 @@ import {
 	getFusedModelDir,
 	hasUsableFusedModel,
 } from '../lib/config.js';
+import {getBaseModelCacheDir, hasBaseModelCache} from '../lib/model-cache.js';
 
 interface Props {
 	options: {
 		/** Skip the y/n confirmation — needed to run under CI or in a pipeline. */
 		yes?: boolean;
+		target?: string;
 	};
+	/**
+	 * Override for the base-model cache directory. Production never passes
+	 * this — it's here so tests can point at a throwaway directory instead
+	 * of the real home directory (unlike the fused-model cache, which lives
+	 * under the project dir and is already sandboxed via `process.chdir` in
+	 * tests, the base cache is keyed off `os.homedir()`, which can't be
+	 * safely monkeypatched: Node's ESM module namespace for a builtin is
+	 * read-only at runtime, so patching it doesn't reach other modules'
+	 * already-bound imports).
+	 */
+	baseModelCacheDir?: string;
+}
+
+const VALID_TARGETS = ['fused', 'base', 'all'] as const;
+type CleanTarget = (typeof VALID_TARGETS)[number];
+
+/**
+ * Validate `--target`. Pulled out as a pure function (mirrors the
+ * `--preset` validation in `benchmark.tsx`) so it's directly testable and
+ * so `cli.tsx` can reuse it to decide whether there's anything to confirm
+ * before requiring `--yes` in a non-interactive shell.
+ */
+export function validateCleanTarget(
+	target: string | undefined,
+): {target: CleanTarget} | {error: string} {
+	if (target === undefined) {
+		return {target: 'fused'};
+	}
+	if ((VALID_TARGETS as readonly string[]).includes(target)) {
+		return {target: target as CleanTarget};
+	}
+	return {
+		error: `Invalid target: ${target}. Valid targets: ${VALID_TARGETS.join(', ')}`,
+	};
+}
+
+interface CleanEntry {
+	label: string;
+	dir: string;
+	displayPath: string;
+	sizeBytes: number;
+	note: string;
+}
+
+function findCleanEntries(
+	target: CleanTarget,
+	hasProject: boolean,
+	baseModelCacheDir: string,
+): CleanEntry[] {
+	const wantsFused = target === 'fused' || target === 'all';
+	const wantsBase = target === 'base' || target === 'all';
+	const entries: CleanEntry[] = [];
+
+	if (wantsFused && hasProject) {
+		const fusedDir = getFusedModelDir();
+		if (hasUsableFusedModel(fusedDir)) {
+			entries.push({
+				label: 'Fused model cache',
+				dir: fusedDir,
+				displayPath: '.nanotune/models/fused',
+				sizeBytes: getDirectorySize(fusedDir),
+				note: 'kept to speed up repeat exports via --skip-fuse',
+			});
+		}
+	}
+
+	if (wantsBase && hasBaseModelCache(baseModelCacheDir)) {
+		entries.push({
+			label: 'Base model cache',
+			dir: baseModelCacheDir,
+			displayPath: baseModelCacheDir.replace(homedir(), '~'),
+			sizeBytes: getDirectorySize(baseModelCacheDir),
+			note: 'kept to speed up repeat `benchmark --base` runs',
+		});
+	}
+
+	return entries;
 }
 
 type Status = 'confirm' | 'cleaning' | 'nothing' | 'done' | 'error';
 
-export function CleanCommand({options}: Props) {
+export function CleanCommand({options, baseModelCacheDir}: Props) {
 	const {exit} = useApp();
 	const hasProject = configExists();
-	const fusedDir = getFusedModelDir();
-	const fusedExists = hasProject && hasUsableFusedModel(fusedDir);
+	const targetResult = validateCleanTarget(options.target);
+	const resolvedBaseDir = baseModelCacheDir ?? getBaseModelCacheDir();
+
+	const [entries] = useState<CleanEntry[]>(() =>
+		'error' in targetResult
+			? []
+			: findCleanEntries(targetResult.target, hasProject, resolvedBaseDir),
+	);
+	const [freedBytes, setFreedBytes] = useState(0);
 
 	const [status, setStatus] = useState<Status>(() => {
-		if (!hasProject) return 'error';
-		if (!fusedExists) return 'nothing';
+		if ('error' in targetResult) return 'error';
+		if (targetResult.target === 'fused' && !hasProject) return 'error';
+		if (entries.length === 0) return 'nothing';
 		return options.yes ? 'cleaning' : 'confirm';
 	});
-	const [error, setError] = useState<string | null>(null);
-	const [sizeLabel] = useState<string | null>(() =>
-		fusedExists ? formatFileSize(getDirectorySize(fusedDir)) : null,
+	const [error, setError] = useState<string | null>(
+		'error' in targetResult ? targetResult.error : null,
 	);
 
 	const doClean = useCallback(() => {
-		try {
-			rmSync(fusedDir, {recursive: true, force: true});
-			setStatus('done');
-		} catch (err) {
-			setError(
-				err instanceof Error
-					? err.message
-					: 'Failed to remove fused model cache',
-			);
-			setStatus('error');
+		let totalFreed = 0;
+		const failures: string[] = [];
+		for (const entry of entries) {
+			try {
+				rmSync(entry.dir, {recursive: true, force: true});
+				totalFreed += entry.sizeBytes;
+			} catch (err) {
+				failures.push(
+					`${entry.label}: ${err instanceof Error ? err.message : 'failed to remove'}`,
+				);
+			}
 		}
-	}, [fusedDir]);
+		setFreedBytes(totalFreed);
+		if (failures.length > 0) {
+			setError(failures.join('\n'));
+			setStatus('error');
+		} else {
+			setStatus('done');
+		}
+	}, [entries]);
 
 	// `--yes` (or the initial `cleaning` state it sets above) skips straight
 	// past the confirmation prompt.
@@ -84,7 +179,11 @@ export function CleanCommand({options}: Props) {
 		status === 'error',
 	);
 
-	if (!hasProject) {
+	if (
+		!('error' in targetResult) &&
+		targetResult.target === 'fused' &&
+		!hasProject
+	) {
 		return (
 			<Box flexDirection="column" padding={1}>
 				<Header title="Clean" />
@@ -95,33 +194,54 @@ export function CleanCommand({options}: Props) {
 		);
 	}
 
+	const totalBytes = entries.reduce((sum, e) => sum + e.sizeBytes, 0);
+	const nothingMessage = (() => {
+		if ('error' in targetResult) return '';
+		if (targetResult.target === 'all') {
+			return 'Nothing to clean — no fused or base model cache found.';
+		}
+		if (targetResult.target === 'base') {
+			return 'Nothing to clean — no base model cache found.';
+		}
+		return 'Nothing to clean — no fused model cache found.';
+	})();
+
 	return (
 		<Box flexDirection="column" padding={1}>
 			<Header title="Clean" />
 
 			{status === 'confirm' && (
 				<Box flexDirection="column">
-					<Text>
-						Fused model cache: <Text color="cyan">{sizeLabel}</Text> at{' '}
-						<Text color="cyan">.nanotune/models/fused</Text>
-					</Text>
-					<Text dimColor>
-						This is kept to speed up repeat exports via --skip-fuse.
-					</Text>
+					{entries.map(entry => (
+						<Text key={entry.dir}>
+							{entry.label}:{' '}
+							<Text color="cyan">{formatFileSize(entry.sizeBytes)}</Text> at{' '}
+							<Text color="cyan">{entry.displayPath}</Text>
+						</Text>
+					))}
+					{entries.length > 1 && (
+						<Text>
+							Total: <Text color="cyan">{formatFileSize(totalBytes)}</Text>
+						</Text>
+					)}
+					{entries.map(entry => (
+						<Text key={entry.dir} dimColor>
+							{entries.length > 1 ? entry.label : 'This'} is {entry.note}.
+						</Text>
+					))}
 					<Text> </Text>
 					<Text>
-						Remove it? <Text color="green">(y/n)</Text>
+						Remove {entries.length > 1 ? 'these' : 'it'}?{' '}
+						<Text color="green">(y/n)</Text>
 					</Text>
 				</Box>
 			)}
 
-			{status === 'cleaning' && <Text>Removing fused model cache...</Text>}
+			{status === 'cleaning' && <Text>Removing cache...</Text>}
 
 			{status === 'nothing' && (
 				<Box flexDirection="column">
-					<StatusMessage variant="info">
-						Nothing to clean — no fused model cache found.
-					</StatusMessage>
+					<StatusMessage variant="info">{nothingMessage}</StatusMessage>
 					<Text> </Text>
 					<ExitHint>Press any key to exit</ExitHint>
 				</Box>
@@ -130,15 +250,23 @@ export function CleanCommand({options}: Props) {
 			{status === 'done' && (
 				<Box flexDirection="column">
 					<StatusMessage variant="success">
-						Removed fused model cache
+						Removed {entries.map(e => e.label.toLowerCase()).join(' and ')}
 					</StatusMessage>
 					<Text> </Text>
 					<Text>
-						Freed: <Text color="cyan">{sizeLabel}</Text>
+						Freed: <Text color="cyan">{formatFileSize(freedBytes)}</Text>
 					</Text>
-					<Text dimColor>
-						The next `nanotune export` will re-fuse the adapter.
-					</Text>
+					{entries.some(e => e.label === 'Fused model cache') && (
+						<Text dimColor>
+							The next `nanotune export` will re-fuse the adapter.
+						</Text>
+					)}
+					{entries.some(e => e.label === 'Base model cache') && (
+						<Text dimColor>
+							The next `nanotune benchmark --base` will re-download and
+							requantize the base model.
+						</Text>
+					)}
 					<Text> </Text>
 					<ExitHint>Press any key to exit</ExitHint>
 				</Box>

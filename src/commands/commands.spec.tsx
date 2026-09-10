@@ -12,7 +12,7 @@ import { render } from "ink-testing-library";
 import { useKeyInput } from "../components/index.js";
 import { getFusedModelDir } from "../lib/config.js";
 import { loadTrainingData } from "../lib/data.js";
-import { CleanCommand } from "./clean.js";
+import { CleanCommand, validateCleanTarget } from "./clean.js";
 import { ChatCommand, streamPreview } from "./chat.js";
 import { DataExportCommand } from "./data/export.js";
 import { DataImportCommand } from "./data/import.js";
@@ -81,6 +81,20 @@ function writeIncompleteFusedModel() {
   const fusedDir = join(NANOTUNE_DIR, "models", "fused");
   mkdirSync(fusedDir, { recursive: true });
   writeFileSync(join(fusedDir, "config.json"), "{}");
+}
+
+// The real base-model cache lives under os.homedir(), not the project
+// directory, so it can't be sandboxed with process.chdir like everything
+// else here. CleanCommand accepts a baseModelCacheDir override for exactly
+// this — production never passes it, tests point it at a throwaway dir.
+const FAKE_BASE_CACHE_DIR = join(TEST_DIR, ".fake-base-cache");
+
+function writeBaseModelCache() {
+  mkdirSync(FAKE_BASE_CACHE_DIR, { recursive: true });
+  writeFileSync(
+    join(FAKE_BASE_CACHE_DIR, "org--model-q4_k_m.gguf"),
+    "x".repeat(1024),
+  );
 }
 
 function writeEvalExamples(lines: object[]) {
@@ -361,6 +375,9 @@ test.serial("CleanCommand without yes waits for confirmation before deleting", a
     t.true(output.includes("Remove it?"));
     t.false(output.includes("Removed fused model cache"));
     t.true(existsSync(fusedDir));
+    // Pinned wording: the single-cache confirm screen must read exactly as
+    // it did before --target existed, not "Fused model cache is kept...".
+    t.true(output.includes("This is kept to speed up repeat exports via --skip-fuse."));
   } finally {
     teardown();
   }
@@ -461,6 +478,122 @@ test.serial("CleanCommand leaves the cache in place on Escape", async (t) => {
     t.true(existsSync(fusedDir));
   } finally {
     process.stdin.isTTY = originalIsTTY;
+    teardown();
+  }
+});
+
+// ── clean: --target ─────────────────────────────────────────────────
+
+test("validateCleanTarget defaults to fused when --target is omitted", (t) => {
+  t.deepEqual(validateCleanTarget(undefined), { target: "fused" });
+});
+
+test("validateCleanTarget accepts fused, base, and all", (t) => {
+  t.deepEqual(validateCleanTarget("fused"), { target: "fused" });
+  t.deepEqual(validateCleanTarget("base"), { target: "base" });
+  t.deepEqual(validateCleanTarget("all"), { target: "all" });
+});
+
+test("validateCleanTarget rejects an unknown target", (t) => {
+  const result = validateCleanTarget("bogus");
+  t.true("error" in result);
+  if ("error" in result) {
+    t.true(result.error.includes("bogus"));
+    t.true(result.error.includes("fused, base, all"));
+  }
+});
+
+test.serial("CleanCommand rejects an invalid --target", async (t) => {
+  try {
+    setupProject();
+    const output = await renderCommand(
+      <CleanCommand options={{ target: "bogus" }} />,
+      "Invalid target",
+    );
+    t.true(output.includes("Invalid target: bogus"));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("CleanCommand --target base reports nothing to clean when the base cache is absent", async (t) => {
+  try {
+    setupEmptyDir(); // No project at all — --target base needs none.
+    rmSync(FAKE_BASE_CACHE_DIR, { recursive: true, force: true });
+    const output = await renderCommand(
+      <CleanCommand
+        options={{ target: "base" }}
+        baseModelCacheDir={FAKE_BASE_CACHE_DIR}
+      />,
+      "Nothing to clean",
+    );
+    t.true(output.includes("Nothing to clean"));
+    t.false(output.includes("Not a Nanotune project"));
+  } finally {
+    rmSync(FAKE_BASE_CACHE_DIR, { recursive: true, force: true });
+    teardown();
+  }
+});
+
+test.serial("CleanCommand --target base removes the base-model cache with --yes", async (t) => {
+  try {
+    setupEmptyDir();
+    writeBaseModelCache();
+    t.true(existsSync(FAKE_BASE_CACHE_DIR));
+    const output = await renderCommand(
+      <CleanCommand
+        options={{ target: "base", yes: true }}
+        baseModelCacheDir={FAKE_BASE_CACHE_DIR}
+      />,
+      "Removed base model cache",
+    );
+    t.true(output.includes("Removed base model cache"));
+    t.true(output.includes("Freed:"));
+    t.false(existsSync(FAKE_BASE_CACHE_DIR));
+  } finally {
+    rmSync(FAKE_BASE_CACHE_DIR, { recursive: true, force: true });
+    teardown();
+  }
+});
+
+test.serial("CleanCommand --target all removes both caches when present", async (t) => {
+  try {
+    setupProject();
+    writeFusedModel();
+    writeBaseModelCache();
+    const fusedDir = getFusedModelDir();
+    const output = await renderCommand(
+      <CleanCommand
+        options={{ target: "all", yes: true }}
+        baseModelCacheDir={FAKE_BASE_CACHE_DIR}
+      />,
+      "Removed fused model cache and base model cache",
+    );
+    t.true(output.includes("Removed fused model cache and base model cache"));
+    t.false(existsSync(fusedDir));
+    t.false(existsSync(FAKE_BASE_CACHE_DIR));
+  } finally {
+    rmSync(FAKE_BASE_CACHE_DIR, { recursive: true, force: true });
+    teardown();
+  }
+});
+
+test.serial("CleanCommand --target all with no project still cleans the base cache", async (t) => {
+  try {
+    setupEmptyDir(); // No project — the fused/ half of --target all is skipped, not an error.
+    writeBaseModelCache();
+    const output = await renderCommand(
+      <CleanCommand
+        options={{ target: "all", yes: true }}
+        baseModelCacheDir={FAKE_BASE_CACHE_DIR}
+      />,
+      "Removed base model cache",
+    );
+    t.false(output.includes("Not a Nanotune project"));
+    t.true(output.includes("Removed base model cache"));
+    t.false(existsSync(FAKE_BASE_CACHE_DIR));
+  } finally {
+    rmSync(FAKE_BASE_CACHE_DIR, { recursive: true, force: true });
     teardown();
   }
 });
