@@ -347,10 +347,7 @@ program
 	.command('clean')
 	.description('Remove cached models (fused and/or base) to reclaim disk space')
 	.option('-y, --yes', 'Skip the confirmation prompt (for scripts and CI)')
-	.option(
-		'--target <fused|base|all>',
-		'Which cache to clean (default: fused)',
-	)
+	.option('--target <fused|base|all>', 'Which cache to clean (default: fused)')
 	.action(async (options: {yes?: boolean; target?: string}) => {
 		const {CleanCommand, validateCleanTarget} = await import(
 			'./commands/clean.js'

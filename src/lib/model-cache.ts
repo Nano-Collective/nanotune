@@ -50,7 +50,9 @@ export function getBaseModelCachePath(
  * `dir` defaults to the real cache directory but can be overridden, so tests
  * don't have to touch the developer's actual home directory.
  */
-export function hasBaseModelCache(dir: string = getBaseModelCacheDir()): boolean {
+export function hasBaseModelCache(
+	dir: string = getBaseModelCacheDir(),
+): boolean {
 	if (!existsSync(dir)) {
 		return false;
 	}

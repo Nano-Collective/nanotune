@@ -91,10 +91,13 @@ function findCleanEntries(
 	}
 
 	if (wantsBase && hasBaseModelCache(baseModelCacheDir)) {
+		const home = homedir();
 		entries.push({
 			label: 'Base model cache',
 			dir: baseModelCacheDir,
-			displayPath: baseModelCacheDir.replace(homedir(), '~'),
+			displayPath: baseModelCacheDir.startsWith(home)
+				? `~${baseModelCacheDir.slice(home.length)}`
+				: baseModelCacheDir,
 			sizeBytes: getDirectorySize(baseModelCacheDir),
 			note: 'kept to speed up repeat `benchmark --base` runs',
 		});

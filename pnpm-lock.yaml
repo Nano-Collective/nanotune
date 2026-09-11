@@ -6,10 +6,11 @@ settings:
 
 overrides:
   brace-expansion: '>=5.0.9'
-  js-yaml: ^3.15.2
+  js-yaml: '>=3.15.2'
   lodash: '>=4.17.24'
   minimatch: '>=10.2.3'
   picomatch: '>=4.0.4'
+  smol-toml: '>=1.7.1'
   tar: '>=7.5.21'
 
 importers:
@@ -924,8 +925,8 @@ packages:
     resolution: {integrity: sha512-4Dj6M28JB+oAH8kFkTLUo+a2jwOFkuqb3yucU0CANcRRUbxS0cP0nZYCGjcc3BNXwRIsUVmDGgzawme7zvJHvg==}
     engines: {node: '>=12'}
 
-  argparse@1.0.10:
-    resolution: {integrity: sha512-o5Roy6tNG4SL/FOkCAN6RzjiakZS25RLYFrcMttJqbdd8BWrnA+fGz57iN5Pb06pvBGvl5gQ0B48dJlslXvoTg==}
+  argparse@2.0.1:
+    resolution: {integrity: sha512-8+9WqebbFzpX9OR+Wa6O29asIogeRMzcGtAINdpMHHyAg10f05aSFVBbcEqGf/PXw1EjAZ+q2/bEBg3DvurK3Q==}
 
   array-find-index@1.0.2:
     resolution: {integrity: sha512-M1HQyIXcBGtVywBt8WVdim+lrNaK7VHp99Qt5pSNziXznKHViIBbXWtfRTpEFpF/c4FdfxNAsCCwPp5phBYJtw==}
@@ -1126,11 +1127,6 @@ packages:
   escape-string-regexp@5.0.0:
     resolution: {integrity: sha512-/veY75JbMK4j1yjvuUxuVsiS/hr/4iHs9FTT6cgTexxdE0Ly/glccBAkloH/DofkjRbZU3bnoj38mOmhkZ0lHw==}
     engines: {node: '>=12'}
-
-  esprima@4.0.1:
-    resolution: {integrity: sha512-eGuFFw7Upda+g4p+QHvnW0RyTX/SVeJBDM/gCtMARO0cLuT2HcEKnTPvhjV6aGeqrCB/sbNop0Kszm0jsaWU4A==}
-    engines: {node: '>=4'}
-    hasBin: true
 
   estree-walker@2.0.2:
     resolution: {integrity: sha512-Rfkk/Mp/DL7JVje3u18FxFujQlTNR2q6QfMSMB7AvCBx91NGj/ba3kCfza0f6dVDbw7YlRf/nDrn7pQrCCyQ/w==}
@@ -1371,8 +1367,8 @@ packages:
     resolution: {integrity: sha512-Smw4xcfIQ5LVjAOuJCvN/zIodzA/BBSsluuoSykP+lUvScIi4U6RJLfwHet5cxFnCswUjISV8oAXaqaJDY3chg==}
     engines: {node: '>= 0.8'}
 
-  js-yaml@3.15.2:
-    resolution: {integrity: sha512-6EuL879VkRA+1Cz578mKMiKvjPNEuk6+r1JaFzoSWejZmtf7xWbIyw1e3KkxlkzTIt9Taw6JBhEppG7utc1P+w==}
+  js-yaml@5.4.1:
+    resolution: {integrity: sha512-28R/k+NAjeuf7+CKlTxWZVExJGwVVLwY06DgEnOMz2gEpfNkDcD7QvyiVPT0xy0XXhU8vHsd4Ot42OOPdJG7dQ==}
     hasBin: true
 
   json-schema@0.4.0:
@@ -1631,9 +1627,6 @@ packages:
   smol-toml@1.8.0:
     resolution: {integrity: sha512-kCZr2V3ch9i00x8zXRhjUNVcjG9ijES5dDudkXvUVCT5QlJNQWElSJdZqyPemffHoLNUYwOcou0Fy+ojN0uHSQ==}
     engines: {node: '>= 18'}
-
-  sprintf-js@1.0.3:
-    resolution: {integrity: sha512-D9cPgkvLlV3t3IzL0D0YLvGA9Ahk4PcvVwUbN0dSGr1aP0Nrt4AEnTUbuGvquEC0mA64Gqt1fzirlRs5ibXx8g==}
 
   stack-utils@2.0.6:
     resolution: {integrity: sha512-XlkWvfIm6RmsWtNJx+uqtKLS8eqFbxUg0ZzLXqY0caEy9l7hruX8IpiDnjsLavoBgqCCR71TqWO8MaXYheJ3RQ==}
@@ -2493,9 +2486,7 @@ snapshots:
 
   ansi-styles@6.2.3: {}
 
-  argparse@1.0.10:
-    dependencies:
-      sprintf-js: 1.0.3
+  argparse@2.0.1: {}
 
   array-find-index@1.0.2: {}
 
@@ -2717,8 +2708,6 @@ snapshots:
   escape-string-regexp@2.0.0: {}
 
   escape-string-regexp@5.0.0: {}
-
-  esprima@4.0.1: {}
 
   estree-walker@2.0.2: {}
 
@@ -2947,10 +2936,9 @@ snapshots:
 
   js-string-escape@1.0.1: {}
 
-  js-yaml@3.15.2:
+  js-yaml@5.4.1:
     dependencies:
-      argparse: 1.0.10
-      esprima: 4.0.1
+      argparse: 2.0.1
 
   json-schema@0.4.0: {}
 
@@ -3198,8 +3186,6 @@ snapshots:
 
   smol-toml@1.8.0: {}
 
-  sprintf-js@1.0.3: {}
-
   stack-utils@2.0.6:
     dependencies:
       escape-string-regexp: 2.0.0
@@ -3231,7 +3217,7 @@ snapshots:
   supertap@3.0.1:
     dependencies:
       indent-string: 5.0.0
-      js-yaml: 3.15.2
+      js-yaml: 5.4.1
       serialize-error: 7.0.1
       strip-ansi: 7.2.0
 

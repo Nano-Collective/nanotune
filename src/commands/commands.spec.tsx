@@ -535,6 +535,28 @@ test.serial("CleanCommand --target base reports nothing to clean when the base c
   }
 });
 
+test.serial("CleanCommand --target base --yes reports nothing to clean when the base cache is absent", async (t) => {
+  // Regression check: --yes must not skip past the "is there anything to
+  // clean" check straight into doClean with an empty entries list.
+  try {
+    setupEmptyDir();
+    rmSync(FAKE_BASE_CACHE_DIR, { recursive: true, force: true });
+    const output = await renderCommand(
+      <CleanCommand
+        options={{ target: "base", yes: true }}
+        baseModelCacheDir={FAKE_BASE_CACHE_DIR}
+      />,
+      "Nothing to clean",
+    );
+    t.true(output.includes("Nothing to clean"));
+    t.false(output.includes("Removed"));
+    t.false(existsSync(FAKE_BASE_CACHE_DIR));
+  } finally {
+    rmSync(FAKE_BASE_CACHE_DIR, { recursive: true, force: true });
+    teardown();
+  }
+});
+
 test.serial("CleanCommand --target base removes the base-model cache with --yes", async (t) => {
   try {
     setupEmptyDir();
