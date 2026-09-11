@@ -1,7 +1,6 @@
-import {existsSync, readdirSync, statSync} from 'node:fs';
-import {join} from 'node:path';
 import {StatusMessage} from '@inkjs/ui';
 import {Box, Text, useApp} from 'ink';
+import {useMemo} from 'react';
 import {
 	ExitHint,
 	Header,
@@ -11,19 +10,17 @@ import {
 } from '../components/index.js';
 import {
 	configExists,
-	findLatestBenchmark,
-	getAdaptersDir,
-	getDataDir,
-	getModelsDir,
-	loadBenchmark,
-	loadConfig,
+	formatFileSize,
+	getDirectorySize,
+	getFusedModelDir,
+	hasUsableFusedModel,
+	tryLoadConfig,
 } from '../lib/config.js';
-import {countExamples} from '../lib/data.js';
-import type {BenchmarkResult} from '../types/index.js';
+import {collectStatus} from '../lib/status.js';
 
-function formatRelativeTime(date: Date): string {
+function formatRelativeTime(iso: string): string {
 	const now = new Date();
-	const diffMs = now.getTime() - date.getTime();
+	const diffMs = now.getTime() - new Date(iso).getTime();
 	const diffSeconds = Math.floor(diffMs / 1000);
 	const diffMinutes = Math.floor(diffSeconds / 60);
 	const diffHours = Math.floor(diffMinutes / 60);
@@ -36,17 +33,16 @@ function formatRelativeTime(date: Date): string {
 	return 'just now';
 }
 
-function formatFileSize(bytes: number): string {
-	if (bytes < 1024) return `${bytes} B`;
-	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-	if (bytes < 1024 * 1024 * 1024)
-		return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-	return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-}
-
 export function StatusCommand() {
 	const {exit} = useApp();
+	const {config, error: configError} = tryLoadConfig();
 	const hasConfig = configExists();
+	const fusedDir = getFusedModelDir();
+	const fusedExists = hasConfig && hasUsableFusedModel(fusedDir);
+	const fusedDirSize = useMemo(
+		() => (fusedExists ? getDirectorySize(fusedDir) : 0),
+		[fusedExists, fusedDir],
+	);
 
 	useKeyInput((input, key) => {
 		if (key.escape || key.return || input === 'q') {
@@ -55,65 +51,22 @@ export function StatusCommand() {
 	});
 
 	// Nothing to wait for without a keyboard — render the report and leave.
-	useAutoExit(true, !hasConfig);
+	useAutoExit(true, !config);
 
-	if (!hasConfig) {
+	if (!config) {
 		return (
 			<Box flexDirection="column" padding={1}>
 				<Header title="Project Status" />
-				<StatusMessage variant="error">
-					Not a Nanotune project. Run `nanotune init` first.
-				</StatusMessage>
+				<StatusMessage variant="error">{configError}</StatusMessage>
 			</Box>
 		);
 	}
 
-	const config = loadConfig();
-	const dataDir = getDataDir();
-	const adaptersDir = getAdaptersDir();
-	const modelsDir = getModelsDir();
-
-	// Training data info
-	const exampleCount = countExamples();
-	const validCount = countExamples(true);
-	const trainFile = join(dataDir, 'train.jsonl');
-	const trainModified = existsSync(trainFile)
-		? formatRelativeTime(statSync(trainFile).mtime)
-		: null;
-
-	// Training status
-	const adapterFile = join(adaptersDir, 'adapters.safetensors');
-	const hasTrained = existsSync(adapterFile);
-	const trainedTime = hasTrained
-		? formatRelativeTime(statSync(adapterFile).mtime)
-		: null;
-
-	// Exported models
-	const models = existsSync(modelsDir)
-		? readdirSync(modelsDir)
-				.filter(f => f.endsWith('.gguf'))
-				.map(f => {
-					const path = join(modelsDir, f);
-					const stats = statSync(path);
-					return {
-						name: f,
-						size: formatFileSize(stats.size),
-						modified: stats.mtime,
-					};
-				})
-				.sort((a, b) => b.modified.getTime() - a.modified.getTime())
-		: [];
-
-	// Latest benchmark
-	let latestBenchmark: BenchmarkResult | null = null;
-	const latestBenchmarkPath = findLatestBenchmark();
-	if (latestBenchmarkPath) {
-		try {
-			latestBenchmark = loadBenchmark(latestBenchmarkPath);
-		} catch {
-			// Ignore parse errors
-		}
-	}
+	// Same report `nanotune status --json` prints, so the two views cannot
+	// drift; only the formatting below is this component's own.
+	const report = collectStatus();
+	const latestBenchmark = report.benchmarks.latest;
+	const fusedSize = fusedExists ? formatFileSize(fusedDirSize) : null;
 
 	return (
 		<Box flexDirection="column" padding={1}>
@@ -128,24 +81,27 @@ export function StatusCommand() {
 				<Text>
 					Project:{' '}
 					<Text color="cyan" bold>
-						{config.name}
+						{report.project.name}
 					</Text>
 				</Text>
 				<Text>
-					Base Model: <Text color="cyan">{config.baseModel}</Text>
+					Base Model: <Text color="cyan">{report.project.baseModel}</Text>
 				</Text>
 
 				<Text> </Text>
 				<Text bold>Training Data:</Text>
 				<Text>
-					{'  '}Training Examples: <Text color="cyan">{exampleCount}</Text>
+					{'  '}Training Examples:{' '}
+					<Text color="cyan">{report.data.trainExamples}</Text>
 				</Text>
 				<Text>
-					{'  '}Validation Examples: <Text color="cyan">{validCount}</Text>
+					{'  '}Validation Examples:{' '}
+					<Text color="cyan">{report.data.validExamples}</Text>
 				</Text>
-				{trainModified && (
+				{report.data.trainLastModified && (
 					<Text dimColor>
-						{'  '}Last Modified: {trainModified}
+						{'  '}Last Modified:{' '}
+						{formatRelativeTime(report.data.trainLastModified)}
 					</Text>
 				)}
 
@@ -153,31 +109,37 @@ export function StatusCommand() {
 				<Text bold>Training:</Text>
 				<Box>
 					<Text>{'  '}Status: </Text>
-					{hasTrained ? (
+					{report.training.hasTrained ? (
 						<StatusBadge status="success" label="Completed" />
 					) : (
 						<StatusBadge status="pending" label="Not started" />
 					)}
 				</Box>
-				{trainedTime && (
+				{report.training.lastRun && (
 					<Text dimColor>
-						{'  '}Last Run: {trainedTime}
+						{'  '}Last Run: {formatRelativeTime(report.training.lastRun)}
 					</Text>
 				)}
 
 				<Text> </Text>
 				<Text bold>Exports:</Text>
-				{models.length > 0 ? (
-					models.map((model, i) => (
+				{report.exports.length > 0 ? (
+					report.exports.map((model, i) => (
 						<Text key={model.name}>
 							{'  '}
 							<Text color={i === 0 ? 'cyan' : undefined}>{model.name}</Text>
-							<Text dimColor> ({model.size})</Text>
+							<Text dimColor> ({formatFileSize(model.sizeBytes)})</Text>
 							{i === 0 && <Text color="yellow"> {'<-'} latest</Text>}
 						</Text>
 					))
 				) : (
 					<Text dimColor>{'  '}No exported models yet</Text>
+				)}
+				{fusedExists && (
+					<Text dimColor>
+						{'  '}Fused model cache: {fusedSize} (run{' '}
+						<Text color="cyan">nanotune clean</Text> to remove)
+					</Text>
 				)}
 
 				<Text> </Text>
@@ -185,13 +147,9 @@ export function StatusCommand() {
 				{latestBenchmark ? (
 					<Box>
 						<Text>{'  '}Latest: </Text>
-						<Text
-							color={
-								latestBenchmark.summary.passRate >= 0.9 ? 'green' : 'yellow'
-							}
-						>
-							{latestBenchmark.summary.passed}/{latestBenchmark.summary.total} (
-							{Math.round(latestBenchmark.summary.passRate * 100)}%)
+						<Text color={latestBenchmark.passRate >= 0.9 ? 'green' : 'yellow'}>
+							{latestBenchmark.passed}/{latestBenchmark.total} (
+							{Math.round(latestBenchmark.passRate * 100)}%)
 						</Text>
 						{latestBenchmark.isBase && (
 							<Text dimColor> (base model, control)</Text>
