@@ -135,7 +135,9 @@ function unwrapSchemas(schema: z.ZodType): z.ZodType[] {
 		return unwrapSchemas(schema.unwrap() as z.ZodType);
 	}
 	if (schema instanceof z.ZodUnion) {
-		return schema.options.flatMap(option => unwrapSchemas(option));
+		return schema.options.flatMap(option =>
+			unwrapSchemas(option as z.ZodType),
+		);
 	}
 	return [schema];
 }
@@ -182,8 +184,8 @@ function collectUnknownKeys(
 		if (childSchemas.length === 0) {
 			const suggestion = suggestKey(key, validKeys);
 			warnings.push(
-				'unknown key "' + fullPath + '" in ' + CONFIG_FILE + ' — ignored.' +
-					(suggestion ? ' Did you mean "' + suggestion + '"?' : ''),
+				`unknown key "${fullPath}" in ${CONFIG_FILE} — ignored.` +
+					(suggestion ? ` Did you mean "${suggestion}"?` : ''),
 			);
 			continue;
 		}
