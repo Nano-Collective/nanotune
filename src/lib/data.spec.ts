@@ -53,7 +53,7 @@ test.serial("appendToTrainingData writes correct JSONL with system role", (t) =>
     contextMessage: SYSTEM_CTX,
     userInput: "Hello",
     assistantOutput: "Hi there!",
-  });
+  }, false);
 
   const data = loadTrainingData();
   t.is(data.length, 1);
@@ -70,7 +70,7 @@ test.serial("appendToTrainingData writes correct JSONL with developer role", (t)
     contextMessage: DEV_CTX,
     userInput: "Write a function",
     assistantOutput: "function foo() {}",
-  });
+  }, false);
 
   const data = loadTrainingData();
   t.is(data.length, 1);
@@ -79,8 +79,8 @@ test.serial("appendToTrainingData writes correct JSONL with developer role", (t)
 });
 
 test.serial("appendToTrainingData appends multiple examples", (t) => {
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" });
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "C", assistantOutput: "D" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" }, false);
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "C", assistantOutput: "D" }, false);
 
   t.is(countExamples(), 2);
   const data = loadTrainingData();
@@ -96,7 +96,7 @@ test.serial("appendToTrainingData writes to eval file when isEval is true", (t) 
 });
 
 test.serial("appendToTrainingData omits the context message when there is none", (t) => {
-  appendToTrainingData({ userInput: "Hello", assistantOutput: "Hi there!" });
+  appendToTrainingData({ userInput: "Hello", assistantOutput: "Hi there!" }, false);
 
   const data = loadTrainingData();
   t.is(data.length, 1);
@@ -107,12 +107,12 @@ test.serial("appendToTrainingData omits the context message when there is none",
 });
 
 test.serial("appendToTrainingData omits a null or empty context message", (t) => {
-  appendToTrainingData({ contextMessage: null, userInput: "A", assistantOutput: "B" });
+  appendToTrainingData({ contextMessage: null, userInput: "A", assistantOutput: "B" }, false);
   appendToTrainingData({
     contextMessage: { role: "system", content: "" },
     userInput: "C",
     assistantOutput: "D",
-  });
+  }, false);
 
   const data = loadTrainingData();
   t.is(data.length, 2);
@@ -121,7 +121,7 @@ test.serial("appendToTrainingData omits a null or empty context message", (t) =>
 });
 
 test.serial("an example with no context message still validates", (t) => {
-  appendToTrainingData({ userInput: "Hello", assistantOutput: "Hi there!" });
+  appendToTrainingData({ userInput: "Hello", assistantOutput: "Hi there!" }, false);
 
   const result = validateTrainingData(SYSTEM_CTX);
   t.deepEqual(result.errors, []);
@@ -131,11 +131,11 @@ test.serial("an example with no context message still validates", (t) => {
 // ── deleteExample ─────────────────────────────────────────────────────
 
 test.serial("deleteExample removes the correct example", (t) => {
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "1" });
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "B", assistantOutput: "2" });
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "C", assistantOutput: "3" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "1" }, false);
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "B", assistantOutput: "2" }, false);
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "C", assistantOutput: "3" }, false);
 
-  deleteExample(1);
+  deleteExample(1, false);
 
   const data = loadTrainingData();
   t.is(data.length, 2);
@@ -155,7 +155,7 @@ test.serial("validateTrainingData returns error when no data exists", (t) => {
 });
 
 test.serial("validateTrainingData passes for valid data", (t) => {
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "Hello", assistantOutput: "Hi" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "Hello", assistantOutput: "Hi" }, false);
 
   const result = validateTrainingData(SYSTEM_CTX);
   t.true(result.valid);
@@ -163,9 +163,9 @@ test.serial("validateTrainingData passes for valid data", (t) => {
 });
 
 test.serial("validateTrainingData warns about inconsistent context messages", (t) => {
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" }, false);
   // Write a second example with a different context message directly
-  appendToTrainingData({ contextMessage: { role: "system", content: "Different prompt" }, userInput: "C", assistantOutput: "D" });
+  appendToTrainingData({ contextMessage: { role: "system", content: "Different prompt" }, userInput: "C", assistantOutput: "D" }, false);
 
   const result = validateTrainingData(SYSTEM_CTX);
   t.true(result.valid); // inconsistency is a warning, not an error
@@ -173,7 +173,7 @@ test.serial("validateTrainingData warns about inconsistent context messages", (t
 });
 
 test.serial("validateTrainingData warns about inconsistent context role", (t) => {
-  appendToTrainingData({ contextMessage: DEV_CTX, userInput: "A", assistantOutput: "B" });
+  appendToTrainingData({ contextMessage: DEV_CTX, userInput: "A", assistantOutput: "B" }, false);
 
   // validate against system context — role mismatch
   const result = validateTrainingData(SYSTEM_CTX);
@@ -181,8 +181,8 @@ test.serial("validateTrainingData warns about inconsistent context role", (t) =>
 });
 
 test.serial("validateTrainingData warns about duplicate user inputs", (t) => {
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "same", assistantOutput: "A" });
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "same", assistantOutput: "B" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "same", assistantOutput: "A" }, false);
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "same", assistantOutput: "B" }, false);
 
   const result = validateTrainingData(SYSTEM_CTX);
   t.true(result.warnings.some((w) => w.includes("duplicate")));
@@ -214,7 +214,7 @@ test.serial("validateTrainingData errors on empty content", (t) => {
 });
 
 test.serial("validateTrainingData warns when under 50 examples", (t) => {
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" }, false);
 
   const result = validateTrainingData(SYSTEM_CTX);
   t.true(result.warnings.some((w) => w.includes("Recommend at least 50")));
@@ -223,11 +223,11 @@ test.serial("validateTrainingData warns when under 50 examples", (t) => {
 // ── dedupeExamples ────────────────────────────────────────────────────
 
 test.serial("dedupeExamples removes an exact-duplicate example", (t) => {
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" });
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" });
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "C", assistantOutput: "D" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" }, false);
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" }, false);
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "C", assistantOutput: "D" }, false);
 
-  const result = dedupeExamples();
+  const result = dedupeExamples(false);
   t.is(result.removedCount, 1);
   t.deepEqual(result.removedIndexes, [2]);
 
@@ -238,29 +238,29 @@ test.serial("dedupeExamples removes an exact-duplicate example", (t) => {
 });
 
 test.serial("dedupeExamples does nothing when no duplicates exist", (t) => {
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" });
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "C", assistantOutput: "D" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" }, false);
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "C", assistantOutput: "D" }, false);
 
-  const result = dedupeExamples();
+  const result = dedupeExamples(false);
   t.is(result.removedCount, 0);
   t.deepEqual(result.removedIndexes, []);
   t.is(loadTrainingData().length, 2);
 });
 
 test.serial("dedupeExamples keeps examples with the same input but different output", (t) => {
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "same", assistantOutput: "A" });
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "same", assistantOutput: "B" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "same", assistantOutput: "A" }, false);
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "same", assistantOutput: "B" }, false);
 
-  const result = dedupeExamples();
+  const result = dedupeExamples(false);
   t.is(result.removedCount, 0);
   t.is(loadTrainingData().length, 2);
 });
 
 test.serial("dedupeExamples keeps identical turns with different context messages", (t) => {
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" });
-  appendToTrainingData({ contextMessage: DEV_CTX, userInput: "A", assistantOutput: "B" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" }, false);
+  appendToTrainingData({ contextMessage: DEV_CTX, userInput: "A", assistantOutput: "B" }, false);
 
-  const result = dedupeExamples();
+  const result = dedupeExamples(false);
   t.is(result.removedCount, 0);
   t.is(loadTrainingData().length, 2);
 });
@@ -268,7 +268,7 @@ test.serial("dedupeExamples keeps identical turns with different context message
 test.serial("dedupeExamples operates on valid.jsonl independently when isEval is true", (t) => {
   appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" }, true);
   appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" }, true);
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "X", assistantOutput: "Y" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "X", assistantOutput: "Y" }, false);
 
   const result = dedupeExamples(true);
   t.is(result.removedCount, 1);
@@ -279,9 +279,9 @@ test.serial("dedupeExamples operates on valid.jsonl independently when isEval is
 // ── fixContextMessages ────────────────────────────────────────────────
 
 test.serial("fixContextMessages rewrites a mismatched context message", (t) => {
-  appendToTrainingData({ contextMessage: DEV_CTX, userInput: "A", assistantOutput: "B" });
+  appendToTrainingData({ contextMessage: DEV_CTX, userInput: "A", assistantOutput: "B" }, false);
 
-  const result = fixContextMessages(SYSTEM_CTX);
+  const result = fixContextMessages(SYSTEM_CTX, false);
   t.is(result.fixedCount, 1);
 
   const data = loadTrainingData();
@@ -292,9 +292,9 @@ test.serial("fixContextMessages rewrites a mismatched context message", (t) => {
 });
 
 test.serial("fixContextMessages does nothing when already matching", (t) => {
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" }, false);
 
-  const result = fixContextMessages(SYSTEM_CTX);
+  const result = fixContextMessages(SYSTEM_CTX, false);
   t.is(result.fixedCount, 0);
 });
 
@@ -307,7 +307,7 @@ test.serial("fixContextMessages does not insert a context message when none exis
   };
   writeFileSync(join(DATA_DIR, "train.jsonl"), JSON.stringify(bare) + "\n");
 
-  const result = fixContextMessages(SYSTEM_CTX);
+  const result = fixContextMessages(SYSTEM_CTX, false);
   t.is(result.fixedCount, 0);
   t.is(loadTrainingData()[0].messages[0].role, "user");
 });
@@ -324,7 +324,7 @@ test.serial("fixContextMessages only rewrites index 0 on a multi-turn example", 
   };
   writeFileSync(join(DATA_DIR, "train.jsonl"), JSON.stringify(multiTurn) + "\n");
 
-  const result = fixContextMessages(SYSTEM_CTX);
+  const result = fixContextMessages(SYSTEM_CTX, false);
   t.is(result.fixedCount, 1);
 
   const data = loadTrainingData();
@@ -339,14 +339,14 @@ test.serial("fixContextMessages only rewrites index 0 on a multi-turn example", 
 test.serial(
   "running fixContextMessages before dedupeExamples catches duplicates that only match after normalization",
   (t) => {
-    appendToTrainingData({ contextMessage: DEV_CTX, userInput: "same", assistantOutput: "same-out" });
-    appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "same", assistantOutput: "same-out" });
+    appendToTrainingData({ contextMessage: DEV_CTX, userInput: "same", assistantOutput: "same-out" }, false);
+    appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "same", assistantOutput: "same-out" }, false);
 
     // The two examples only become byte-identical once their context
     // messages are normalized to match config — this is the order
     // `nanotune data validate --fix --rewrite-context` relies on.
-    fixContextMessages(SYSTEM_CTX);
-    const dedupeResult = dedupeExamples();
+    fixContextMessages(SYSTEM_CTX, false);
+    const dedupeResult = dedupeExamples(false);
 
     t.is(dedupeResult.removedCount, 1);
     t.is(loadTrainingData().length, 1);
@@ -359,7 +359,7 @@ test.serial("importFromCSV imports valid rows with context message role", (t) =>
   const csvPath = join(TEST_DIR, "data.csv");
   writeFileSync(csvPath, "input,output\n\"list files\",\"ls\"\n\"show dir\",\"pwd\"\n");
 
-  const result = importFromCSV(csvPath, DEV_CTX);
+  const result = importFromCSV(csvPath, DEV_CTX, false);
   t.is(result.imported, 2);
   t.is(result.skipped, 0);
 
@@ -377,7 +377,7 @@ test.serial("importFromCSV keeps a first row that merely mentions input", (t) =>
     '"explain the input parameter","it configures the stream"\n"second row","second output"\n',
   );
 
-  const result = importFromCSV(csvPath, SYSTEM_CTX);
+  const result = importFromCSV(csvPath, SYSTEM_CTX, false);
   t.is(result.imported, 2);
   t.is(result.skipped, 0);
 
@@ -389,7 +389,7 @@ test.serial("importFromCSV still skips a real header row", (t) => {
   const csvPath = join(TEST_DIR, "header.csv");
   writeFileSync(csvPath, 'Input , Output\n"list files","ls"\n');
 
-  const result = importFromCSV(csvPath, SYSTEM_CTX);
+  const result = importFromCSV(csvPath, SYSTEM_CTX, false);
   t.is(result.imported, 1);
 
   const data = loadTrainingData();
@@ -400,7 +400,7 @@ test.serial("importFromCSV does not treat a partial header match as a header", (
   const csvPath = join(TEST_DIR, "partial-header.csv");
   writeFileSync(csvPath, 'input,"not a header"\n"x","y"\n');
 
-  const result = importFromCSV(csvPath, SYSTEM_CTX);
+  const result = importFromCSV(csvPath, SYSTEM_CTX, false);
   t.is(result.imported, 2);
   t.is(result.skipped, 0);
 
@@ -413,7 +413,7 @@ test.serial("importFromCSV reports a one-column first row instead of skipping it
   const csvPath = join(TEST_DIR, "one-column.csv");
   writeFileSync(csvPath, "input\n\"list files\",\"ls\"\n");
 
-  const result = importFromCSV(csvPath, SYSTEM_CTX);
+  const result = importFromCSV(csvPath, SYSTEM_CTX, false);
   t.is(result.imported, 1);
   t.is(result.skipped, 1);
   t.is(result.errors.length, 1);
@@ -423,7 +423,7 @@ test.serial("importFromCSV skips a header row that has extra columns", (t) => {
   const csvPath = join(TEST_DIR, "wide-header.csv");
   writeFileSync(csvPath, 'input,output,notes\n"list files","ls","shell"\n');
 
-  const result = importFromCSV(csvPath, SYSTEM_CTX);
+  const result = importFromCSV(csvPath, SYSTEM_CTX, false);
   t.is(result.imported, 1);
 
   const data = loadTrainingData();
@@ -434,7 +434,7 @@ test.serial("importFromCSV skips invalid lines", (t) => {
   const csvPath = join(TEST_DIR, "bad.csv");
   writeFileSync(csvPath, "\"good\",\"data\"\nthis has no comma separation at all really\n");
 
-  const result = importFromCSV(csvPath, SYSTEM_CTX);
+  const result = importFromCSV(csvPath, SYSTEM_CTX, false);
   t.is(result.imported, 1);
   t.is(result.skipped, 1);
   t.is(result.errors.length, 1);
@@ -456,7 +456,7 @@ test.serial("importFromJSONL preserves imported messages array verbatim", (t) =>
   // Even though DEV_CTX is passed, the imported messages array must be
   // preserved — silently overwriting embedded system prompts would corrupt
   // user-curated datasets.
-  const result = importFromJSONL(jsonlPath, DEV_CTX);
+  const result = importFromJSONL(jsonlPath, DEV_CTX, false);
   t.is(result.imported, 1);
 
   const data = loadTrainingData();
@@ -470,7 +470,7 @@ test.serial("importFromJSONL imports input/output format", (t) => {
   const jsonlPath = join(TEST_DIR, "simple.jsonl");
   writeFileSync(jsonlPath, '{"input":"list files","output":"ls"}\n');
 
-  const result = importFromJSONL(jsonlPath, SYSTEM_CTX);
+  const result = importFromJSONL(jsonlPath, SYSTEM_CTX, false);
   t.is(result.imported, 1);
 
   const data = loadTrainingData();
@@ -482,7 +482,7 @@ test.serial("importFromJSONL skips invalid JSON", (t) => {
   const jsonlPath = join(TEST_DIR, "bad.jsonl");
   writeFileSync(jsonlPath, "not json\n");
 
-  const result = importFromJSONL(jsonlPath, SYSTEM_CTX);
+  const result = importFromJSONL(jsonlPath, SYSTEM_CTX, false);
   t.is(result.imported, 0);
   t.is(result.skipped, 1);
   t.true(result.errors[0].includes("Invalid JSON"));
@@ -506,7 +506,7 @@ test.serial("importFromJSON imports array of messages format", (t) => {
     ]),
   );
 
-  const result = importFromJSON(jsonPath, DEV_CTX);
+  const result = importFromJSON(jsonPath, DEV_CTX, false);
   t.is(result.imported, 2);
 
   const data = loadTrainingData();
@@ -523,9 +523,85 @@ test.serial("importFromJSON rejects non-array JSON", (t) => {
   const jsonPath = join(TEST_DIR, "obj.json");
   writeFileSync(jsonPath, '{"not": "an array"}');
 
-  const result = importFromJSON(jsonPath, SYSTEM_CTX);
+  const result = importFromJSON(jsonPath, SYSTEM_CTX, false);
   t.is(result.imported, 0);
   t.true(result.errors[0].includes("Expected JSON array"));
+});
+
+// ── importer skip paths ───────────────────────────────────────────
+// Every importer counts a row it cannot use rather than dropping it
+// silently, so `skipped` plus `imported` always accounts for the input.
+
+test.serial("importFromCSV skips a row with an empty input or output", (t) => {
+  const csvPath = join(TEST_DIR, "blanks.csv");
+  writeFileSync(csvPath, '"a","b"\n"","out"\n"in",""\n');
+
+  const result = importFromCSV(csvPath, SYSTEM_CTX, false);
+  t.is(result.imported, 1);
+  t.is(result.skipped, 2);
+  t.is(result.errors.length, 2);
+  t.true(result.errors.every((e) => e.includes("Empty input or output")));
+  t.is(countExamples(false), 1);
+});
+
+test.serial("importFromCSV on an empty file imports nothing", (t) => {
+  const csvPath = join(TEST_DIR, "empty.csv");
+  writeFileSync(csvPath, "");
+
+  const result = importFromCSV(csvPath, SYSTEM_CTX, false);
+  t.deepEqual(result, { imported: 0, skipped: 0, errors: [] });
+  t.is(countExamples(false), 0);
+});
+
+test.serial("importFromJSONL skips a messages array with no user/assistant pair", (t) => {
+  const jsonlPath = join(TEST_DIR, "no-pair.jsonl");
+  writeFileSync(
+    jsonlPath,
+    '{"messages":[{"role":"system","content":"a"},{"role":"user","content":"b"}]}\n',
+  );
+
+  const result = importFromJSONL(jsonlPath, SYSTEM_CTX, false);
+  t.is(result.imported, 0);
+  t.is(result.skipped, 1);
+  t.true(result.errors[0].includes("missing user/assistant"));
+});
+
+test.serial("importFromJSONL skips a line in neither supported shape", (t) => {
+  const jsonlPath = join(TEST_DIR, "unknown.jsonl");
+  writeFileSync(jsonlPath, '{"prompt":"a","completion":"b"}\n');
+
+  const result = importFromJSONL(jsonlPath, SYSTEM_CTX, false);
+  t.is(result.imported, 0);
+  t.is(result.skipped, 1);
+  t.true(result.errors[0].includes("Unrecognized format"));
+});
+
+test.serial("importFromJSON skips items that are unusable", (t) => {
+  const jsonPath = join(TEST_DIR, "mixed.json");
+  writeFileSync(
+    jsonPath,
+    JSON.stringify([
+      { messages: [{ role: "user", content: "only-user" }] },
+      { prompt: "a", completion: "b" },
+      { input: "good-in", output: "good-out" },
+    ]),
+  );
+
+  const result = importFromJSON(jsonPath, SYSTEM_CTX, false);
+  t.is(result.imported, 1);
+  t.is(result.skipped, 2);
+  t.true(result.errors.some((e) => e.includes("missing user/assistant")));
+  t.true(result.errors.some((e) => e.includes("Unrecognized format")));
+  t.is(countExamples(false), 1);
+});
+
+test.serial("importData dispatches .json to importFromJSON", (t) => {
+  const jsonPath = join(TEST_DIR, "dispatch.json");
+  writeFileSync(jsonPath, JSON.stringify([{ input: "a", output: "b" }]));
+
+  const result = importData(jsonPath, SYSTEM_CTX, false);
+  t.is(result.imported, 1);
+  t.is(loadTrainingData(false)[0].messages[1].content, "a");
 });
 
 // ── importData ────────────────────────────────────────────────────────
@@ -534,12 +610,12 @@ test.serial("importData dispatches to correct importer by extension", (t) => {
   const csvPath = join(TEST_DIR, "test.csv");
   writeFileSync(csvPath, "\"a\",\"b\"\n");
 
-  const result = importData(csvPath, SYSTEM_CTX);
+  const result = importData(csvPath, SYSTEM_CTX, false);
   t.is(result.imported, 1);
 });
 
 test.serial("importData returns error for missing file", (t) => {
-  const result = importData("/nonexistent/file.csv", SYSTEM_CTX);
+  const result = importData("/nonexistent/file.csv", SYSTEM_CTX, false);
   t.is(result.imported, 0);
   t.true(result.errors[0].includes("File not found"));
 });
@@ -548,7 +624,7 @@ test.serial("importData returns error for unsupported format", (t) => {
   const txtPath = join(TEST_DIR, "data.txt");
   writeFileSync(txtPath, "stuff");
 
-  const result = importData(txtPath, SYSTEM_CTX);
+  const result = importData(txtPath, SYSTEM_CTX, false);
   t.is(result.imported, 0);
   t.true(result.errors[0].includes("Unsupported file format"));
 });
@@ -556,8 +632,8 @@ test.serial("importData returns error for unsupported format", (t) => {
 // ── exportToJSONL / exportToJSON / exportToCSV / exportData ───────────
 
 test.serial("exportToJSONL round-trips through importFromJSONL", (t) => {
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" });
-  appendToTrainingData({ contextMessage: DEV_CTX, userInput: "C", assistantOutput: "D" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" }, false);
+  appendToTrainingData({ contextMessage: DEV_CTX, userInput: "C", assistantOutput: "D" }, false);
 
   const outPath = join(TEST_DIR, "out.jsonl");
   const exportResult = exportToJSONL(outPath);
@@ -565,14 +641,14 @@ test.serial("exportToJSONL round-trips through importFromJSONL", (t) => {
 
   const original = loadTrainingData();
   rmSync(join(DATA_DIR, "train.jsonl"));
-  const importResult = importFromJSONL(outPath, SYSTEM_CTX);
+  const importResult = importFromJSONL(outPath, SYSTEM_CTX, false);
   t.is(importResult.imported, 2);
   t.deepEqual(loadTrainingData(), original);
 });
 
 test.serial("exportToJSON round-trips through importFromJSON", (t) => {
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" });
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "C", assistantOutput: "D" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" }, false);
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "C", assistantOutput: "D" }, false);
 
   const outPath = join(TEST_DIR, "out.json");
   const exportResult = exportToJSON(outPath);
@@ -580,14 +656,14 @@ test.serial("exportToJSON round-trips through importFromJSON", (t) => {
 
   const original = loadTrainingData();
   rmSync(join(DATA_DIR, "train.jsonl"));
-  const importResult = importFromJSON(outPath, SYSTEM_CTX);
+  const importResult = importFromJSON(outPath, SYSTEM_CTX, false);
   t.is(importResult.imported, 2);
   t.deepEqual(loadTrainingData(), original);
 });
 
 test.serial("exportToCSV round-trips single-turn data through importFromCSV", (t) => {
-  appendToTrainingData({ contextMessage: DEV_CTX, userInput: "list files", assistantOutput: "ls" });
-  appendToTrainingData({ contextMessage: DEV_CTX, userInput: "show dir", assistantOutput: "pwd" });
+  appendToTrainingData({ contextMessage: DEV_CTX, userInput: "list files", assistantOutput: "ls" }, false);
+  appendToTrainingData({ contextMessage: DEV_CTX, userInput: "show dir", assistantOutput: "pwd" }, false);
 
   const outPath = join(TEST_DIR, "out.csv");
   const exportResult = exportToCSV(outPath);
@@ -598,7 +674,7 @@ test.serial("exportToCSV round-trips single-turn data through importFromCSV", (t
   t.true(content.startsWith("input,output\n"));
 
   rmSync(join(DATA_DIR, "train.jsonl"));
-  const importResult = importFromCSV(outPath, DEV_CTX);
+  const importResult = importFromCSV(outPath, DEV_CTX, false);
   t.is(importResult.imported, 2);
   const data = loadTrainingData();
   t.is(data[0].messages[1].content, "list files");
@@ -617,8 +693,8 @@ test.serial("exportToCSV skips multi-turn examples instead of truncating them", 
       { role: "assistant", content: "reply2" },
     ],
   };
-  appendTrainingExample(multiTurn);
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "single", assistantOutput: "turn" });
+  appendTrainingExample(multiTurn, false);
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "single", assistantOutput: "turn" }, false);
 
   const outPath = join(TEST_DIR, "out.csv");
   const result = exportToCSV(outPath);
@@ -632,7 +708,7 @@ test.serial("exportToCSV escapes commas, quotes, and newlines and round-trips th
     contextMessage: SYSTEM_CTX,
     userInput: 'say "hi", then leave\nplease',
     assistantOutput: "ok",
-  });
+  }, false);
 
   const outPath = join(TEST_DIR, "out.csv");
   exportToCSV(outPath);
@@ -644,7 +720,7 @@ test.serial("exportToCSV escapes commas, quotes, and newlines and round-trips th
 });
 
 test.serial("exportData dispatches to correct writer by extension", (t) => {
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" }, false);
 
   const jsonlResult = exportData(join(TEST_DIR, "out.jsonl"));
   t.is(jsonlResult.exported, 1);
@@ -662,7 +738,7 @@ test.serial("exportData returns error for unsupported format", (t) => {
 
 test.serial("export writers operate on valid.jsonl independently when isEval is true", (t) => {
   appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "eval-a", assistantOutput: "eval-b" }, true);
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "train-a", assistantOutput: "train-b" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "train-a", assistantOutput: "train-b" }, false);
 
   const outPath = join(TEST_DIR, "out-eval.jsonl");
   const result = exportToJSONL(outPath, true);
@@ -710,7 +786,7 @@ test.serial("appendTrainingExample writes multi-turn examples", (t) => {
       { role: "assistant", content: "I'm doing well, thanks!" },
     ],
   };
-  appendTrainingExample(multiTurn);
+  appendTrainingExample(multiTurn, false);
 
   const data = loadTrainingData();
   t.is(data.length, 1);
@@ -722,7 +798,7 @@ test.serial("appendTrainingExample writes multi-turn examples", (t) => {
 });
 
 test.serial("updateTrainingExample replaces with multi-turn example", (t) => {
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "old", assistantOutput: "old-out" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "old", assistantOutput: "old-out" }, false);
 
   const multiTurn: TrainingExample = {
     messages: [
@@ -733,7 +809,7 @@ test.serial("updateTrainingExample replaces with multi-turn example", (t) => {
       { role: "assistant", content: "Response 2" },
     ],
   };
-  updateTrainingExample(0, multiTurn);
+  updateTrainingExample(0, multiTurn, false);
 
   const data = loadTrainingData();
   t.is(data.length, 1);
@@ -884,7 +960,7 @@ test.serial("importFromJSONL preserves multi-turn messages", (t) => {
   };
   writeFileSync(jsonlPath, JSON.stringify(multiTurn) + "\n");
 
-  const result = importFromJSONL(jsonlPath, DEV_CTX);
+  const result = importFromJSONL(jsonlPath, DEV_CTX, false);
   t.is(result.imported, 1);
 
   const data = loadTrainingData();
@@ -911,7 +987,7 @@ test.serial("importFromJSON preserves multi-turn messages", (t) => {
   ];
   writeFileSync(jsonPath, JSON.stringify(multiTurn));
 
-  const result = importFromJSON(jsonPath, DEV_CTX);
+  const result = importFromJSON(jsonPath, DEV_CTX, false);
   t.is(result.imported, 1);
 
   const data = loadTrainingData();
@@ -959,7 +1035,7 @@ test.serial("appendToTrainingData backward compat still creates 3-message exampl
     contextMessage: SYSTEM_CTX,
     userInput: "Hello",
     assistantOutput: "Hi!",
-  });
+  }, false);
 
   const data = loadTrainingData();
   t.is(data.length, 1);
@@ -1064,7 +1140,7 @@ test("importFromCSV correctly imports a row with an embedded comma", (t) => {
   // parser must round-trip it as one example.
   writeFileSync(csvPath, '"please list files, recursively","find ."\n');
 
-  const result = importFromCSV(csvPath, SYSTEM_CTX);
+  const result = importFromCSV(csvPath, SYSTEM_CTX, false);
   t.is(result.imported, 1);
   t.is(result.skipped, 0);
 
@@ -1077,7 +1153,7 @@ test.serial("importFromCSV skips the header row of a BOM-prefixed file", (t) => 
   const csvPath = join(TEST_DIR, "bom-header.csv");
   writeFileSync(csvPath, '\uFEFFinput,output\n"list files","ls"\n');
 
-  const result = importFromCSV(csvPath, SYSTEM_CTX);
+  const result = importFromCSV(csvPath, SYSTEM_CTX, false);
   t.is(result.imported, 1);
   t.is(result.skipped, 0);
 
@@ -1094,7 +1170,7 @@ function seedExamples(count: number) {
       contextMessage: SYSTEM_CTX,
       userInput: `q${i}`,
       assistantOutput: `a${i}`,
-    });
+    }, false);
   }
 }
 
@@ -1391,7 +1467,7 @@ test.serial("importData still defaults to the training set", (t) => {
     `${JSON.stringify({ input: "q", output: "a" })}\n`,
   );
 
-  importData(jsonlPath, SYSTEM_CTX);
+  importData(jsonlPath, SYSTEM_CTX, false);
 
   t.is(countExamples(false), 1);
   t.is(countExamples(true), 0);

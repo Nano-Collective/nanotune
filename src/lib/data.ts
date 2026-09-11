@@ -54,9 +54,15 @@ export function loadTrainingData(isEval = false): TrainingExample[] {
 		.map(line => JSON.parse(line) as TrainingExample);
 }
 
+/**
+ * `isEval` is required — never defaulted — on every helper that writes into the
+ * dataset: a caller that forgets it silently appends to, or overwrites, the
+ * wrong file. Read-only helpers keep the `isEval = false` default, where a
+ * missing flag shows the wrong set but destroys nothing.
+ */
 export function appendTrainingExample(
 	example: TrainingExample,
-	isEval = false,
+	isEval: boolean,
 ): void {
 	ensureDataDir();
 	const path = isEval ? getEvalDataPath() : getTrainDataPath();
@@ -72,7 +78,7 @@ export function appendToTrainingData(
 		userInput: string;
 		assistantOutput: string;
 	},
-	isEval = false,
+	isEval: boolean,
 ): void {
 	const {contextMessage} = example;
 	const trainingExample: TrainingExample = {
@@ -89,7 +95,7 @@ export function appendToTrainingData(
 
 export function saveTrainingData(
 	examples: TrainingExample[],
-	isEval = false,
+	isEval: boolean,
 ): void {
 	ensureDataDir();
 	const path = isEval ? getEvalDataPath() : getTrainDataPath();
@@ -97,7 +103,7 @@ export function saveTrainingData(
 	writeFileSync(path, content);
 }
 
-export function deleteExample(index: number, isEval = false): void {
+export function deleteExample(index: number, isEval: boolean): void {
 	const examples = loadTrainingData(isEval);
 	if (index >= 0 && index < examples.length) {
 		examples.splice(index, 1);
@@ -108,7 +114,7 @@ export function deleteExample(index: number, isEval = false): void {
 export function updateTrainingExample(
 	index: number,
 	example: TrainingExample,
-	isEval = false,
+	isEval: boolean,
 ): void {
 	const examples = loadTrainingData(isEval);
 	if (index >= 0 && index < examples.length) {
@@ -285,7 +291,7 @@ export interface DedupeResult {
  * two examples that merely share the same input but differ in output or
  * context message are left alone.
  */
-export function dedupeExamples(isEval = false): DedupeResult {
+export function dedupeExamples(isEval: boolean): DedupeResult {
 	const examples = loadTrainingData(isEval);
 	const seen = new Set<string>();
 	const kept: TrainingExample[] = [];
@@ -322,7 +328,7 @@ export interface ContextFixResult {
  */
 export function fixContextMessages(
 	contextMessage: ChatMessage,
-	isEval = false,
+	isEval: boolean,
 ): ContextFixResult {
 	const examples = loadTrainingData(isEval);
 	let fixedCount = 0;
@@ -450,7 +456,7 @@ export function parseCSV(content: string): string[][] {
 export function importFromCSV(
 	filePath: string,
 	contextMessage: ChatMessage,
-	isEval = false,
+	isEval: boolean,
 ): ImportResult {
 	const errors: string[] = [];
 	let imported = 0;
@@ -506,7 +512,7 @@ export function importFromCSV(
 export function importFromJSONL(
 	filePath: string,
 	contextMessage: ChatMessage,
-	isEval = false,
+	isEval: boolean,
 ): ImportResult {
 	const errors: string[] = [];
 	let imported = 0;
@@ -569,7 +575,7 @@ export function importFromJSONL(
 export function importFromJSON(
 	filePath: string,
 	contextMessage: ChatMessage,
-	isEval = false,
+	isEval: boolean,
 ): ImportResult {
 	const errors: string[] = [];
 	let imported = 0;
@@ -626,7 +632,7 @@ export function importFromJSON(
 export function importData(
 	filePath: string,
 	contextMessage: ChatMessage,
-	isEval = false,
+	isEval: boolean,
 ): ImportResult {
 	if (!existsSync(filePath)) {
 		return {imported: 0, skipped: 0, errors: ['File not found']};

@@ -427,7 +427,7 @@ test.serial("saveTranscript output is importable by nanotune data import", (t) =
 	inProject("importable", () => {
 		mkdirSync(join(".nanotune", "data"), { recursive: true });
 		const path = saveTranscript(SYSTEM, HISTORY);
-		const result = importData(path, { role: "system", content: "ignored" });
+		const result = importData(path, { role: "system", content: "ignored" }, false);
 		t.deepEqual(result.errors, []);
 		t.is(result.imported, 1);
 		t.is(result.skipped, 0);
