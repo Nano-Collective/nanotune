@@ -9,8 +9,8 @@ import {
 	countTurns,
 	deleteExample,
 	loadTrainingData,
-	parseTrainingData,
 	mergeEditedTurn,
+	parseTrainingData,
 	updateTrainingExample,
 } from '../../lib/data.js';
 import type {ChatMessage} from '../../types/index.js';

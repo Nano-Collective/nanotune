@@ -147,11 +147,7 @@ export function StatusCommand() {
 				{latestBenchmark ? (
 					<Box>
 						<Text>{'  '}Latest: </Text>
-						<Text
-							color={
-								latestBenchmark.passRate >= 0.9 ? 'green' : 'yellow'
-							}
-						>
+						<Text color={latestBenchmark.passRate >= 0.9 ? 'green' : 'yellow'}>
 							{latestBenchmark.passed}/{latestBenchmark.total} (
 							{Math.round(latestBenchmark.passRate * 100)}%)
 						</Text>

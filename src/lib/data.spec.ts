@@ -1594,9 +1594,9 @@ test.serial("clampPagination handles a page size of one", (t) => {
 // ── validateTrainingData structured counts ────────────────────────────
 
 test.serial("validateTrainingData reports duplicate and context counts as numbers", (t) => {
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "same", assistantOutput: "A" });
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "same", assistantOutput: "B" });
-  appendToTrainingData({ contextMessage: DEV_CTX, userInput: "other", assistantOutput: "C" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "same", assistantOutput: "A" }, false);
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "same", assistantOutput: "B" }, false);
+  appendToTrainingData({ contextMessage: DEV_CTX, userInput: "other", assistantOutput: "C" }, false);
 
   const result = validateTrainingData(SYSTEM_CTX);
 
@@ -1634,7 +1634,7 @@ function writeConfig() {
 
 test.serial("collectValidation reports a clean training set", (t) => {
   writeConfig();
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" }, false);
 
   const report = collectValidation();
 
@@ -1650,8 +1650,8 @@ test.serial("collectValidation reports a clean training set", (t) => {
 
 test.serial("collectValidation flags duplicates through checks, not warning text", (t) => {
   writeConfig();
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "same", assistantOutput: "A" });
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "same", assistantOutput: "B" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "same", assistantOutput: "A" }, false);
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "same", assistantOutput: "B" }, false);
 
   const report = collectValidation();
 
@@ -1661,7 +1661,7 @@ test.serial("collectValidation flags duplicates through checks, not warning text
 
 test.serial("collectValidation flags a mismatched context message", (t) => {
   writeConfig();
-  appendToTrainingData({ contextMessage: DEV_CTX, userInput: "A", assistantOutput: "B" });
+  appendToTrainingData({ contextMessage: DEV_CTX, userInput: "A", assistantOutput: "B" }, false);
 
   const report = collectValidation();
 
@@ -1670,7 +1670,7 @@ test.serial("collectValidation flags a mismatched context message", (t) => {
 
 test.serial("collectValidation applies the 50-example floor to a training set", (t) => {
   writeConfig();
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" }, false);
 
   const report = collectValidation();
 
@@ -1695,15 +1695,15 @@ test.serial("collectValidation exempts a validation set from the 50-example floo
 
 test.serial("collectValidation reports no fixes when neither fix flag is passed", (t) => {
   writeConfig();
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" }, false);
 
   t.is(collectValidation().fixes, null);
 });
 
 test.serial("collectValidation re-validates after --fix removes duplicates", (t) => {
   writeConfig();
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" });
-  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" });
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" }, false);
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" }, false);
 
   const report = collectValidation({ fix: true });
 
@@ -1715,7 +1715,7 @@ test.serial("collectValidation re-validates after --fix removes duplicates", (t)
 
 test.serial("collectValidation reports context rewrites from --rewrite-context", (t) => {
   writeConfig();
-  appendToTrainingData({ contextMessage: DEV_CTX, userInput: "A", assistantOutput: "B" });
+  appendToTrainingData({ contextMessage: DEV_CTX, userInput: "A", assistantOutput: "B" }, false);
 
   const report = collectValidation({ rewriteContext: true });
 
