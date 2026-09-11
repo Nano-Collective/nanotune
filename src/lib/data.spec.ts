@@ -683,7 +683,6 @@ test.serial("validateTrainingData does not call a malformed file empty", (t) => 
   t.false(result.valid);
   t.deepEqual(result.errors, ["Example 1: invalid JSON"]);
 });
-});
 
 // ── importData ────────────────────────────────────────────────────────
 
