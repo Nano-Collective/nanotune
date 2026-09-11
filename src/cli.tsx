@@ -1,13 +1,31 @@
 #!/usr/bin/env node
 import {readFileSync} from 'node:fs';
 import {Command} from 'commander';
-import {render} from 'ink';
+import {render as inkRender} from 'ink';
 import type {ReactElement} from 'react';
 import {interactiveRequiredMessage, supportsRawMode} from './lib/tty.js';
 
 const pkg = JSON.parse(
 	readFileSync(new URL('../package.json', import.meta.url), 'utf-8'),
 ) as {version: string};
+
+/**
+ * `render`, plus a backstop for anything that throws while rendering. Ink
+ * catches those in its own error boundary and rejects `waitUntilExit()`
+ * rather than letting them reach a process-level handler, and because the
+ * render never completes, the effect that would set a non-zero exit code
+ * never runs — so the command dies with a reconciler trace and still exits 0.
+ */
+function render(
+	node: ReactElement,
+	options?: Parameters<typeof inkRender>[1],
+): void {
+	const instance = inkRender(node, options);
+	instance.waitUntilExit().catch((err: unknown) => {
+		console.error(err instanceof Error ? err.message : String(err));
+		process.exitCode = 1;
+	});
+}
 
 /**
  * Render a command that cannot work without a keyboard (prompts, menus, the
@@ -116,12 +134,30 @@ dataCommand
 		"Rewrite each example's context message to match the current config",
 	)
 	.option('-e, --eval', 'Validate the validation set instead of training data')
+	.option('--json', 'Print the validation report as JSON on stdout')
 	.action(
 		async (options: {
 			fix?: boolean;
 			rewriteContext?: boolean;
 			eval?: boolean;
+			json?: boolean;
 		}) => {
+			if (options.json) {
+				const {collectValidation} = await import('./lib/data.js');
+				const {emitJson} = await import('./lib/json-output.js');
+				// Invalid data still prints its report — the report is the useful
+				// part — but exits non-zero, matching the Ink path's exit code.
+				emitJson(
+					() =>
+						collectValidation({
+							fix: options.fix,
+							rewriteContext: options.rewriteContext,
+							isEval: options.eval,
+						}),
+					report => !report.valid,
+				);
+				return;
+			}
 			const {DataValidateCommand} = await import('./commands/data/validate.js');
 			render(
 				<DataValidateCommand
@@ -173,7 +209,10 @@ program
 		'Quantization type (f16, q8_0, q4_k_m, q4_k_s)',
 	)
 	.option('-o, --output <name>', 'Output filename')
-	.option('--skip-fuse', 'Skip adapter fusion (if already fused)')
+	.option(
+		'--skip-fuse',
+		'Skip adapter fusion — requires a fused/ cache from a previous export',
+	)
 	.action(async options => {
 		const {ExportCommand} = await import('./commands/export.js');
 		render(<ExportCommand options={options} />);
@@ -288,9 +327,41 @@ judgeCommand
 program
 	.command('status')
 	.description('Show current project status')
-	.action(async () => {
+	.option('--json', 'Print the status report as JSON on stdout')
+	.action(async (options: {json?: boolean}) => {
+		// Ink must never mount in JSON mode: `render` writes to stdout as soon
+		// as it does, and a box-drawn frame in the middle of the document is not
+		// something a consumer can recover from.
+		if (options.json) {
+			const {collectStatus} = await import('./lib/status.js');
+			const {emitJson} = await import('./lib/json-output.js');
+			emitJson(collectStatus);
+			return;
+		}
 		const {StatusCommand} = await import('./commands/status.js');
 		render(<StatusCommand />);
+	});
+
+// Clean command
+program
+	.command('clean')
+	.description('Remove the cached fused model to reclaim disk space')
+	.option('-y, --yes', 'Skip the confirmation prompt (for scripts and CI)')
+	.action(async (options: {yes?: boolean}) => {
+		// Only require --yes when there's actually a confirmation to answer —
+		// "nothing to clean" and "not a project" are safe to just report.
+		if (!options.yes && !supportsRawMode()) {
+			const {configExists, getFusedModelDir, hasUsableFusedModel} =
+				await import('./lib/config.js');
+			if (configExists() && hasUsableFusedModel(getFusedModelDir())) {
+				console.error(interactiveRequiredMessage('clean'));
+				console.error('Pass --yes to clean without confirmation.');
+				process.exitCode = 1;
+				return;
+			}
+		}
+		const {CleanCommand} = await import('./commands/clean.js');
+		render(<CleanCommand options={options} />);
 	});
 
 program.parse();

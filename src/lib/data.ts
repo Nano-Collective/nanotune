@@ -7,7 +7,7 @@ import {
 } from 'node:fs';
 import {join} from 'node:path';
 import type {ChatMessage, TrainingExample} from '../types/index.js';
-import {getDataDir} from './config.js';
+import {getDataDir, loadConfig, resolveContextMessage} from './config.js';
 
 function ensureDataDir(): void {
 	const dataDir = getDataDir();
@@ -39,24 +39,62 @@ export function countExamples(isEval = false): number {
 	return content.split('\n').filter(line => line.trim()).length;
 }
 
-export function loadTrainingData(isEval = false): TrainingExample[] {
+export interface ParsedTrainingData {
+	examples: TrainingExample[];
+	/** One `Example N: invalid JSON` per unparseable line, in file order. */
+	errors: string[];
+}
+
+/**
+ * Read the dataset without throwing, collecting unparseable lines as errors
+ * instead. `data validate` exists to find malformed training data, so it has
+ * to survive encountering some and report the offending line like any other
+ * check; the same goes for `data list`, which renders whatever it can.
+ */
+export function parseTrainingData(isEval = false): ParsedTrainingData {
+	const examples: TrainingExample[] = [];
+	const errors: string[] = [];
 	const path = isEval ? getEvalDataPath() : getTrainDataPath();
 	if (!existsSync(path)) {
-		return [];
+		return {examples, errors};
 	}
 	const content = readFileSync(path, 'utf-8').trim();
 	if (!content) {
-		return [];
+		return {examples, errors};
 	}
-	return content
-		.split('\n')
-		.filter(line => line.trim())
-		.map(line => JSON.parse(line) as TrainingExample);
+	const lines = content.split('\n').filter(line => line.trim());
+	lines.forEach((line, i) => {
+		try {
+			examples.push(JSON.parse(line) as TrainingExample);
+		} catch {
+			errors.push(`Example ${i + 1}: invalid JSON`);
+		}
+	});
+	return {examples, errors};
 }
 
+/**
+ * Every example, or a throw naming the first bad line. Kept strict because
+ * the mutating helpers load, transform and write the whole file back, so
+ * quietly skipping a line here would delete it on the next save.
+ */
+export function loadTrainingData(isEval = false): TrainingExample[] {
+	const {examples, errors} = parseTrainingData(isEval);
+	if (errors.length > 0) {
+		throw new Error(errors[0]);
+	}
+	return examples;
+}
+
+/**
+ * `isEval` is required — never defaulted — on every helper that writes into the
+ * dataset: a caller that forgets it silently appends to, or overwrites, the
+ * wrong file. Read-only helpers keep the `isEval = false` default, where a
+ * missing flag shows the wrong set but destroys nothing.
+ */
 export function appendTrainingExample(
 	example: TrainingExample,
-	isEval = false,
+	isEval: boolean,
 ): void {
 	ensureDataDir();
 	const path = isEval ? getEvalDataPath() : getTrainDataPath();
@@ -72,7 +110,7 @@ export function appendToTrainingData(
 		userInput: string;
 		assistantOutput: string;
 	},
-	isEval = false,
+	isEval: boolean,
 ): void {
 	const {contextMessage} = example;
 	const trainingExample: TrainingExample = {
@@ -89,7 +127,7 @@ export function appendToTrainingData(
 
 export function saveTrainingData(
 	examples: TrainingExample[],
-	isEval = false,
+	isEval: boolean,
 ): void {
 	ensureDataDir();
 	const path = isEval ? getEvalDataPath() : getTrainDataPath();
@@ -97,7 +135,7 @@ export function saveTrainingData(
 	writeFileSync(path, content);
 }
 
-export function deleteExample(index: number, isEval = false): void {
+export function deleteExample(index: number, isEval: boolean): void {
 	const examples = loadTrainingData(isEval);
 	if (index >= 0 && index < examples.length) {
 		examples.splice(index, 1);
@@ -108,7 +146,7 @@ export function deleteExample(index: number, isEval = false): void {
 export function updateTrainingExample(
 	index: number,
 	example: TrainingExample,
-	isEval = false,
+	isEval: boolean,
 ): void {
 	const examples = loadTrainingData(isEval);
 	if (index >= 0 && index < examples.length) {
@@ -170,19 +208,39 @@ export interface ValidationResult {
 	valid: boolean;
 	errors: string[];
 	warnings: string[];
+	/**
+	 * The counts behind the duplicate and context-message warnings above.
+	 *
+	 * Both the Ink view and `--json` derive their per-check verdicts from these
+	 * rather than pattern-matching the warning text, so rewording a warning can
+	 * no longer silently flip a check.
+	 */
+	duplicateInputs: number;
+	inconsistentContextMessages: number;
 }
 
 export function validateTrainingData(
 	contextMessage: ChatMessage,
 	isEval = false,
 ): ValidationResult {
-	const errors: string[] = [];
 	const warnings: string[] = [];
-	const examples = loadTrainingData(isEval);
+	const {examples, errors} = parseTrainingData(isEval);
 
 	if (examples.length === 0) {
-		errors.push(isEval ? 'No validation data found' : 'No training data found');
-		return {valid: false, errors, warnings};
+		// "No data" would be a lie when the file is full of lines we could not
+		// parse - the parse errors already say what is wrong.
+		if (errors.length === 0) {
+			errors.push(
+				isEval ? 'No validation data found' : 'No training data found',
+			);
+		}
+		return {
+			valid: false,
+			errors,
+			warnings,
+			duplicateInputs: 0,
+			inconsistentContextMessages: 0,
+		};
 	}
 
 	// A validation set is a slice of the training data, so the 50-example floor
@@ -269,6 +327,8 @@ export function validateTrainingData(
 		valid: errors.length === 0,
 		errors,
 		warnings,
+		duplicateInputs: duplicateCount,
+		inconsistentContextMessages: inconsistentPromptCount,
 	};
 }
 
@@ -285,7 +345,7 @@ export interface DedupeResult {
  * two examples that merely share the same input but differ in output or
  * context message are left alone.
  */
-export function dedupeExamples(isEval = false): DedupeResult {
+export function dedupeExamples(isEval: boolean): DedupeResult {
 	const examples = loadTrainingData(isEval);
 	const seen = new Set<string>();
 	const kept: TrainingExample[] = [];
@@ -322,7 +382,7 @@ export interface ContextFixResult {
  */
 export function fixContextMessages(
 	contextMessage: ChatMessage,
-	isEval = false,
+	isEval: boolean,
 ): ContextFixResult {
 	const examples = loadTrainingData(isEval);
 	let fixedCount = 0;
@@ -352,6 +412,95 @@ export function fixContextMessages(
 	}
 
 	return {fixedCount};
+}
+
+/** Counts of the repairs `--fix` and `--rewrite-context` actually made. */
+export interface ValidationFixes {
+	duplicatesRemoved: number;
+	contextMessagesRewritten: number;
+}
+
+/** The per-check verdicts `nanotune data validate` reports. */
+export interface ValidationChecks {
+	/** True when the set holds at least one example. */
+	dataFileExists: boolean;
+	validJsonStructure: boolean;
+	contextMessageConsistency: boolean;
+	noDuplicateInputs: boolean;
+	/** Always true for a validation set — the 50-example floor is a training-set rule. */
+	minimumExampleCount: boolean;
+}
+
+/** Everything `nanotune data validate` reports, as data. */
+export interface ValidationReport {
+	set: 'train' | 'eval';
+	examples: number;
+	valid: boolean;
+	errors: string[];
+	warnings: string[];
+	checks: ValidationChecks;
+	/** Null unless `--fix` or `--rewrite-context` ran. */
+	fixes: ValidationFixes | null;
+}
+
+export interface ValidationOptions {
+	/** Remove exact-duplicate examples before validating. */
+	fix?: boolean;
+	/** Rewrite mismatched context messages before validating. */
+	rewriteContext?: boolean;
+	isEval?: boolean;
+}
+
+/**
+ * Apply any requested fixes, then validate, and report both. Shared by the Ink
+ * view and `--json` so the two cannot report different verdicts.
+ *
+ * Reads the project config itself, so it throws the same "Not a Nanotune
+ * project" error `loadConfig` does when run outside a project.
+ */
+export function collectValidation({
+	fix = false,
+	rewriteContext = false,
+	isEval = false,
+}: ValidationOptions = {}): ValidationReport {
+	const contextMessage = resolveContextMessage(loadConfig());
+
+	// Rewrite context first: examples that only become identical after context
+	// normalization must still be caught by dedupe in this pass.
+	const contextFix = rewriteContext
+		? fixContextMessages(contextMessage, isEval)
+		: null;
+	const dedupe = fix ? dedupeExamples(isEval) : null;
+
+	// Count and validate after the fixes, so the report describes the data
+	// actually left on disk rather than the state it was in on entry.
+	const examples = countExamples(isEval);
+	const result = validateTrainingData(contextMessage, isEval);
+
+	return {
+		set: isEval ? 'eval' : 'train',
+		examples,
+		valid: result.valid,
+		errors: result.errors,
+		warnings: result.warnings,
+		checks: {
+			dataFileExists: examples > 0,
+			validJsonStructure: result.errors.length === 0,
+			contextMessageConsistency: result.inconsistentContextMessages === 0,
+			noDuplicateInputs: result.duplicateInputs === 0,
+			// A validation set is a slice of the training data, so the 50-example
+			// floor does not apply to it — matching the rule `validateTrainingData`
+			// already uses when deciding whether to warn.
+			minimumExampleCount: isEval || examples >= 50,
+		},
+		fixes:
+			contextFix || dedupe
+				? {
+						duplicatesRemoved: dedupe?.removedCount ?? 0,
+						contextMessagesRewritten: contextFix?.fixedCount ?? 0,
+					}
+				: null,
+	};
 }
 
 export interface ImportResult {
@@ -450,7 +599,7 @@ export function parseCSV(content: string): string[][] {
 export function importFromCSV(
 	filePath: string,
 	contextMessage: ChatMessage,
-	isEval = false,
+	isEval: boolean,
 ): ImportResult {
 	const errors: string[] = [];
 	let imported = 0;
@@ -506,7 +655,7 @@ export function importFromCSV(
 export function importFromJSONL(
 	filePath: string,
 	contextMessage: ChatMessage,
-	isEval = false,
+	isEval: boolean,
 ): ImportResult {
 	const errors: string[] = [];
 	let imported = 0;
@@ -569,7 +718,7 @@ export function importFromJSONL(
 export function importFromJSON(
 	filePath: string,
 	contextMessage: ChatMessage,
-	isEval = false,
+	isEval: boolean,
 ): ImportResult {
 	const errors: string[] = [];
 	let imported = 0;
@@ -626,7 +775,7 @@ export function importFromJSON(
 export function importData(
 	filePath: string,
 	contextMessage: ChatMessage,
-	isEval = false,
+	isEval: boolean,
 ): ImportResult {
 	if (!existsSync(filePath)) {
 		return {imported: 0, skipped: 0, errors: ['File not found']};
