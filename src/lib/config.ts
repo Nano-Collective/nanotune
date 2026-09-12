@@ -178,42 +178,78 @@ function suggestKey(unknownKey: string, validKeys: string[]): string | null {
 	return best;
 }
 
-// Unwraps the optional/default wrappers ConfigSchema uses to reach the object
-// shape underneath. Anything else — arrays of objects, `.nullable()`, unions —
-// returns null, and that subtree goes unchecked rather than mis-reported.
-// Nothing in ConfigSchema hits that today; if a nested object ever gains one of
-// those wrappers, teach this function about it or its unknown keys go unwarned.
+// Unwraps wrappers around an object schema to reach its shape. Arrays and
+// unions are handled by collectUnknownKeys, which can descend through them.
 function shapeOf(schema: z.ZodType): Record<string, z.ZodType> | null {
 	if (schema instanceof z.ZodObject) {
 		return schema.shape as Record<string, z.ZodType>;
 	}
-	if (schema instanceof z.ZodOptional || schema instanceof z.ZodDefault) {
+	if (
+		schema instanceof z.ZodOptional ||
+		schema instanceof z.ZodDefault ||
+		schema instanceof z.ZodNullable
+	) {
 		return shapeOf(schema.unwrap() as z.ZodType);
 	}
 	return null;
 }
 
+function unwrapSchemas(schema: z.ZodType): z.ZodType[] {
+	if (
+		schema instanceof z.ZodOptional ||
+		schema instanceof z.ZodDefault ||
+		schema instanceof z.ZodNullable
+	) {
+		return unwrapSchemas(schema.unwrap() as z.ZodType);
+	}
+	if (schema instanceof z.ZodUnion) {
+		return schema.options.flatMap(option =>
+			unwrapSchemas(option as z.ZodType),
+		);
+	}
+	return [schema];
+}
+
 function collectUnknownKeys(
 	value: unknown,
-	schema: z.ZodType,
+	schemas: z.ZodType[],
 	path: string,
 	warnings: string[],
 ): void {
-	const shape = shapeOf(schema);
-	if (
-		!shape ||
-		value === null ||
-		typeof value !== 'object' ||
-		Array.isArray(value)
-	) {
+	const unwrappedSchemas = schemas.flatMap(unwrapSchemas);
+	if (Array.isArray(value)) {
+		const elementSchemas = unwrappedSchemas
+			.filter(schema => schema instanceof z.ZodArray)
+			.map(schema => schema.element as z.ZodType);
+		for (const [index, child] of value.entries()) {
+			collectUnknownKeys(
+				child,
+				elementSchemas,
+				path + '[' + index + ']',
+				warnings,
+			);
+		}
 		return;
 	}
 
-	const validKeys = Object.keys(shape);
+	if (value === null || typeof value !== 'object') {
+		return;
+	}
+
+	const shapes = unwrappedSchemas
+		.map(shapeOf)
+		.filter((shape): shape is Record<string, z.ZodType> => shape !== null);
+	if (shapes.length === 0) {
+		return;
+	}
+
+	const validKeys = [...new Set(shapes.flatMap(shape => Object.keys(shape)))];
 	for (const [key, child] of Object.entries(value)) {
-		const fullPath = path ? `${path}.${key}` : key;
-		const known = Object.hasOwn(shape, key) ? shape[key] : undefined;
-		if (!known) {
+		const fullPath = path ? path + '.' + key : key;
+		const childSchemas = shapes
+			.filter(shape => Object.hasOwn(shape, key))
+			.map(shape => shape[key]);
+		if (childSchemas.length === 0) {
 			const suggestion = suggestKey(key, validKeys);
 			warnings.push(
 				`unknown key "${fullPath}" in ${CONFIG_FILE} — ignored.` +
@@ -221,13 +257,16 @@ function collectUnknownKeys(
 			);
 			continue;
 		}
-		collectUnknownKeys(child, known, fullPath, warnings);
+		collectUnknownKeys(child, childSchemas, fullPath, warnings);
 	}
 }
 
-export function findUnknownConfigKeys(raw: unknown): string[] {
+export function findUnknownConfigKeys(
+	raw: unknown,
+	schema: z.ZodType = ConfigSchema,
+): string[] {
 	const warnings: string[] = [];
-	collectUnknownKeys(raw, ConfigSchema, '', warnings);
+	collectUnknownKeys(raw, [schema], '', warnings);
 	return warnings;
 }
 
