@@ -269,6 +269,21 @@ benchmarkCommand
 		render(<BenchmarkCompareCommand fileA={fileA} fileB={fileB} />);
 	});
 
+benchmarkCommand
+	.command('review [report]')
+	.description(
+		'Review failed tests from a saved benchmark report and promote corrected answers into train.jsonl',
+	)
+	.action(async (report?: string) => {
+		const {BenchmarkReviewCommand} = await import(
+			'./commands/benchmark/review.js'
+		);
+		renderInteractive(
+			'benchmark review',
+			<BenchmarkReviewCommand report={report} />,
+		);
+	});
+
 // Chat command
 program
 	.command('chat')
