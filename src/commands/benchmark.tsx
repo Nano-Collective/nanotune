@@ -662,19 +662,45 @@ export function BenchmarkCommand({options}: Props) {
 								const judgePrompt = test.messages
 									? formatConversationForJudge(test.messages, contextMsg)
 									: (test.prompt as string);
-								const judgeResult = await callJudge(
-									judgePrompt,
-									sampleResponse.trim(),
-									criteria,
-									judgeConfig,
-									threshold,
-									test.acceptable,
-								);
-								samplePassed = judgeResult.pass;
-								if (sample === 0) {
-									judgeScore = judgeResult.score;
-									judgeReasoning = judgeResult.reasoning;
-									judgeCriteriaScores = judgeResult.criteriaScores;
+								// The judge decides pass/fail, so a provider that stalls hangs
+								// the run exactly as a stalled generation would — and the
+								// inference timer above has already been cleared by the time we
+								// reach here. Give judging its own budget rather than extending
+								// that one: this is a second call, and a slow-but-fine generation
+								// must not eat the time the judge needs and flip a pass to a fail.
+								const judgeController = new AbortController();
+								const judgeTimeoutId = setTimeout(() => {
+									judgeController.abort();
+								}, timeout);
+								try {
+									const judgeResult = await callJudge(
+										judgePrompt,
+										sampleResponse.trim(),
+										criteria,
+										judgeConfig,
+										threshold,
+										test.acceptable,
+										judgeController.signal,
+									);
+									samplePassed = judgeResult.pass;
+									if (sample === 0) {
+										judgeScore = judgeResult.score;
+										judgeReasoning = judgeResult.reasoning;
+										judgeCriteriaScores = judgeResult.criteriaScores;
+									}
+								} catch (err) {
+									// A judge that never answered is not a verdict. Fail the
+									// sample and move on — the same way an inference timeout is
+									// handled above — and leave judgeScore unset so the report
+									// says why rather than reading as the model scoring 0.
+									samplePassed = false;
+									if (sample === 0) {
+										judgeReasoning = judgeController.signal.aborted
+											? `Judge timed out after ${timeout}ms`
+											: `Judge call failed: ${err instanceof Error ? err.message : 'Unknown error'}`;
+									}
+								} finally {
+									clearTimeout(judgeTimeoutId);
 								}
 							} else {
 								// Use string matching
