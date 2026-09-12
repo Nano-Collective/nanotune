@@ -42,6 +42,7 @@ Use `--preset <name>` to quickly configure for your hardware:
 | `--temperature <n>` | Sampling temperature (default: 0) |
 | `--seed <n>` | Random seed for reproducibility (default: 42) |
 | `--samples <n>` | Run each test n times, reporting pass rate and variance (default: 1) |
+| `--json` | Print the benchmark result as JSON on stdout instead of the interactive report |
 
 ## Reproducibility
 
@@ -79,6 +80,22 @@ nanotune benchmark --preset medium --temperature 0.5 --seed 7
 # Measure variance under sampling
 nanotune benchmark --temperature 0.8 --samples 5
 ```
+
+## JSON Output
+
+`--json` prints the finished run as a single JSON document on stdout — the same
+document written to `.nanotune/benchmarks/benchmark-*.json`, so there is one
+schema rather than two:
+
+```bash
+nanotune benchmark --json > run.json
+nanotune benchmark --json | jq -e '.summary.passRate >= 0.9'
+```
+
+Progress is written to stderr while the suite runs, so stdout stays a single
+parseable document. A completed run exits `0` whatever its pass rate — gate on
+the score with `jq -e` rather than expecting a non-zero exit. See
+[JSON Output](../guides/json-output.md) for the full schema.
 
 ## See Also
 
