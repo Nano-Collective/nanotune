@@ -144,7 +144,7 @@ export function ChatCommand({options}: Props) {
 
 	// Memoize so the values are stable across renders — otherwise the startup
 	// effect would tear down and restart the llama-server on every state change.
-	const serverOptions = useMemo(
+	const server = useMemo(
 		() =>
 			buildServerOptions({
 				preset,
@@ -156,10 +156,11 @@ export function ChatCommand({options}: Props) {
 			}),
 		[preset, threads, gpuLayers, ctxSize, batchSize, cpuOnly],
 	);
-	const generateOptions = useMemo(
+	const generate = useMemo(
 		() => buildGenerateOptions({preset, maxTokens, temperature, topP, seed}),
 		[preset, maxTokens, temperature, topP, seed],
 	);
+	const generateOptions = generate.options;
 
 	const appendTurn = useCallback((turn: Omit<DisplayTurn, 'id'>) => {
 		setDisplayTurns(prev => [...prev, {id: turnIdRef.current++, ...turn}]);
@@ -171,6 +172,16 @@ export function ChatCommand({options}: Props) {
 
 		const startup = async () => {
 			try {
+				// Reject a mistyped numeric flag before anything else happens —
+				// unchecked, it reaches llama-server as the literal argument "NaN"
+				// (or as a null field in the completion body) instead of failing here.
+				const flagErrors = [...server.errors, ...generate.errors];
+				if (flagErrors.length > 0) {
+					setError(flagErrors[0]);
+					setStatus('error');
+					return;
+				}
+
 				if (!configExists()) {
 					setError('Not a Nanotune project. Run `nanotune init` first.');
 					setStatus('error');
@@ -207,7 +218,7 @@ export function ChatCommand({options}: Props) {
 				}
 				setModelLabel(modelPath.split('/').pop() ?? modelPath);
 
-				const handle = await startLlamaServer(modelPath, serverOptions);
+				const handle = await startLlamaServer(modelPath, server.options);
 				if (cancelled) {
 					await stopLlamaServer(handle);
 					return;
@@ -232,7 +243,7 @@ export function ChatCommand({options}: Props) {
 				void stopLlamaServer(handle);
 			}
 		};
-	}, [modelArg, systemArg, serverOptions]);
+	}, [modelArg, systemArg, server, generate]);
 
 	// Backstop: if the process exits unexpectedly (SIGINT etc.), make sure
 	// the server child is killed. The useEffect cleanup handles graceful exit.
