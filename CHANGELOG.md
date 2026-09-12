@@ -1,3 +1,13 @@
+## 1.8.0
+
+### Minor Changes
+
+- `nanotune status --json` and `nanotune data validate --json` now print a single JSON document to stdout, so the read-only commands can be consumed by scripts and CI. Diagnostics and the unknown-config-key warnings go to stderr; Ink never renders in this mode. The schema is documented in `docs/guides/json-output.md` and the `ValidationResult` now exposes `duplicateInputs` and `inconsistentContextMessages` counts that both views read rather than pattern-matching warning prose. Thanks to @yashksaini-coder. Closes #69 for `status` and `data validate`.
+
+### Patch Changes
+
+- `nanotune status`, `nanotune train`, `nanotune export`, `nanotune data validate` and `nanotune data list` no longer crash with a React reconciler stack trace when `config.json` is malformed, and `nanotune data validate` no longer crashes when `train.jsonl` contains a bad line — instead each command reports the file (and line, where applicable) and exits with code 1. Malformed lines in `train.jsonl` are preserved so the mutating helpers never silently delete user data; `--fix`/`--rewrite-context` and edit/delete skip when the data does not fully parse. Thanks to @addyCooks. Closes #126.
+- Require `isEval` on every helper in `src/lib/data.ts` that writes to the dataset. A caller that forgot the flag used to silently append to, or overwrite, the wrong file; the type checker now catches it at compile time. Read-only helpers (`loadTrainingData`, `countExamples`, `validateTrainingData`, the exporters) keep the `isEval = false` default — a missing flag shows the wrong set but destroys nothing. No runtime behaviour change. Thanks to @addyCooks. Closes #129.
 # 1.7.0
 
 ## Benchmarks are reproducible by default
