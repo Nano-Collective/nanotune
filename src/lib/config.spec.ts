@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -776,6 +777,103 @@ test.serial(
       writeFileSync(join(SIZE_TEST_DIR, "model.safetensors"), "x");
       t.true(hasUsableFusedModel(SIZE_TEST_DIR));
     } finally {
+      rmSync(SIZE_TEST_DIR, { recursive: true, force: true });
+    }
+  },
+);
+
+function writeShardedModel(dirPath: string, presentShards: number, totalShards: number) {
+  const weightMap: Record<string, string> = {};
+  for (let i = 1; i <= totalShards; i++) {
+    const shardName = `model-${String(i).padStart(5, "0")}-of-${String(totalShards).padStart(5, "0")}.safetensors`;
+    weightMap[`layer.${i}.weight`] = shardName;
+    if (i <= presentShards) {
+      writeFileSync(join(dirPath, shardName), "x");
+    }
+  }
+  writeFileSync(
+    join(dirPath, "model.safetensors.index.json"),
+    JSON.stringify({ weight_map: weightMap }),
+  );
+}
+
+test.serial(
+  "hasUsableFusedModel is false when a sharded fuse is interrupted partway through",
+  (t) => {
+    resetSizeTestDir();
+    try {
+      // Regression: an interrupted fuse that wrote shard 1 of 3 used to read
+      // as usable because *any* .safetensors file passed the old check.
+      writeShardedModel(SIZE_TEST_DIR, 1, 3);
+      t.false(hasUsableFusedModel(SIZE_TEST_DIR));
+    } finally {
+      rmSync(SIZE_TEST_DIR, { recursive: true, force: true });
+    }
+  },
+);
+
+test.serial(
+  "hasUsableFusedModel is true once every shard in the index is present",
+  (t) => {
+    resetSizeTestDir();
+    try {
+      writeShardedModel(SIZE_TEST_DIR, 3, 3);
+      t.true(hasUsableFusedModel(SIZE_TEST_DIR));
+    } finally {
+      rmSync(SIZE_TEST_DIR, { recursive: true, force: true });
+    }
+  },
+);
+
+test.serial(
+  "hasUsableFusedModel is false when model.safetensors.index.json is malformed",
+  (t) => {
+    resetSizeTestDir();
+    try {
+      // The index is written before the shards, same hazard as the plain
+      // .safetensors case: a still-being-written index.json is truncated
+      // JSON, not valid JSON with an empty weight_map.
+      writeFileSync(join(SIZE_TEST_DIR, "model.safetensors.index.json"), "{not json");
+      writeFileSync(join(SIZE_TEST_DIR, "model-00001-of-00003.safetensors"), "x");
+      t.false(hasUsableFusedModel(SIZE_TEST_DIR));
+    } finally {
+      rmSync(SIZE_TEST_DIR, { recursive: true, force: true });
+    }
+  },
+);
+
+test.serial(
+  "getDirectorySize and hasUsableFusedModel survive a permission error on the directory itself",
+  (t) => {
+    resetSizeTestDir();
+    const locked = join(SIZE_TEST_DIR, "locked");
+    mkdirSync(locked);
+    writeFileSync(join(locked, "model.safetensors"), "x".repeat(10));
+    try {
+      chmodSync(locked, 0o000);
+    } catch {
+      // Can't restrict permissions on this platform/user — nothing to
+      // verify here (Windows and root don't enforce chmod for reads).
+      t.pass();
+      rmSync(SIZE_TEST_DIR, { recursive: true, force: true });
+      return;
+    }
+    let permissionEnforced = true;
+    try {
+      readdirSync(locked);
+      permissionEnforced = false;
+    } catch {
+      // Expected — permission bits are enforced on this platform/user.
+    }
+    try {
+      if (!permissionEnforced) {
+        t.pass();
+        return;
+      }
+      t.is(getDirectorySize(locked), 0);
+      t.false(hasUsableFusedModel(locked));
+    } finally {
+      chmodSync(locked, 0o755);
       rmSync(SIZE_TEST_DIR, { recursive: true, force: true });
     }
   },
