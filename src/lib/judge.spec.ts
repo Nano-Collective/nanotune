@@ -14,6 +14,7 @@ import {
 	buildJudgePrompt,
 	getJudgeConfigPath,
 	JUDGE_CRITERIA,
+	loadJudgeConfig,
 	parseJudgeResponse,
 	resolveCriteria,
 	saveJudgeConfig,
@@ -333,4 +334,91 @@ test.serial('saveJudgeConfig - recovers from a stale temp file', t => {
 		process.chdir(originalCwd);
 		rmSync(dir, {recursive: true, force: true});
 	}
+});
+
+// loadJudgeConfig
+
+/** Run `body` in a throwaway project directory holding this judge.json. */
+function withJudgeConfig(config: unknown, body: () => void): void {
+	const originalCwd = process.cwd();
+	const dir = mkdtempSync(join(tmpdir(), 'nanotune-judge-'));
+	try {
+		process.chdir(dir);
+		mkdirSync(join(dir, '.nanotune'), {recursive: true});
+		writeFileSync(join(dir, '.nanotune', 'judge.json'), JSON.stringify(config));
+		body();
+	} finally {
+		process.chdir(originalCwd);
+		rmSync(dir, {recursive: true, force: true});
+	}
+}
+
+test.serial('loadJudgeConfig - a literal key containing $ survives the load', t => {
+	// The whole bug, end to end: judge.json on disk was always right, and the key
+	// was truncated between reading it and handing it to the provider.
+	process.env.CD = 'LEAKED';
+	withJudgeConfig(
+		{
+			name: 'Anthropic',
+			baseUrl: 'https://api.anthropic.com/v1',
+			apiKey: 'sk-ant-api03-AB$CD-EF',
+			model: 'claude-haiku',
+		},
+		() => {
+			t.is(loadJudgeConfig().apiKey, 'sk-ant-api03-AB$CD-EF');
+		},
+	);
+	delete process.env.CD;
+});
+
+test.serial('loadJudgeConfig - resolves the documented ${VAR} form', t => {
+	process.env.NANOTUNE_TEST_KEY = 'sk-from-the-environment';
+	withJudgeConfig(
+		{
+			name: 'OpenRouter',
+			baseUrl: 'https://openrouter.ai/api/v1',
+			apiKey: '${NANOTUNE_TEST_KEY}',
+			model: 'anthropic/claude-haiku',
+		},
+		() => {
+			t.is(loadJudgeConfig().apiKey, 'sk-from-the-environment');
+		},
+	);
+	delete process.env.NANOTUNE_TEST_KEY;
+});
+
+test.serial('loadJudgeConfig - names the variable when it is unset', t => {
+	// Rather than a blank bearer token and a provider 401 that reads as a bad
+	// account, which is what sent people to debug the wrong system.
+	delete process.env.NANOTUNE_UNSET_KEY;
+	withJudgeConfig(
+		{
+			name: 'OpenRouter',
+			baseUrl: 'https://openrouter.ai/api/v1',
+			apiKey: '${NANOTUNE_UNSET_KEY}',
+			model: 'anthropic/claude-haiku',
+		},
+		() => {
+			const error = t.throws(() => loadJudgeConfig(), {
+				instanceOf: Error,
+			});
+			t.true(error?.message.includes('NANOTUNE_UNSET_KEY'));
+			t.true(error?.message.includes('apiKey'));
+		},
+	);
+});
+
+test.serial('loadJudgeConfig - a default keeps an unset variable from throwing', t => {
+	delete process.env.NANOTUNE_UNSET_KEY;
+	withJudgeConfig(
+		{
+			name: 'Ollama',
+			baseUrl: 'http://localhost:11434/v1',
+			apiKey: '${NANOTUNE_UNSET_KEY:-}',
+			model: 'llama3',
+		},
+		() => {
+			t.is(loadJudgeConfig().apiKey, '');
+		},
+	);
 });
