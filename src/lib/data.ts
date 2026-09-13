@@ -156,18 +156,97 @@ export function updateTrainingExample(
 }
 
 /**
- * Replaces the first user/assistant turn in `messages` with new content,
- * leaving every other message untouched — regardless of shape. Handles
- * examples missing a user and/or assistant message by inserting rather than
- * guessing a position, so malformed data is never silently dropped.
+ * Locates the `turnIndex`-th turn's user/assistant message positions.
+ * A turn is the Nth `user` message and the first `assistant` message
+ * following it, up to (but not including) the next `user` message —
+ * matching the pairing `countTurns` counts. Throws for a turn index past
+ * the last existing turn, so every caller shares one definition of
+ * "valid turn" rather than guessing independently.
+ */
+function turnBounds(
+	messages: ChatMessage[],
+	turnIndex: number,
+): {userIdx: number; assistantIdx: number} {
+	const userIndices: number[] = [];
+	messages.forEach((m, i) => {
+		if (m.role === 'user') userIndices.push(i);
+	});
+
+	if (turnIndex > 0 && turnIndex >= userIndices.length) {
+		throw new Error(`Turn ${turnIndex + 1} does not exist`);
+	}
+
+	const userIdx = turnIndex < userIndices.length ? userIndices[turnIndex] : -1;
+	const searchEnd =
+		userIdx >= 0
+			? (userIndices[turnIndex + 1] ?? messages.length)
+			: (userIndices[0] ?? messages.length);
+
+	let assistantIdx = -1;
+	for (let i = userIdx >= 0 ? userIdx + 1 : 0; i < searchEnd; i++) {
+		if (messages[i].role === 'assistant') {
+			assistantIdx = i;
+			break;
+		}
+	}
+	return {userIdx, assistantIdx};
+}
+
+/**
+ * Reads the current content of the `turnIndex`-th turn, for prefilling an
+ * edit form. A missing user/assistant message in that turn reads back as
+ * an empty string.
+ */
+export function getTurnContent(
+	messages: ChatMessage[],
+	turnIndex: number,
+): {userContent: string; assistantContent: string} {
+	const {userIdx, assistantIdx} = turnBounds(messages, turnIndex);
+	return {
+		userContent: userIdx >= 0 ? messages[userIdx].content : '',
+		assistantContent: assistantIdx >= 0 ? messages[assistantIdx].content : '',
+	};
+}
+
+/**
+ * Reads every turn's content in one pass, for populating a turn picker
+ * without re-scanning `messages` once per turn.
+ */
+export function getAllTurnsContent(
+	messages: ChatMessage[],
+): Array<{userContent: string; assistantContent: string}> {
+	const userIndices: number[] = [];
+	messages.forEach((m, i) => {
+		if (m.role === 'user') userIndices.push(i);
+	});
+
+	return userIndices.map((userIdx, turnIndex) => {
+		const searchEnd = userIndices[turnIndex + 1] ?? messages.length;
+		let assistantContent = '';
+		for (let i = userIdx + 1; i < searchEnd; i++) {
+			if (messages[i].role === 'assistant') {
+				assistantContent = messages[i].content;
+				break;
+			}
+		}
+		return {userContent: messages[userIdx].content, assistantContent};
+	});
+}
+
+/**
+ * Replaces the `turnIndex`-th user/assistant turn in `messages` with new
+ * content, leaving every other turn untouched — regardless of shape.
+ * Handles a turn missing a user and/or assistant message by inserting
+ * rather than guessing a position, so malformed data is never silently
+ * dropped.
  */
 export function mergeEditedTurn(
 	messages: ChatMessage[],
+	turnIndex: number,
 	userInput: string,
 	assistantOutput: string,
 ): ChatMessage[] {
-	const userIdx = messages.findIndex(m => m.role === 'user');
-	const assistantIdx = messages.findIndex(m => m.role === 'assistant');
+	const {userIdx, assistantIdx} = turnBounds(messages, turnIndex);
 
 	const updated = [...messages];
 	if (userIdx >= 0) updated[userIdx] = {role: 'user', content: userInput};
