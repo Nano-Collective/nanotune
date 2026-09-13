@@ -1149,13 +1149,37 @@ function chatCompletion(res: ServerResponse) {
 type StubHandler = (res: ServerResponse) => void;
 
 async function startStubJudge(handler: StubHandler): Promise<{ url: string; close: () => void }> {
-  const server = createServer((_, res) => handler(res));
+  const server = createServer((req, res) => {
+    // console.log(`Stub judge received: ${req.method} ${req.url}`);
+    handler(res);
+  });
   await new Promise<void>((resolve) => server.listen(0, resolve));
   const port = (server.address() as AddressInfo).port;
   return {
     url: `http://localhost:${port}/v1`,
     close: () => server.close(),
   };
+}
+
+async function answer(instance: Rendered, prompt: string, value = "") {
+  // Wait for the prompt to appear
+  for (let i = 0; i < 30 && !instance.lastFrame()?.includes(prompt); i++) {
+    await settle();
+  }
+  // Type the value if provided
+  if (value) {
+    await write(instance, value);
+  }
+  // Submit with ENTER
+  await write(instance, ENTER);
+}
+
+async function selectProvider(instance: Rendered, id: string) {
+  const index = PROVIDER_TEMPLATES.findIndex((template) => template.id === id);
+  for (let i = 0; i < index; i++) {
+    await write(instance, DOWN);
+  }
+  await write(instance, ENTER);
 }
 
 async function write(instance: Rendered, text: string) {
@@ -1181,18 +1205,23 @@ test.serial("JudgeConfigureCommand walks the user through the form inside a proj
     try {
       await withTTY(async () => {
         const instance = render(<JudgeConfigureCommand />);
-        await waitFor(instance, "OpenAI");
-        await repeatUntil(instance, DOWN, "Anthropic");
-        await write(instance, ENTER);
-        await waitFor(instance, "Enter your Anthropic API key");
-        await write(instance, "sk-ant-test-key");
-        await write(instance, ENTER);
-        await waitFor(instance, "Base URL");
-        await write(instance, judge.url);
-        await write(instance, ENTER);
-        await waitFor(instance, "Connection test passed");
+        await settle();
+        // Select Ollama (first option)
+        await selectProvider(instance, "ollama");
+        await answer(instance, "Provider name"); // Accept default
+        await answer(instance, "Base URL", judge.url);
+        await answer(instance, "Model name", "test-model");
+        // Confirm
+        await settle();
+        await write(instance, "y");
+        await waitFor(instance, "Judge configured successfully", 10000);
         const output = instance.frames.join("\n");
-        t.true(output.includes("Connection test passed"), "should show connection success");
+        if (!output.includes("Judge configured successfully")) {
+          console.log("=== WALKS DEBUG ===");
+          console.log(output.slice(-1500));
+          console.log("=== END ===");
+        }
+        t.true(output.includes("Judge configured successfully"), "should show success");
         instance.unmount();
       });
     } finally {
@@ -1210,19 +1239,18 @@ test.serial("JudgeConfigureCommand masks the API key on the summary", async (t) 
     try {
       await withTTY(async () => {
         const instance = render(<JudgeConfigureCommand />);
-        await waitFor(instance, "OpenAI");
-        await write(instance, ENTER);
-        await waitFor(instance, "Enter your OpenAI API key");
-        await write(instance, "sk-test-full-key");
-        await write(instance, ENTER);
-        await waitFor(instance, "Base URL");
-        await write(instance, judge.url);
-        await write(instance, ENTER);
-        // Wait for the confirmation summary (before testing)
+        await settle();
+        // Select Custom Provider
+        await selectProvider(instance, "custom");
+        await answer(instance, "Provider name", "test-provider");
+        await answer(instance, "Base URL", judge.url);
+        await answer(instance, "API Key", "sk-test-full-key-12345");
+        await answer(instance, "Model name", "test-model");
+        // Wait for the configuration summary
         await waitFor(instance, "Configuration Summary");
         await waitFor(instance, "Save and test connection");
         const summary = instance.frames.join("\n");
-        t.false(summary.includes("sk-test-full-key"), "must not show the full key");
+        t.false(summary.includes("sk-test-full-key-12345"), "must not show the full key");
         t.true(summary.includes("***"), "must show a masked version");
         instance.unmount();
       });
@@ -1239,14 +1267,12 @@ test.serial("JudgeConfigureCommand rejects a malformed base URL", async (t) => {
     setupProject();
     await withTTY(async () => {
       const instance = render(<JudgeConfigureCommand />);
-      await waitFor(instance, "OpenAI");
-      await write(instance, ENTER);
-      await waitFor(instance, "Enter your OpenAI API key");
-      await write(instance, "sk-test");
-      await write(instance, ENTER);
-      await waitFor(instance, "Base URL");
-      await write(instance, "not a url at all");
-      await write(instance, ENTER);
+      await settle();
+      // Select Custom Provider
+      await selectProvider(instance, "custom");
+      await answer(instance, "Provider name", "test-provider");
+      await answer(instance, "Base URL", "not-a-url");
+      // Should show validation error
       await waitFor(instance, "Invalid URL");
       const output = instance.frames.join("\n");
       t.true(output.includes("Invalid URL"), "should show URL validation error");
@@ -1299,27 +1325,33 @@ test.serial("JudgeConfigureCommand reports a connection failure as a connection 
   try {
     setupProject();
     const judge = await startStubJudge((res) => {
-      res.writeHead(401);
-      res.end("Unauthorized");
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        error: {
+          message: "Incorrect API key provided",
+          type: "invalid_request_error",
+          code: "invalid_api_key",
+        },
+      }));
     });
     try {
       await withTTY(async () => {
         const instance = render(<JudgeConfigureCommand />);
-        await waitFor(instance, "OpenAI");
-        await write(instance, ENTER);
-        await waitFor(instance, "Enter your OpenAI API key");
-        await write(instance, "sk-bad");
-        await write(instance, ENTER);
-        await waitFor(instance, "Base URL");
-        await write(instance, judge.url);
-        await write(instance, ENTER);
-        await waitFor(instance, "Save and test connection");
+        await settle();
+        // Select Custom Provider
+        await selectProvider(instance, "custom");
+        await answer(instance, "Provider name", "test-provider");
+        await answer(instance, "Base URL", judge.url);
+        await answer(instance, "API Key", "sk-bad");
+        await answer(instance, "Model name", "test-model");
+        // Confirm
+        await settle();
         await write(instance, "y");
-        await write(instance, ENTER);
-        await waitFor(instance, "Connection test failed");
+        // Wait for failure
+        await waitFor(instance, "Connection test failed", 10000);
         const output = instance.frames.join("\n");
         t.true(output.includes("Connection test failed"));
-        t.false(output.includes("Configuration saved"), "must not claim success");
+        t.false(output.includes("Judge configured successfully"), "must not claim success");
         instance.unmount();
       });
     } finally {
