@@ -1352,7 +1352,7 @@ test.serial(
     // Deterministic stand-in for the issue's repro (mkdir over valid.jsonl,
     // then Ctrl+C between the two writes): occupy valid.jsonl's path with a
     // non-empty directory so the atomic rename inside saveTrainingData
-    // reliably fails, the same way it does not to lose data.
+    // reliably fails, the same way an interrupted write would have lost data.
     const validPath = join(DATA_DIR, "valid.jsonl");
     mkdirSync(validPath, { recursive: true });
     writeFileSync(join(validPath, "keep.txt"), "keep");
@@ -1388,6 +1388,26 @@ test.serial(
     // The temp file created by writeFileAtomic must be cleaned up even
     // though the rename never landed - no `train.jsonl.tmp-*` sibling left
     // behind in the data directory.
+    const entries = readdirSync(DATA_DIR);
+    t.false(entries.some((name) => name.startsWith("train.jsonl.tmp-")));
+  },
+);
+
+test.serial(
+  "saveTrainingData writes atomically and leaves no temp file on success",
+  (t) => {
+    const examples: TrainingExample[] = [
+      { messages: [{ role: "user", content: "hello" }, { role: "assistant", content: "world" }] },
+    ];
+    
+    saveTrainingData(examples, false);
+    
+    // Data was written successfully
+    t.is(countExamples(false), 1);
+    const loaded = loadTrainingData(false);
+    t.deepEqual(loaded, examples);
+    
+    // No temp file left behind
     const entries = readdirSync(DATA_DIR);
     t.false(entries.some((name) => name.startsWith("train.jsonl.tmp-")));
   },
