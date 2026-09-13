@@ -801,6 +801,37 @@ test.serial("exportToCSV escapes commas, quotes, and newlines and round-trips th
   t.is(rows[1][1], "ok");
 });
 
+test.serial("exportToCSV skips examples with missing user or assistant messages", (t) => {
+  // Example with no user message
+  const noUser: TrainingExample = {
+    messages: [
+      SYSTEM_CTX,
+      { role: "assistant", content: "hello" },
+    ],
+  };
+  appendTrainingExample(noUser, false);
+  
+  // Example with no assistant message
+  const noAssistant: TrainingExample = {
+    messages: [
+      SYSTEM_CTX,
+      { role: "user", content: "hi" },
+    ],
+  };
+  appendTrainingExample(noAssistant, false);
+  
+  // Valid example
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "good", assistantOutput: "example" }, false);
+
+  const outPath = join(TEST_DIR, "out.csv");
+  const result = exportToCSV(outPath);
+  t.is(result.exported, 1);
+  t.is(result.skipped, 2);
+  t.is(result.errors.length, 2);
+  t.true(result.errors[0].includes("missing user or assistant message"));
+  t.true(result.errors[1].includes("missing user or assistant message"));
+});
+
 test.serial("exportData dispatches to correct writer by extension", (t) => {
   appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" }, false);
 
