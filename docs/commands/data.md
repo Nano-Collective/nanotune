@@ -145,6 +145,7 @@ Validate your training data before training. Checks for:
 | `--fix` | Remove exact-duplicate examples (identical messages, not just matching input text) |
 | `--rewrite-context` | Rewrite each example's context message to match the current config |
 | `-e, --eval` | Validate the validation set (`valid.jsonl`) instead of training data |
+| `--json` | Print the validation report as JSON on stdout instead of the interactive report |
 
 `--fix` is intentionally stricter than the "duplicate user inputs" warning above: the warning flags examples that merely share the same input text (worth a human look, since the outputs or context could differ on purpose), while `--fix` only ever removes examples whose entire message list is identical — the only case where deleting one is provably safe. `--rewrite-context` only touches examples that already have a context/system message; it never inserts one where an example starts directly with a user message. Both flags report exactly how many examples they changed, and can be combined:
 
@@ -155,6 +156,15 @@ nanotune data validate --fix --rewrite-context
 After a split, `data validate` reports on `train.jsonl` only. Pass `--eval` to
 check `valid.jsonl` too — the "recommend at least 50 examples" warning is not
 applied there, since a validation set is a slice of the training data.
+
+`--json` prints the same findings as a single JSON document on stdout, with the
+exit code unchanged (`1` when the data is invalid), for use in CI:
+
+```bash
+nanotune data validate --json | jq '.checks'
+```
+
+See [JSON Output](../guides/json-output.md) for the full schema.
 
 ## See Also
 

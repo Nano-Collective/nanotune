@@ -10,7 +10,9 @@ import test from "ava";
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import { useKeyInput } from "../components/index.js";
+import { getFusedModelDir } from "../lib/config.js";
 import { loadTrainingData } from "../lib/data.js";
+import { CleanCommand } from "./clean.js";
 import { ChatCommand, streamPreview } from "./chat.js";
 import { DataExportCommand } from "./data/export.js";
 import { DataImportCommand } from "./data/import.js";
@@ -65,6 +67,20 @@ function writeExamples(lines: object[]) {
     join(DATA_DIR, "train.jsonl"),
     `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`,
   );
+}
+
+function writeFusedModel() {
+  const fusedDir = join(NANOTUNE_DIR, "models", "fused");
+  mkdirSync(fusedDir, { recursive: true });
+  writeFileSync(join(fusedDir, "model.safetensors"), "x".repeat(1024));
+}
+
+// Simulates an export interrupted before mlx_lm.fuse finished writing
+// weights: the directory exists but has no .safetensors file yet.
+function writeIncompleteFusedModel() {
+  const fusedDir = join(NANOTUNE_DIR, "models", "fused");
+  mkdirSync(fusedDir, { recursive: true });
+  writeFileSync(join(fusedDir, "config.json"), "{}");
 }
 
 function writeEvalExamples(lines: object[]) {
@@ -286,6 +302,206 @@ test.serial("DataImportCommand without yes waits for confirmation", async (t) =>
   }
 });
 
+// ── clean ────────────────────────────────────────────────────────────
+
+test.serial("CleanCommand renders its error state with no project", async (t) => {
+  try {
+    setupEmptyDir();
+    const output = await renderCommand(
+      <CleanCommand options={{}} />,
+      "Not a Nanotune project",
+    );
+    t.true(output.includes("Not a Nanotune project"));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("CleanCommand reports nothing to clean when fused/ is absent", async (t) => {
+  try {
+    setupProject();
+    const output = await renderCommand(
+      <CleanCommand options={{}} />,
+      "Nothing to clean",
+    );
+    t.true(output.includes("Nothing to clean"));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("CleanCommand with yes removes fused/ without prompting", async (t) => {
+  try {
+    setupProject();
+    writeFusedModel();
+    const fusedDir = getFusedModelDir();
+    t.true(existsSync(fusedDir));
+    const output = await renderCommand(
+      <CleanCommand options={{ yes: true }} />,
+      "Removed fused model cache",
+    );
+    t.false(output.includes("Remove it?"));
+    t.true(output.includes("Removed fused model cache"));
+    t.true(output.includes("Freed:"));
+    t.false(existsSync(fusedDir));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("CleanCommand without yes waits for confirmation before deleting", async (t) => {
+  try {
+    setupProject();
+    writeFusedModel();
+    const fusedDir = getFusedModelDir();
+    const output = await renderCommand(
+      <CleanCommand options={{}} />,
+      "Remove it?",
+    );
+    t.true(output.includes("Remove it?"));
+    t.false(output.includes("Removed fused model cache"));
+    t.true(existsSync(fusedDir));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("CleanCommand treats a leftover incomplete fused/ as nothing to clean", async (t) => {
+  try {
+    setupProject();
+    writeIncompleteFusedModel();
+    const fusedDir = getFusedModelDir();
+    const output = await renderCommand(
+      <CleanCommand options={{}} />,
+      "Nothing to clean",
+    );
+    t.true(output.includes("Nothing to clean"));
+    t.false(output.includes("Remove it?"));
+    // The (non-safetensors) leftover directory is left alone, not deleted.
+    t.true(existsSync(fusedDir));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("CleanCommand deletes the cache on a confirming 'y' keypress", async (t) => {
+  const originalIsTTY = process.stdin.isTTY;
+  try {
+    process.stdin.isTTY = true as true;
+    setupProject();
+    writeFusedModel();
+    const fusedDir = getFusedModelDir();
+    const instance = render(<CleanCommand options={{}} />);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    t.true(instance.frames.join("\n").includes("Remove it?"));
+
+    instance.stdin.write("y");
+    const timeout = 2000;
+    const pollInterval = 10;
+    const startTime = Date.now();
+    while (Date.now() - startTime < timeout) {
+      if (instance.frames.join("\n").includes("Removed fused model cache")) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollInterval));
+    }
+    const output = instance.frames.join("\n");
+    instance.unmount();
+
+    t.true(output.includes("Removed fused model cache"));
+    t.true(output.includes("Freed:"));
+    t.false(existsSync(fusedDir));
+  } finally {
+    process.stdin.isTTY = originalIsTTY;
+    teardown();
+  }
+});
+
+test.serial("CleanCommand leaves the cache in place on an 'n' keypress", async (t) => {
+  const originalIsTTY = process.stdin.isTTY;
+  try {
+    process.stdin.isTTY = true as true;
+    setupProject();
+    writeFusedModel();
+    const fusedDir = getFusedModelDir();
+    const instance = render(<CleanCommand options={{}} />);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    t.true(instance.frames.join("\n").includes("Remove it?"));
+
+    instance.stdin.write("n");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const output = instance.frames.join("\n");
+    instance.unmount();
+
+    t.false(output.includes("Removed fused model cache"));
+    t.true(existsSync(fusedDir));
+  } finally {
+    process.stdin.isTTY = originalIsTTY;
+    teardown();
+  }
+});
+
+test.serial("CleanCommand leaves the cache in place on Escape", async (t) => {
+  const originalIsTTY = process.stdin.isTTY;
+  try {
+    process.stdin.isTTY = true as true;
+    setupProject();
+    writeFusedModel();
+    const fusedDir = getFusedModelDir();
+    const instance = render(<CleanCommand options={{}} />);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    t.true(instance.frames.join("\n").includes("Remove it?"));
+
+    instance.stdin.write("\x1b");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const output = instance.frames.join("\n");
+    instance.unmount();
+
+    t.false(output.includes("Removed fused model cache"));
+    t.true(existsSync(fusedDir));
+  } finally {
+    process.stdin.isTTY = originalIsTTY;
+    teardown();
+  }
+});
+
+// ── status: fused model cache ───────────────────────────────────────
+
+test.serial("StatusCommand shows the fused model cache when present", async (t) => {
+  try {
+    setupProject();
+    writeFusedModel();
+    const output = await renderCommand(<StatusCommand />, "Fused model cache");
+    t.true(output.includes("Fused model cache"));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("StatusCommand omits the fused model cache line when absent", async (t) => {
+  try {
+    setupProject();
+    const output = await renderCommand(<StatusCommand />, "Exports:");
+    t.false(output.includes("Fused model cache"));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("StatusCommand omits the fused model cache line for a leftover incomplete fused/", async (t) => {
+  // Regression: status used existsSync while clean used hasUsableFusedModel,
+  // so an interrupted export made status report a cache that clean then
+  // said didn't exist. Both must agree.
+  try {
+    setupProject();
+    writeIncompleteFusedModel();
+    const output = await renderCommand(<StatusCommand />, "Exports:");
+    t.false(output.includes("Fused model cache"));
+  } finally {
+    teardown();
+  }
+});
+
 // ── chat streaming preview ────────────────────────────────────────────
 
 test("streamPreview passes short content through untouched", (t) => {
@@ -312,6 +528,107 @@ test("streamPreview clips a single very long line by characters", (t) => {
   const { text, truncated } = streamPreview("x".repeat(5000));
   t.true(truncated);
   t.is(text.length, 2000);
+});
+
+// ── malformed JSON is reported, not thrown ───────────────────────────
+//
+// A throw from a render body escapes the command's own try/catch and lands in
+// Ink's error boundary. The render never completes, so useAutoExit never runs
+// and the command dies with a reconciler trace while still exiting 0.
+
+function writeRawConfig(contents: string) {
+  writeFileSync(join(NANOTUNE_DIR, "config.json"), contents);
+}
+
+function writeRawTrain(contents: string) {
+  writeFileSync(join(DATA_DIR, "train.jsonl"), contents);
+}
+
+test.serial("StatusCommand reports a malformed config and exits non-zero", async (t) => {
+  try {
+    setupProject();
+    writeRawConfig('{"name":"v","baseMod');
+    process.exitCode = 0;
+
+    const output = await renderCommand(<StatusCommand />, "not valid JSON");
+    t.true(output.includes("Invalid config.json: not valid JSON"));
+    t.false(output.includes("react_stack_bottom_frame"));
+    t.is(process.exitCode, 1);
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("DataValidateCommand reports a malformed config and exits non-zero", async (t) => {
+  try {
+    setupProject();
+    writeRawConfig('{"name":"v","baseMod');
+    process.exitCode = 0;
+
+    const output = await renderCommand(<DataValidateCommand />, "not valid JSON");
+    t.true(output.includes("Invalid config.json: not valid JSON"));
+    t.is(process.exitCode, 1);
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("DataValidateCommand reports a malformed example and exits non-zero", async (t) => {
+  try {
+    setupProject();
+    writeRawTrain(
+      JSON.stringify(example("one")) + "\nnot json at all\n" +
+        JSON.stringify(example("two")) + "\n",
+    );
+    process.exitCode = 0;
+
+    // The command whose whole purpose is finding malformed training data has
+    // to survive encountering some.
+    const output = await renderCommand(<DataValidateCommand />, "invalid JSON");
+    t.true(output.includes("Example 2: invalid JSON"));
+    t.false(output.includes("react_stack_bottom_frame"));
+    t.is(process.exitCode, 1);
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("DataValidateCommand --fix leaves a malformed file untouched", async (t) => {
+  try {
+    setupProject();
+    const contents =
+      JSON.stringify(example("one")) + "\n" +
+      JSON.stringify(example("one")) + "\nnope\n";
+    writeRawTrain(contents);
+
+    // Dedupe rewrites the whole file, so running it here would silently drop
+    // the line the report is meant to point at.
+    await renderCommand(<DataValidateCommand fix />, "invalid JSON");
+    t.is(readFileSync(join(DATA_DIR, "train.jsonl"), "utf-8"), contents);
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("DataListCommand renders the readable rows and flags the rest", async (t) => {
+  const originalTTY = process.stdin.isTTY;
+  try {
+    setupProject();
+    writeRawTrain(
+      JSON.stringify(example("one")) + "\nnot json at all\n" +
+        JSON.stringify(example("two")) + "\n",
+    );
+    process.stdin.isTTY = true;
+
+    const output = await renderCommand(<DataListCommand />, "unreadable line");
+    t.true(output.includes("one"));
+    t.true(output.includes("two"));
+    t.true(output.includes("1 unreadable line"));
+    t.false(output.includes("react_stack_bottom_frame"));
+  } finally {
+    process.stdin.isTTY = originalTTY;
+    teardown();
+  }
 });
 
 // ── data list edits the set it was opened on ──────────────────────────
