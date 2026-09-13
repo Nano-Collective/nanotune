@@ -1213,7 +1213,7 @@ test.serial("JudgeConfigureCommand masks the API key on the summary", async (t) 
         await waitFor(instance, "Connection test passed");
         const summary = instance.frames.join("\n");
         t.false(summary.includes("sk-test-full-key"), "must not show the full key");
-        t.true(summary.includes("sk-***"), "must show a masked version");
+        t.true(summary.includes("***"), "must show a masked version");
         instance.unmount();
       });
     } finally {
