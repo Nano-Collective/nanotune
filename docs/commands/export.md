@@ -20,7 +20,7 @@ nanotune export
 |------|-------------|
 | `-q, --quantization <type>` | Quantization type: `f16`, `q8_0`, `q4_k_m`, `q4_k_s` |
 | `-o, --output <name>` | Output filename |
-| `--skip-fuse` | Skip adapter fusion if already fused |
+| `--skip-fuse` | Skip adapter fusion — requires a `fused/` cache from a previous export |
 
 ## Examples
 
@@ -45,6 +45,12 @@ nanotune export --skip-fuse
 3. **Quantization** — The model is quantized to reduce file size
 
 Pre-built llama.cpp binaries are downloaded automatically — no compilation needed.
+
+## Fused Model Cache
+
+Fusing the LoRA adapter into the base model produces a full-precision copy, which is kept at `.nanotune/models/fused/` after export finishes — it's not deleted. Keeping it around lets `nanotune export --skip-fuse` reuse it to produce a different quantization without redoing the fusion step.
+
+That directory can be multiple gigabytes. Its size is shown when export completes and in `nanotune status`. Run [`nanotune clean`](clean.md) to remove it and reclaim the space — the next export will simply re-fuse the adapter.
 
 ## Quantization Types
 

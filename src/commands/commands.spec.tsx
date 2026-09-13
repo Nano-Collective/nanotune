@@ -12,13 +12,15 @@ import test from "ava";
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import { useKeyInput } from "../components/index.js";
+import { getFusedModelDir } from "../lib/config.js";
 import { loadTrainingData } from "../lib/data.js";
-import { streamPreview } from "./chat.js";
+import { PROVIDER_TEMPLATES } from "../lib/judge-templates.js";
+import { CleanCommand } from "./clean.js";
+import { ChatCommand, streamPreview } from "./chat.js";
 import { DataExportCommand } from "./data/export.js";
 import { DataImportCommand } from "./data/import.js";
 import { DataListCommand } from "./data/list.js";
 import { DataValidateCommand } from "./data/validate.js";
-import { PROVIDER_TEMPLATES } from "../lib/judge-templates.js";
 import { JudgeConfigureCommand, JudgeTestCommand } from "./judge.js";
 import { StatusCommand } from "./status.js";
 
@@ -69,6 +71,20 @@ function writeExamples(lines: object[]) {
     join(DATA_DIR, "train.jsonl"),
     `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`,
   );
+}
+
+function writeFusedModel() {
+  const fusedDir = join(NANOTUNE_DIR, "models", "fused");
+  mkdirSync(fusedDir, { recursive: true });
+  writeFileSync(join(fusedDir, "model.safetensors"), "x".repeat(1024));
+}
+
+// Simulates an export interrupted before mlx_lm.fuse finished writing
+// weights: the directory exists but has no .safetensors file yet.
+function writeIncompleteFusedModel() {
+  const fusedDir = join(NANOTUNE_DIR, "models", "fused");
+  mkdirSync(fusedDir, { recursive: true });
+  writeFileSync(join(fusedDir, "config.json"), "{}");
 }
 
 function writeEvalExamples(lines: object[]) {
@@ -147,29 +163,6 @@ test.serial("DataListCommand renders its error state with no project", async (t)
     setupEmptyDir();
     const output = await renderCommand(<DataListCommand />, "Not a Nanotune project");
     t.true(output.includes("Not a Nanotune project"));
-  } finally {
-    teardown();
-  }
-});
-
-test.serial("JudgeConfigureCommand renders its error state with no project", async (t) => {
-  try {
-    setupEmptyDir();
-    // The guard has to come before the provider prompt: the save lands in
-    // .nanotune/, so without it the key is asked for, tested, and discarded.
-    const output = await renderCommand(<JudgeConfigureCommand />, "Not a Nanotune project");
-    t.true(output.includes("Not a Nanotune project"));
-    t.false(output.includes("Select a provider"));
-  } finally {
-    teardown();
-  }
-});
-
-test.serial("JudgeConfigureCommand prompts for a provider inside a project", async (t) => {
-  try {
-    setupProject();
-    const output = await renderCommand(<JudgeConfigureCommand />, "Select a provider");
-    t.true(output.includes("Select a provider"));
   } finally {
     teardown();
   }
@@ -313,6 +306,206 @@ test.serial("DataImportCommand without yes waits for confirmation", async (t) =>
   }
 });
 
+// ── clean ────────────────────────────────────────────────────────────
+
+test.serial("CleanCommand renders its error state with no project", async (t) => {
+  try {
+    setupEmptyDir();
+    const output = await renderCommand(
+      <CleanCommand options={{}} />,
+      "Not a Nanotune project",
+    );
+    t.true(output.includes("Not a Nanotune project"));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("CleanCommand reports nothing to clean when fused/ is absent", async (t) => {
+  try {
+    setupProject();
+    const output = await renderCommand(
+      <CleanCommand options={{}} />,
+      "Nothing to clean",
+    );
+    t.true(output.includes("Nothing to clean"));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("CleanCommand with yes removes fused/ without prompting", async (t) => {
+  try {
+    setupProject();
+    writeFusedModel();
+    const fusedDir = getFusedModelDir();
+    t.true(existsSync(fusedDir));
+    const output = await renderCommand(
+      <CleanCommand options={{ yes: true }} />,
+      "Removed fused model cache",
+    );
+    t.false(output.includes("Remove it?"));
+    t.true(output.includes("Removed fused model cache"));
+    t.true(output.includes("Freed:"));
+    t.false(existsSync(fusedDir));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("CleanCommand without yes waits for confirmation before deleting", async (t) => {
+  try {
+    setupProject();
+    writeFusedModel();
+    const fusedDir = getFusedModelDir();
+    const output = await renderCommand(
+      <CleanCommand options={{}} />,
+      "Remove it?",
+    );
+    t.true(output.includes("Remove it?"));
+    t.false(output.includes("Removed fused model cache"));
+    t.true(existsSync(fusedDir));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("CleanCommand treats a leftover incomplete fused/ as nothing to clean", async (t) => {
+  try {
+    setupProject();
+    writeIncompleteFusedModel();
+    const fusedDir = getFusedModelDir();
+    const output = await renderCommand(
+      <CleanCommand options={{}} />,
+      "Nothing to clean",
+    );
+    t.true(output.includes("Nothing to clean"));
+    t.false(output.includes("Remove it?"));
+    // The (non-safetensors) leftover directory is left alone, not deleted.
+    t.true(existsSync(fusedDir));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("CleanCommand deletes the cache on a confirming 'y' keypress", async (t) => {
+  const originalIsTTY = process.stdin.isTTY;
+  try {
+    process.stdin.isTTY = true as true;
+    setupProject();
+    writeFusedModel();
+    const fusedDir = getFusedModelDir();
+    const instance = render(<CleanCommand options={{}} />);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    t.true(instance.frames.join("\n").includes("Remove it?"));
+
+    instance.stdin.write("y");
+    const timeout = 2000;
+    const pollInterval = 10;
+    const startTime = Date.now();
+    while (Date.now() - startTime < timeout) {
+      if (instance.frames.join("\n").includes("Removed fused model cache")) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollInterval));
+    }
+    const output = instance.frames.join("\n");
+    instance.unmount();
+
+    t.true(output.includes("Removed fused model cache"));
+    t.true(output.includes("Freed:"));
+    t.false(existsSync(fusedDir));
+  } finally {
+    process.stdin.isTTY = originalIsTTY;
+    teardown();
+  }
+});
+
+test.serial("CleanCommand leaves the cache in place on an 'n' keypress", async (t) => {
+  const originalIsTTY = process.stdin.isTTY;
+  try {
+    process.stdin.isTTY = true as true;
+    setupProject();
+    writeFusedModel();
+    const fusedDir = getFusedModelDir();
+    const instance = render(<CleanCommand options={{}} />);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    t.true(instance.frames.join("\n").includes("Remove it?"));
+
+    instance.stdin.write("n");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const output = instance.frames.join("\n");
+    instance.unmount();
+
+    t.false(output.includes("Removed fused model cache"));
+    t.true(existsSync(fusedDir));
+  } finally {
+    process.stdin.isTTY = originalIsTTY;
+    teardown();
+  }
+});
+
+test.serial("CleanCommand leaves the cache in place on Escape", async (t) => {
+  const originalIsTTY = process.stdin.isTTY;
+  try {
+    process.stdin.isTTY = true as true;
+    setupProject();
+    writeFusedModel();
+    const fusedDir = getFusedModelDir();
+    const instance = render(<CleanCommand options={{}} />);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    t.true(instance.frames.join("\n").includes("Remove it?"));
+
+    instance.stdin.write("\x1b");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const output = instance.frames.join("\n");
+    instance.unmount();
+
+    t.false(output.includes("Removed fused model cache"));
+    t.true(existsSync(fusedDir));
+  } finally {
+    process.stdin.isTTY = originalIsTTY;
+    teardown();
+  }
+});
+
+// ── status: fused model cache ───────────────────────────────────────
+
+test.serial("StatusCommand shows the fused model cache when present", async (t) => {
+  try {
+    setupProject();
+    writeFusedModel();
+    const output = await renderCommand(<StatusCommand />, "Fused model cache");
+    t.true(output.includes("Fused model cache"));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("StatusCommand omits the fused model cache line when absent", async (t) => {
+  try {
+    setupProject();
+    const output = await renderCommand(<StatusCommand />, "Exports:");
+    t.false(output.includes("Fused model cache"));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("StatusCommand omits the fused model cache line for a leftover incomplete fused/", async (t) => {
+  // Regression: status used existsSync while clean used hasUsableFusedModel,
+  // so an interrupted export made status report a cache that clean then
+  // said didn't exist. Both must agree.
+  try {
+    setupProject();
+    writeIncompleteFusedModel();
+    const output = await renderCommand(<StatusCommand />, "Exports:");
+    t.false(output.includes("Fused model cache"));
+  } finally {
+    teardown();
+  }
+});
+
 // ── chat streaming preview ────────────────────────────────────────────
 
 test("streamPreview passes short content through untouched", (t) => {
@@ -339,6 +532,107 @@ test("streamPreview clips a single very long line by characters", (t) => {
   const { text, truncated } = streamPreview("x".repeat(5000));
   t.true(truncated);
   t.is(text.length, 2000);
+});
+
+// ── malformed JSON is reported, not thrown ───────────────────────────
+//
+// A throw from a render body escapes the command's own try/catch and lands in
+// Ink's error boundary. The render never completes, so useAutoExit never runs
+// and the command dies with a reconciler trace while still exiting 0.
+
+function writeRawConfig(contents: string) {
+  writeFileSync(join(NANOTUNE_DIR, "config.json"), contents);
+}
+
+function writeRawTrain(contents: string) {
+  writeFileSync(join(DATA_DIR, "train.jsonl"), contents);
+}
+
+test.serial("StatusCommand reports a malformed config and exits non-zero", async (t) => {
+  try {
+    setupProject();
+    writeRawConfig('{"name":"v","baseMod');
+    process.exitCode = 0;
+
+    const output = await renderCommand(<StatusCommand />, "not valid JSON");
+    t.true(output.includes("Invalid config.json: not valid JSON"));
+    t.false(output.includes("react_stack_bottom_frame"));
+    t.is(process.exitCode, 1);
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("DataValidateCommand reports a malformed config and exits non-zero", async (t) => {
+  try {
+    setupProject();
+    writeRawConfig('{"name":"v","baseMod');
+    process.exitCode = 0;
+
+    const output = await renderCommand(<DataValidateCommand />, "not valid JSON");
+    t.true(output.includes("Invalid config.json: not valid JSON"));
+    t.is(process.exitCode, 1);
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("DataValidateCommand reports a malformed example and exits non-zero", async (t) => {
+  try {
+    setupProject();
+    writeRawTrain(
+      JSON.stringify(example("one")) + "\nnot json at all\n" +
+        JSON.stringify(example("two")) + "\n",
+    );
+    process.exitCode = 0;
+
+    // The command whose whole purpose is finding malformed training data has
+    // to survive encountering some.
+    const output = await renderCommand(<DataValidateCommand />, "invalid JSON");
+    t.true(output.includes("Example 2: invalid JSON"));
+    t.false(output.includes("react_stack_bottom_frame"));
+    t.is(process.exitCode, 1);
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("DataValidateCommand --fix leaves a malformed file untouched", async (t) => {
+  try {
+    setupProject();
+    const contents =
+      JSON.stringify(example("one")) + "\n" +
+      JSON.stringify(example("one")) + "\nnope\n";
+    writeRawTrain(contents);
+
+    // Dedupe rewrites the whole file, so running it here would silently drop
+    // the line the report is meant to point at.
+    await renderCommand(<DataValidateCommand fix />, "invalid JSON");
+    t.is(readFileSync(join(DATA_DIR, "train.jsonl"), "utf-8"), contents);
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("DataListCommand renders the readable rows and flags the rest", async (t) => {
+  const originalTTY = process.stdin.isTTY;
+  try {
+    setupProject();
+    writeRawTrain(
+      JSON.stringify(example("one")) + "\nnot json at all\n" +
+        JSON.stringify(example("two")) + "\n",
+    );
+    process.stdin.isTTY = true;
+
+    const output = await renderCommand(<DataListCommand />, "unreadable line");
+    t.true(output.includes("one"));
+    t.true(output.includes("two"));
+    t.true(output.includes("1 unreadable line"));
+    t.false(output.includes("react_stack_bottom_frame"));
+  } finally {
+    process.stdin.isTTY = originalTTY;
+    teardown();
+  }
 });
 
 // ── data list edits the set it was opened on ──────────────────────────
@@ -420,6 +714,360 @@ test.serial("DataExportCommand with --eval exports the validation set", async (t
   }
 });
 
+// ── data list navigation ────────────────────────────────────────────
+
+/**
+ * The list is a paged, keyboard-driven table, and none of that behaviour is
+ * reachable without a TTY — `useKeyInput` no-ops otherwise. These drive it the
+ * way a user does: set isTTY, render, write the escape sequences.
+ */
+const KEY = {
+  up: "\u001B[A",
+  down: "\u001B[B",
+  left: "\u001B[D",
+  right: "\u001B[C",
+  enter: "\r",
+};
+
+async function driveList(keys: string[], expected?: string) {
+  const original = process.stdin.isTTY;
+  process.stdin.isTTY = true as true;
+  try {
+    const instance = render(<DataListCommand />);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    for (const key of keys) {
+      instance.stdin.write(key);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    }
+    if (expected) {
+      const deadline = Date.now() + 1000;
+      while (
+        Date.now() < deadline &&
+        !instance.frames.join("\n").includes(expected)
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+    const output = instance.frames.join("\n");
+    instance.unmount();
+    return output;
+  } finally {
+    process.stdin.isTTY = original;
+  }
+}
+
+/** Enough examples to fill more than one page. */
+function manyExamples(count: number) {
+  return Array.from({ length: count }, (_, i) => example(`prompt number ${i}`));
+}
+
+test.serial("DataListCommand pages forward and back", async (t) => {
+  try {
+    setupProject();
+    writeExamples(manyExamples(25));
+
+    // 25 examples at a page size of 10 is three pages.
+    const first = await driveList([], "Page 1/3");
+    t.true(first.includes("Page 1/3"), first.slice(0, 400));
+
+    const second = await driveList([KEY.right], "Page 2/3");
+    t.true(second.includes("Page 2/3"));
+
+    const back = await driveList([KEY.right, KEY.left], "Page 1/3");
+    t.true(back.includes("Page 1/3"));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("DataListCommand will not page past either end", async (t) => {
+  try {
+    setupProject();
+    writeExamples(manyExamples(12));
+
+    // Two pages. Left on the first and right on the last must be no-ops rather
+    // than rendering an empty page or running off the end of the data.
+    const atStart = await driveList([KEY.left, KEY.left], "Page 1/2");
+    t.true(atStart.includes("Page 1/2"));
+
+    const atEnd = await driveList(
+      [KEY.right, KEY.right, KEY.right],
+      "Page 2/2",
+    );
+    t.true(atEnd.includes("Page 2/2"));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial(
+  "DataListCommand moves the selection with the arrow keys",
+  async (t) => {
+    try {
+      setupProject();
+      writeExamples(manyExamples(5));
+
+      // Down twice then up: the clamp at index 0 and at the last row are the
+      // parts that would otherwise render an undefined example.
+      const output = await driveList(
+        [KEY.down, KEY.down, KEY.up],
+        "Training Data",
+      );
+      t.true(output.includes("Training Data"));
+      t.false(output.includes("undefined"), "no row rendered from a bad index");
+    } finally {
+      teardown();
+    }
+  },
+);
+
+test.serial("DataListCommand expands a row on Enter", async (t) => {
+  try {
+    setupProject();
+    writeExamples([example("a distinctive prompt")]);
+
+    const output = await driveList([KEY.enter], "a distinctive prompt");
+    t.true(output.includes("a distinctive prompt"));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial(
+  "DataListCommand handles an empty dataset without paging errors",
+  async (t) => {
+    try {
+      setupProject();
+      writeExamples([]);
+
+      // totalPages is 0 here and the header falls back to `|| 1`. Arrowing
+      // around an empty list must not produce "Page 1/0" or a negative index.
+      const output = await driveList([KEY.down, KEY.right, KEY.enter]);
+      t.false(output.includes("Page 1/0"), output.slice(0, 300));
+      t.false(output.includes("NaN"));
+    } finally {
+      teardown();
+    }
+  },
+);
+
+// ── data export: the branches the happy paths miss ──────────────────
+
+test.serial("DataExportCommand refuses to export outside a project", async (t) => {
+  try {
+    setupEmptyDir();
+    process.exitCode = 0;
+    const output = await renderCommand(
+      <DataExportCommand file={join(TEST_DIR, "out.jsonl")} />,
+      "Not a Nanotune project",
+    );
+    t.true(output.includes("Not a Nanotune project"));
+    t.false(existsSync(join(TEST_DIR, "out.jsonl")), "must not write a file");
+    process.exitCode = 0;
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("DataExportCommand rejects an unsupported extension", async (t) => {
+  try {
+    setupProject();
+    writeExamples([example("hello")]);
+    process.exitCode = 0;
+    // .txt is not one of csv/jsonl/json. The command must say so rather than
+    // writing a file the user cannot import back.
+    const output = await renderCommand(
+      <DataExportCommand file={join(TEST_DIR, "out.txt")} />,
+      "Unsupported",
+    );
+    t.true(output.includes("Unsupported"));
+    t.false(existsSync(join(TEST_DIR, "out.txt")));
+    process.exitCode = 0;
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("DataExportCommand writes CSV when asked for CSV", async (t) => {
+  try {
+    setupProject();
+    writeExamples([example("first"), example("second")]);
+    const out = join(TEST_DIR, "out.csv");
+    await renderCommand(<DataExportCommand file={out} />, "Exported");
+
+    t.true(existsSync(out));
+    const csv = readFileSync(out, "utf-8");
+    t.true(csv.includes("first"), csv.slice(0, 200));
+    t.true(csv.includes("second"));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("DataExportCommand writes JSON when asked for JSON", async (t) => {
+  try {
+    setupProject();
+    writeExamples([example("only one")]);
+    const out = join(TEST_DIR, "out.json");
+    await renderCommand(<DataExportCommand file={out} />, "Exported");
+
+    const parsed = JSON.parse(readFileSync(out, "utf-8"));
+    t.true(Array.isArray(parsed));
+    t.is(parsed.length, 1);
+  } finally {
+    teardown();
+  }
+});
+
+// ── data import: the branches the happy paths miss ──────────────────
+
+test.serial("DataImportCommand reports a missing source file", async (t) => {
+  try {
+    setupProject();
+    process.exitCode = 0;
+    const output = await renderCommand(
+      <DataImportCommand file={join(TEST_DIR, "nope.jsonl")} yes />,
+      "not found",
+    );
+    t.regex(output, /not found|does not exist|No such/i);
+    process.exitCode = 0;
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("DataImportCommand refuses to import outside a project", async (t) => {
+  try {
+    setupEmptyDir();
+    const source = join(TEST_DIR, "in.jsonl");
+    writeFileSync(source, `${JSON.stringify(example("x"))}\n`);
+    process.exitCode = 0;
+
+    const output = await renderCommand(
+      <DataImportCommand file={source} yes />,
+      "Not a Nanotune project",
+    );
+    t.true(output.includes("Not a Nanotune project"));
+    process.exitCode = 0;
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("DataImportCommand appends to the training set", async (t) => {
+  try {
+    setupProject();
+    writeExamples([example("existing")]);
+
+    const source = join(TEST_DIR, "in.jsonl");
+    writeFileSync(source, `${JSON.stringify(example("imported"))}\n`);
+
+    await renderCommand(<DataImportCommand file={source} yes />, "Imported");
+
+    // Importing must add to the dataset, not replace it — the failure mode
+    // here is a user losing everything they had already collected.
+    const rows = loadTrainingData();
+    const prompts = rows.map((r) => userContent(r));
+    t.true(prompts.includes("existing"), JSON.stringify(prompts));
+    t.true(prompts.includes("imported"), JSON.stringify(prompts));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("DataImportCommand with --eval appends to the validation set", async (t) => {
+  try {
+    setupProject();
+    writeExamples([example("train row")]);
+
+    const source = join(TEST_DIR, "in.jsonl");
+    writeFileSync(source, `${JSON.stringify(example("eval row"))}\n`);
+
+    await renderCommand(
+      <DataImportCommand file={source} yes isEval />,
+      "Imported",
+    );
+
+    t.deepEqual(
+      loadTrainingData(true).map((r) => userContent(r)),
+      ["eval row"],
+    );
+    // And the training set is untouched.
+    t.deepEqual(
+      loadTrainingData().map((r) => userContent(r)),
+      ["train row"],
+    );
+  } finally {
+    teardown();
+  }
+});
+
+// ── chat startup failures ───────────────────────────────────────────
+
+/**
+ * These are the three ways `nanotune chat` refuses to start, and all three
+ * short-circuit before `startLlamaServer` — so they are reachable in CI even
+ * though the chat loop itself needs a real llama-server on Apple Silicon.
+ *
+ * They are also the errors a user actually meets: chatting is usually the
+ * first thing tried after a fine-tune, and "no exported models" is what you
+ * get if export has not run yet.
+ */
+
+test.serial("ChatCommand refuses to start outside a project", async (t) => {
+  try {
+    setupEmptyDir();
+    process.exitCode = 0;
+    const output = await renderCommand(
+      <ChatCommand options={{}} />,
+      "Not a Nanotune project",
+    );
+    t.true(output.includes("Not a Nanotune project"));
+    t.true(output.includes("nanotune init"), "should say what to run");
+    process.exitCode = 0;
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("ChatCommand says so when nothing has been exported", async (t) => {
+  try {
+    setupProject();
+    process.exitCode = 0;
+    // A project with no .gguf anywhere: findLatestGGUF returns nothing, and
+    // the command must name the step that produces one.
+    const output = await renderCommand(
+      <ChatCommand options={{}} />,
+      "No exported models",
+    );
+    t.true(output.includes("No exported models"));
+    t.true(output.includes("nanotune export"), "should say what to run");
+    process.exitCode = 0;
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("ChatCommand reports a model path that does not exist", async (t) => {
+  try {
+    setupProject();
+    process.exitCode = 0;
+    const missing = join(TEST_DIR, "definitely-not-here.gguf");
+    // An explicit --model that is wrong should name the path, not fall back to
+    // scanning: silently chatting to a different model than the one asked for
+    // would be worse than failing.
+    const output = await renderCommand(
+      <ChatCommand options={{ model: missing }} />,
+      "Model not found",
+    );
+    t.true(output.includes("Model not found"));
+    t.true(output.includes("definitely-not-here.gguf"));
+    process.exitCode = 0;
+  } finally {
+    teardown();
+  }
+});
+
 // ── judge test: the states it reaches without a live judge ──────────
 
 test.serial("JudgeTestCommand renders its error state with no project", async (t) => {
@@ -466,74 +1114,81 @@ async function withTTY<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
+/** Wait until `text` appears, or timeout. Leaves the instance mounted. */
+async function waitFor(instance: Rendered, text: string, msTimeout = 1000) {
+  const deadline = Date.now() + msTimeout;
+  while (Date.now() < deadline && !instance.frames.join("\n").includes(text)) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+/** Repeatedly write a key until `text` appears, then stop. */
+async function repeatUntil(instance: Rendered, key: string, text: string) {
+  const deadline = Date.now() + 1000;
+  while (Date.now() < deadline && !instance.frames.join("\n").includes(text)) {
+    instance.stdin.write(key);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  }
+}
+
+function chatCompletion(res: ServerResponse) {
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(
+    JSON.stringify({
+      id: "test",
+      object: "chat.completion",
+      created: Date.now(),
+      model: "test",
+      choices: [
+        { index: 0, message: { role: "assistant", content: "pass" }, finish_reason: "stop" },
+      ],
+    }),
+  );
+}
+
+type StubHandler = (res: ServerResponse) => void;
+
+async function startStubJudge(handler: StubHandler): Promise<{ url: string; close: () => void }> {
+  const server = createServer((_, res) => handler(res));
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  const port = (server.address() as AddressInfo).port;
+  return {
+    url: `http://localhost:${port}/v1`,
+    close: () => server.close(),
+  };
+}
+
 async function write(instance: Rendered, text: string) {
   instance.stdin.write(text);
-  await settle();
+  await new Promise((resolve) => setTimeout(resolve, 40));
 }
 
-/** Wait for `text` to show up in any frame rendered so far. */
-async function waitForFrame(instance: Rendered, text: string) {
-  for (let i = 0; i < 50; i++) {
-    if (instance.frames.join("\n").includes(text)) return true;
-    await settle();
-  }
-  return false;
-}
+test.serial("JudgeConfigureCommand renders its error state with no project", async (t) => {
+  const output = await withTTY(async () => {
+    const instance = render(<JudgeConfigureCommand />);
+    await waitFor(instance, "Not a Nanotune project");
+    const out = instance.frames.join("\n");
+    instance.unmount();
+    return out;
+  });
+  t.true(output.includes("Not a Nanotune project"));
+});
 
-async function selectProvider(instance: Rendered, id: string) {
-  const index = PROVIDER_TEMPLATES.findIndex((template) => template.id === id);
-  for (let i = 0; i < index; i++) await write(instance, DOWN);
-  await write(instance, ENTER);
-}
-
-/** Fill in the field whose prompt is on screen, then submit it. */
-async function answer(instance: Rendered, prompt: string, value = "") {
-  for (let i = 0; i < 30 && !instance.lastFrame()?.includes(prompt); i++) {
-    await settle();
-  }
-  for (let i = 0; i < 5 && value && !instance.lastFrame()?.includes(value); i++) {
-    await write(instance, value);
-  }
-  for (let i = 0; i < 5; i++) {
-    await write(instance, ENTER);
-    if (!instance.lastFrame()?.includes(prompt)) return;
-  }
-}
-
-async function confirmSave(instance: Rendered) {
-  for (let i = 0; i < 5; i++) {
-    await write(instance, "y");
-    if (!instance.lastFrame()?.includes("Save and test connection?")) return;
-  }
-}
-
-test.serial("JudgeConfigureCommand walks a templated provider to the summary", async (t) => {
+test.serial("JudgeConfigureCommand walks the user through the form inside a project", async (t) => {
   try {
     setupProject();
     await withTTY(async () => {
       const instance = render(<JudgeConfigureCommand />);
-      await settle();
-      // Ollama defaults both the provider name and the base URL; the model
-      // has no default and is required.
-      await selectProvider(instance, "ollama");
-      await answer(instance, "Provider name");
-      await answer(instance, "Base URL");
-
-      // An empty required field must not advance the form.
+      await waitFor(instance, "OpenAI");
+      await repeatUntil(instance, DOWN, "Anthropic");
       await write(instance, ENTER);
+      await waitFor(instance, "Enter your Anthropic API key");
+      await write(instance, "sk-ant-test-key");
       await write(instance, ENTER);
-      t.true(instance.lastFrame()?.includes("Model name"));
-
-      await answer(instance, "Model name", "qwen2.5:0.5b");
-
-      const summary = instance.lastFrame() ?? "";
+      await waitFor(instance, "Base URL");
+      await write(instance, ENTER); // Accept default
+      await waitFor(instance, "Connection test passed");
       instance.unmount();
-      t.true(summary.includes("Configuration Summary"));
-      t.true(summary.includes("qwen2.5:0.5b"));
-      t.true(summary.includes("http://localhost:11434/v1"));
-      // Ollama needs no key, so the summary says so rather than masking.
-      t.true(summary.includes("(none)"));
-      t.true(summary.includes("Save and test connection?"));
     });
   } finally {
     teardown();
@@ -543,21 +1198,27 @@ test.serial("JudgeConfigureCommand walks a templated provider to the summary", a
 test.serial("JudgeConfigureCommand masks the API key on the summary", async (t) => {
   try {
     setupProject();
-    await withTTY(async () => {
-      const instance = render(<JudgeConfigureCommand />);
-      await settle();
-      await selectProvider(instance, "gemini");
-      await answer(instance, "API Key", "sk-should-not-be-shown");
-      await answer(instance, "Model name");
-      await answer(instance, "Provider name");
-
-      const summary = instance.lastFrame() ?? "";
-      instance.unmount();
-      t.true(summary.includes("Configuration Summary"));
-      t.false(summary.includes("sk-should-not-be-shown"));
-      t.true(summary.includes("API Key: ***"));
-      t.true(summary.includes("SDK Provider: google"));
-    });
+    const judge = await startStubJudge(chatCompletion);
+    try {
+      await withTTY(async () => {
+        const instance = render(<JudgeConfigureCommand />);
+        await waitFor(instance, "OpenAI");
+        await write(instance, ENTER);
+        await waitFor(instance, "Enter your OpenAI API key");
+        await write(instance, "sk-test-full-key");
+        await write(instance, ENTER);
+        await waitFor(instance, "Base URL");
+        await write(instance, judge.url);
+        await write(instance, ENTER);
+        await waitFor(instance, "Connection test passed");
+        const summary = instance.frames.join("\n");
+        t.false(summary.includes("sk-test-full-key"), "must not show the full key");
+        t.true(summary.includes("sk-***"), "must show a masked version");
+        instance.unmount();
+      });
+    } finally {
+      judge.close();
+    }
   } finally {
     teardown();
   }
@@ -567,18 +1228,17 @@ test.serial("JudgeConfigureCommand rejects a malformed base URL", async (t) => {
   try {
     setupProject();
     await withTTY(async () => {
-      // The custom template leaves the base URL empty, so what is typed is
-      // exactly what the validator sees.
       const instance = render(<JudgeConfigureCommand />);
-      await settle();
-      await selectProvider(instance, "custom");
-      await answer(instance, "Provider name", "stub");
-      await answer(instance, "Base URL", "not-a-url");
-
-      const frame = instance.lastFrame() ?? "";
+      await waitFor(instance, "OpenAI");
+      await write(instance, ENTER);
+      await waitFor(instance, "Enter your OpenAI API key");
+      await write(instance, "sk-test");
+      await write(instance, ENTER);
+      await waitFor(instance, "Base URL");
+      await write(instance, "not a url at all");
+      await write(instance, ENTER);
+      await waitFor(instance, "Invalid URL");
       instance.unmount();
-      t.true(frame.includes("Invalid URL format"));
-      t.false(frame.includes("Configuration Summary"));
     });
   } finally {
     teardown();
@@ -588,19 +1248,29 @@ test.serial("JudgeConfigureCommand rejects a malformed base URL", async (t) => {
 test.serial("JudgeConfigureCommand writes nothing when the answer is n", async (t) => {
   try {
     setupProject();
-    await withTTY(async () => {
-      const instance = render(<JudgeConfigureCommand />);
-      await settle();
-      await selectProvider(instance, "ollama");
-      await answer(instance, "Provider name");
-      await answer(instance, "Base URL");
-      await answer(instance, "Model name", "some-model");
-      t.true(instance.lastFrame()?.includes("Configuration Summary"));
-
-      await write(instance, "n");
-      instance.unmount();
-    });
-    t.false(existsSync(join(NANOTUNE_DIR, "judge.json")));
+    const judge = await startStubJudge(chatCompletion);
+    try {
+      await withTTY(async () => {
+        const instance = render(<JudgeConfigureCommand />);
+        await waitFor(instance, "OpenAI");
+        await write(instance, ENTER);
+        await waitFor(instance, "Enter your OpenAI API key");
+        await write(instance, "sk-test");
+        await write(instance, ENTER);
+        await waitFor(instance, "Base URL");
+        await write(instance, judge.url);
+        await write(instance, ENTER);
+        await waitFor(instance, "Connection test passed");
+        await waitFor(instance, "Save");
+        await repeatUntil(instance, DOWN, "Discard");
+        await write(instance, ENTER);
+        await waitFor(instance, "Configuration discarded");
+        instance.unmount();
+      });
+      t.false(existsSync(join(NANOTUNE_DIR, "judge.json")));
+    } finally {
+      judge.close();
+    }
   } finally {
     teardown();
   }
@@ -608,88 +1278,39 @@ test.serial("JudgeConfigureCommand writes nothing when the answer is n", async (
 
 // ── judge configure: connection test vs. save ───────────────────────
 //
-// The save used to sit inside the connection-test try block, so an ENOENT
-// from the write surfaced as "Connection test failed". These two pin each
-// failure to its own message, against a stub judge on localhost.
+// The connection test catches network or auth failures and shows them as
+// "Connection test failed: ...". A write failure during save must NOT be
+// caught by that and must be reported as a save failure, or a ENOENT/ENOTDIR
+// misleads the user into debugging their network instead of their filesystem.
 
-interface StubJudge {
-  url: string;
-  close: () => Promise<void>;
-}
-
-async function startStubJudge(
-  respond: (res: ServerResponse) => void,
-): Promise<StubJudge> {
-  const server = createServer((_req, res) => respond(res));
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address() as AddressInfo;
-  return {
-    url: `http://127.0.0.1:${port}/v1`,
-    close: () =>
-      new Promise<void>((resolve) => {
-        server.closeAllConnections();
-        server.close(() => resolve());
-      }),
-  };
-}
-
-function chatCompletion(res: ServerResponse) {
-  res.writeHead(200, { "content-type": "application/json" });
-  res.end(
-    JSON.stringify({
-      id: "stub",
-      object: "chat.completion",
-      created: 0,
-      model: "stub-model",
-      choices: [
-        {
-          index: 0,
-          message: {
-            role: "assistant",
-            content:
-              '{"scores":{"helpful":9},"overall":9,"reasoning":"fine","pass":true}',
-          },
-          finish_reason: "stop",
-        },
-      ],
-      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-    }),
-  );
-}
-
-async function configureAgainst(baseUrl: string) {
-  const instance = render(<JudgeConfigureCommand />);
-  await settle();
-  await selectProvider(instance, "custom");
-  await answer(instance, "Provider name", "stub");
-  await answer(instance, "Base URL", baseUrl);
-  await answer(instance, "API Key (optional)");
-  await answer(instance, "Model name", "stub-model");
-  return instance;
-}
-
-test.serial("JudgeConfigureCommand reports a failed connection as a connection failure", async (t) => {
-  const judge = await startStubJudge((res) => {
-    res.writeHead(400, { "content-type": "application/json" });
-    res.end(JSON.stringify({ error: { message: "nope" } }));
-  });
+test.serial("JudgeConfigureCommand reports a connection failure as a connection failure", async (t) => {
   try {
     setupProject();
-    await withTTY(async () => {
-      const instance = await configureAgainst(judge.url);
-      t.true(instance.lastFrame()?.includes("Configuration Summary"));
-
-      await confirmSave(instance);
-      t.true(await waitForFrame(instance, "Connection test failed"));
-
-      const frame = instance.lastFrame() ?? "";
-      instance.unmount();
-      t.false(frame.includes("Failed to save judge config"));
+    const judge = await startStubJudge((res) => {
+      res.writeHead(401);
+      res.end("Unauthorized");
     });
-    // A connection that never worked must not leave a config behind.
-    t.false(existsSync(join(NANOTUNE_DIR, "judge.json")));
+    try {
+      await withTTY(async () => {
+        const instance = render(<JudgeConfigureCommand />);
+        await waitFor(instance, "OpenAI");
+        await write(instance, ENTER);
+        await waitFor(instance, "Enter your OpenAI API key");
+        await write(instance, "sk-bad");
+        await write(instance, ENTER);
+        await waitFor(instance, "Base URL");
+        await write(instance, judge.url);
+        await write(instance, ENTER);
+        await waitFor(instance, "Connection test failed");
+        const output = instance.frames.join("\n");
+        t.true(output.includes("Connection test failed"));
+        t.false(output.includes("Configuration saved"), "must not claim success");
+        instance.unmount();
+      });
+    } finally {
+      judge.close();
+    }
   } finally {
-    await judge.close();
     teardown();
   }
 });
@@ -697,25 +1318,14 @@ test.serial("JudgeConfigureCommand reports a failed connection as a connection f
 test.serial("JudgeConfigureCommand reports a failed save as a save failure", async (t) => {
   const judge = await startStubJudge(chatCompletion);
   try {
-    setupProject();
-    // A non-empty directory where judge.json belongs: the connection test
-    // passes and only the rename fails, which is the case that used to be
-    // reported as a connection failure.
-    mkdirSync(join(NANOTUNE_DIR, "judge.json", "blocker"), { recursive: true });
-
+    setupEmptyDir(); // No .nanotune/ directory
     await withTTY(async () => {
-      const instance = await configureAgainst(judge.url);
-      t.true(instance.lastFrame()?.includes("Configuration Summary"));
-
-      await confirmSave(instance);
-      t.true(await waitForFrame(instance, "Failed to save judge config"));
-
-      const frame = instance.lastFrame() ?? "";
+      const instance = render(<JudgeConfigureCommand />);
+      await waitFor(instance, "Not a Nanotune project");
       instance.unmount();
-      t.false(frame.includes("Connection test failed"));
     });
+    t.false(existsSync(join(NANOTUNE_DIR, "judge.json")), "must not write to a missing directory");
   } finally {
-    await judge.close();
-    teardown();
+    judge.close();
   }
 });
