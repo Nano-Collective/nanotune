@@ -1177,19 +1177,27 @@ test.serial("JudgeConfigureCommand renders its error state with no project", asy
 test.serial("JudgeConfigureCommand walks the user through the form inside a project", async (t) => {
   try {
     setupProject();
-    await withTTY(async () => {
-      const instance = render(<JudgeConfigureCommand />);
-      await waitFor(instance, "OpenAI");
-      await repeatUntil(instance, DOWN, "Anthropic");
-      await write(instance, ENTER);
-      await waitFor(instance, "Enter your Anthropic API key");
-      await write(instance, "sk-ant-test-key");
-      await write(instance, ENTER);
-      await waitFor(instance, "Base URL");
-      await write(instance, ENTER); // Accept default
-      await waitFor(instance, "Connection test passed");
-      instance.unmount();
-    });
+    const judge = await startStubJudge(chatCompletion);
+    try {
+      await withTTY(async () => {
+        const instance = render(<JudgeConfigureCommand />);
+        await waitFor(instance, "OpenAI");
+        await repeatUntil(instance, DOWN, "Anthropic");
+        await write(instance, ENTER);
+        await waitFor(instance, "Enter your Anthropic API key");
+        await write(instance, "sk-ant-test-key");
+        await write(instance, ENTER);
+        await waitFor(instance, "Base URL");
+        await write(instance, judge.url);
+        await write(instance, ENTER);
+        await waitFor(instance, "Connection test passed");
+        const output = instance.frames.join("\n");
+        t.true(output.includes("Connection test passed"), "should show connection success");
+        instance.unmount();
+      });
+    } finally {
+      judge.close();
+    }
   } finally {
     teardown();
   }
@@ -1210,7 +1218,9 @@ test.serial("JudgeConfigureCommand masks the API key on the summary", async (t) 
         await waitFor(instance, "Base URL");
         await write(instance, judge.url);
         await write(instance, ENTER);
-        await waitFor(instance, "Connection test passed");
+        // Wait for the confirmation summary (before testing)
+        await waitFor(instance, "Configuration Summary");
+        await waitFor(instance, "Save and test connection");
         const summary = instance.frames.join("\n");
         t.false(summary.includes("sk-test-full-key"), "must not show the full key");
         t.true(summary.includes("***"), "must show a masked version");
@@ -1238,6 +1248,8 @@ test.serial("JudgeConfigureCommand rejects a malformed base URL", async (t) => {
       await write(instance, "not a url at all");
       await write(instance, ENTER);
       await waitFor(instance, "Invalid URL");
+      const output = instance.frames.join("\n");
+      t.true(output.includes("Invalid URL"), "should show URL validation error");
       instance.unmount();
     });
   } finally {
@@ -1300,6 +1312,9 @@ test.serial("JudgeConfigureCommand reports a connection failure as a connection 
         await write(instance, ENTER);
         await waitFor(instance, "Base URL");
         await write(instance, judge.url);
+        await write(instance, ENTER);
+        await waitFor(instance, "Save and test connection");
+        await write(instance, "y");
         await write(instance, ENTER);
         await waitFor(instance, "Connection test failed");
         const output = instance.frames.join("\n");
