@@ -16,6 +16,7 @@ import {
 	getAdaptersDir,
 	getDataDir,
 	loadConfig,
+	tryLoadConfig,
 } from '../lib/config.js';
 import {countExamples, ensureValidationSet} from '../lib/data.js';
 import {
@@ -383,18 +384,18 @@ export function TrainCommand({options}: Props) {
 		run();
 	}, [run]);
 
-	if (!configExists()) {
+	// Never `loadConfig()` here: a throw in the render body escapes the
+	// run callback's own error handling and aborts the render, so the
+	// effect that sets a non-zero exit code never runs.
+	const {config, error: configError} = tryLoadConfig();
+	if (!config) {
 		return (
 			<Box flexDirection="column" padding={1}>
 				<Header title="Training" />
-				<StatusMessage variant="error">
-					Not a Nanotune project. Run `nanotune init` first.
-				</StatusMessage>
+				<StatusMessage variant="error">{configError}</StatusMessage>
 			</Box>
 		);
 	}
-
-	const config = loadConfig();
 	// This component re-renders on every training update, so prefer the counts
 	// the split already returned over re-reading both files each time.
 	const exampleCount = split ? split.trainCount : countExamples();

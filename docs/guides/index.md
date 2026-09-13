@@ -14,3 +14,4 @@ Detailed walkthroughs for getting the most out of Nanotune.
 - [Benchmarking](benchmarking.md) — Creating test datasets, match modes, multi-turn tests, and reading reports
 - [LLM Judge](llm-judge.md) — Setting up an LLM-as-a-judge for open-ended evaluation
 - [Training Tips](training-tips.md) — Hyperparameter guidance, signs of good training, and iterative improvement
+- [JSON Output](json-output.md) — Machine-readable output from read-only commands, for scripts and CI
