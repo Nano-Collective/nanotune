@@ -29,13 +29,13 @@ export interface JsonOutcome {
  * state — training data with errors, say. That still prints, because the
  * report is the useful part, but it must exit non-zero so CI can gate on it.
  */
-export function buildJsonOutcome<T>(
-	collect: () => T,
+export async function buildJsonOutcome<T>(
+	collect: () => T | Promise<T>,
 	failed?: (result: T) => boolean,
-): JsonOutcome {
+): Promise<JsonOutcome> {
 	let result: T;
 	try {
-		result = collect();
+		result = await collect();
 	} catch (err) {
 		return {
 			stdout: null,
@@ -72,11 +72,11 @@ export function buildJsonOutcome<T>(
  * stdout is flushed before the process leaves — `process.exit` can truncate a
  * large report mid-document when stdout is a pipe.
  */
-export function emitJson<T>(
-	collect: () => T,
+export async function emitJson<T>(
+	collect: () => T | Promise<T>,
 	failed?: (result: T) => boolean,
-): void {
-	const outcome = buildJsonOutcome(collect, failed);
+): Promise<void> {
+	const outcome = await buildJsonOutcome(collect, failed);
 	if (outcome.stdout !== null) {
 		process.stdout.write(outcome.stdout);
 	}

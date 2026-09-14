@@ -6,14 +6,15 @@ sidebar_order: 5
 
 # JSON Output
 
-`nanotune status` and `nanotune data validate` accept `--json`, which prints a
-single JSON document to stdout instead of the interactive report. This is what
-you want in CI, in a shell pipeline, or anywhere you would otherwise have
-parsed a box-drawn table.
+`nanotune status`, `nanotune data validate` and `nanotune benchmark` accept
+`--json`, which prints a single JSON document to stdout instead of the
+interactive report. This is what you want in CI, in a shell pipeline, or
+anywhere you would otherwise have parsed a box-drawn table.
 
 ```bash
 nanotune status --json | jq .
 nanotune data validate --json | jq '.checks'
+nanotune benchmark --json | jq '.summary.passRate'
 ```
 
 ## The contract
@@ -24,8 +25,9 @@ be relied on against:
 - **stdout carries the payload or nothing.** On success it is exactly one JSON
   document followed by a newline. Nothing else is ever written there — no
   progress, no warnings, no partial document.
-- **Diagnostics go to stderr.** Errors, and warnings such as unknown keys in
-  `config.json`, are written to stderr, so they never corrupt the parse.
+- **Diagnostics go to stderr.** Errors, warnings such as unknown keys in
+  `config.json`, and the progress lines `benchmark --json` prints while a suite
+  runs are all written to stderr, so they never corrupt the parse.
 - **The exit code carries the status.** `0` on success, non-zero on failure.
   When a command fails, stdout is empty and the reason is on stderr:
 
@@ -171,7 +173,63 @@ nanotune data validate --json          # exits 1 when the data is invalid
 nanotune data validate --json | jq -e '.checks.contextMessageConsistency'
 ```
 
+## `nanotune benchmark --json`
+
+```bash
+nanotune benchmark --json > run.json
+```
+
+Accepts every flag the interactive command does. Prints **exactly the document
+written to `.nanotune/benchmarks/benchmark-<timestamp>.json`**, so the stdout
+schema and the saved-file schema are the same thing — see
+[Benchmarking](benchmarking.md) for what the fields mean.
+
+Progress is written to stderr while the suite runs, since a benchmark can take
+minutes:
+
+```
+[1/50] list all files
+[2/50] show current directory
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `model` | string | Path to the GGUF that was benchmarked |
+| `timestamp` | string | ISO 8601 run time |
+| `config` | object | `temperature`, `seed` and `samples` the run used |
+| `isBase` | boolean | True when `--base` benchmarked the base model as a control |
+| `warning` | string \| undefined | Present only on a run that stopped early; see below |
+| `summary` | object | Totals, `passRate` (0–1), and average latency, tok/s, TTFT and judge score |
+| `categories` | object | `{passed, total}` per category |
+| `results[]` | array | Every test, with its response, timings and any judge scores |
+| `failures[]` | array | Failed tests only, for quick reference |
+
+### Detecting a partial run
+
+If llama-server dies mid-suite, the run saves what it has rather than throwing
+the whole thing away. `summary` then scores against **the tests that actually
+ran**, which on its own looks exactly like a complete run with a worse pass
+rate. `warning` is what distinguishes them, and it is absent on a complete run:
+
+```bash
+nanotune benchmark --json | jq -e 'has("warning") | not'   # fails on a partial run
+```
+
+A run where the server died before *any* test completed produces no document at
+all: nothing on stdout, the reason on stderr, exit `1`.
+
+### Exit codes
+
+A completed run exits `0` **whatever its pass rate** — there is no configured
+threshold, and inventing one would be surprising. Gate on the score yourself:
+
+```bash
+nanotune benchmark --json | jq -e '.summary.passRate >= 0.9'
+```
+
 ## See Also
 
 - [`nanotune status`](../commands/status.md)
 - [`nanotune data validate`](../commands/data.md#nanotune-data-validate)
+- [`nanotune benchmark`](../commands/benchmark.md)
+- [Benchmarking](benchmarking.md) — what the benchmark fields mean
