@@ -334,3 +334,51 @@ test.serial('saveJudgeConfig - recovers from a stale temp file', t => {
 		rmSync(dir, {recursive: true, force: true});
 	}
 });
+
+test.serial('saveJudgeConfig - creates the project directory when it is missing', t => {
+	const originalCwd = process.cwd();
+	const dir = mkdtempSync(join(tmpdir(), 'nanotune-judge-'));
+	try {
+		process.chdir(dir);
+		// No .nanotune/ at all: the exclusive create used to fail with ENOENT
+		// after the key had already been typed and the connection tested, and
+		// the key was discarded.
+		t.notThrows(() =>
+			saveJudgeConfig({
+				name: 'Test',
+				baseUrl: 'https://example.invalid/v1',
+				apiKey: 'sk-secret',
+				model: 'test-model',
+			}),
+		);
+		t.is(JSON.parse(readFileSync(getJudgeConfigPath(), 'utf-8')).name, 'Test');
+	} finally {
+		process.chdir(originalCwd);
+		rmSync(dir, {recursive: true, force: true});
+	}
+});
+
+test.serial('saveJudgeConfig - back-fills judge.json* into an existing .gitignore', t => {
+	const originalCwd = process.cwd();
+	const dir = mkdtempSync(join(tmpdir(), 'nanotune-judge-'));
+	try {
+		process.chdir(dir);
+		mkdirSync(join(dir, '.nanotune'), {recursive: true});
+		// A project initialised before judge.json joined the list. Writing the
+		// key 0600 is no protection while git is free to commit the file.
+		const gitignore = join(dir, '.nanotune', '.gitignore');
+		writeFileSync(gitignore, '# Nanotune project artifacts\nadapters/\nmodels/\n');
+
+		saveJudgeConfig({
+			name: 'Test',
+			baseUrl: 'https://example.invalid/v1',
+			apiKey: 'sk-secret',
+			model: 'test-model',
+		});
+
+		t.true(readFileSync(gitignore, 'utf-8').split('\n').includes('judge.json*'));
+	} finally {
+		process.chdir(originalCwd);
+		rmSync(dir, {recursive: true, force: true});
+	}
+});

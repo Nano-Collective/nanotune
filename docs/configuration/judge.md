@@ -48,6 +48,18 @@ Default values are also supported:
 
 This resolves at runtime from your shell environment, so the actual key is never stored in the config file.
 
+## Keeping the Key Out of Git
+
+`apiKey` may hold a literal secret rather than the `${ENV_VAR}` form, so
+`judge.json` is written with `0600` permissions and `.nanotune/.gitignore`
+carries a `judge.json*` entry — the glob also covers the `judge.json.tmp` an
+interrupted save can leave behind.
+
+Projects created before that entry existed keep the `.gitignore` they were
+initialised with. Saving a judge configuration back-fills any missing entries
+into the existing file, so a project made with an older Nanotune picks the
+protection up on its next `nanotune judge configure`.
+
 ## Supported Providers
 
 ### Cloud Providers
