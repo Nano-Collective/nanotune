@@ -596,10 +596,20 @@ export function parseCSV(content: string): string[][] {
 	return rows;
 }
 
+export interface ImportCSVOptions {
+	/**
+	 * Treat row 0 as data unconditionally, skipping header auto-detection.
+	 * Needed when a headerless file's first data row is itself literally
+	 * "input","output" — otherwise indistinguishable from a real header.
+	 */
+	headerless?: boolean;
+}
+
 export function importFromCSV(
 	filePath: string,
 	contextMessage: ChatMessage,
 	isEval: boolean,
+	options: ImportCSVOptions = {},
 ): ImportResult {
 	const errors: string[] = [];
 	let imported = 0;
@@ -615,8 +625,12 @@ export function importFromCSV(
 	// Skip the first row only when it is exactly the two column names. Matching
 	// loosely — by substring, or on either column alone — silently drops real
 	// rows such as `"explain the input parameter","..."` or `"input","a value"`.
+	// `options.headerless` bypasses this entirely for callers who already know
+	// the file has no header, since a literal "input","output" data row is
+	// otherwise indistinguishable from a real header.
 	const firstRowLower = rows[0].map(c => c.trim().toLowerCase());
 	const hasHeader =
+		!options.headerless &&
 		firstRowLower.length >= 2 &&
 		firstRowLower[0] === 'input' &&
 		firstRowLower[1] === 'output';
@@ -776,6 +790,7 @@ export function importData(
 	filePath: string,
 	contextMessage: ChatMessage,
 	isEval: boolean,
+	csvOptions: ImportCSVOptions = {},
 ): ImportResult {
 	if (!existsSync(filePath)) {
 		return {imported: 0, skipped: 0, errors: ['File not found']};
@@ -785,7 +800,7 @@ export function importData(
 
 	switch (ext) {
 		case 'csv':
-			return importFromCSV(filePath, contextMessage, isEval);
+			return importFromCSV(filePath, contextMessage, isEval, csvOptions);
 		case 'jsonl':
 			return importFromJSONL(filePath, contextMessage, isEval);
 		case 'json':

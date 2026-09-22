@@ -56,8 +56,11 @@ Multi-turn examples in JSONL and JSON files are preserved with all their turns i
 |------|-------------|
 | `-y, --yes` | Skip the confirmation prompt |
 | `-e, --eval` | Import into the validation set (`valid.jsonl`) instead of training data |
+| `--headerless` | Treat a CSV file's first row as data, never as a header |
 
 By default the importer previews your existing data and asks for confirmation. Pass `--yes` to import without prompting — this is also what lets `data import` run in a script or CI job, where there is no terminal to answer the prompt.
+
+For CSV files, the importer auto-detects a header by checking whether the first row's first two columns are `input` and `output` (any further columns don't matter). If your headerless CSV's first *data* row genuinely starts with that literal pair, pass `--headerless` so it isn't mistaken for a header and dropped.
 
 ```bash
 nanotune data import examples.jsonl --yes

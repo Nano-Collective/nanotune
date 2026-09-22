@@ -998,6 +998,29 @@ test.serial("DataImportCommand with --eval appends to the validation set", async
   }
 });
 
+test.serial(
+  "DataImportCommand with headerless imports a literal input,output CSV row",
+  async (t) => {
+    // Regression test for #136: without --headerless this row is mistaken
+    // for a CSV header and silently dropped.
+    try {
+      setupProject();
+
+      const source = join(TEST_DIR, "in.csv");
+      writeFileSync(source, '"input","output"\n');
+
+      await renderCommand(
+        <DataImportCommand file={source} yes headerless />,
+        "Imported",
+      );
+
+      t.deepEqual(loadTrainingData().map((r) => userContent(r)), ["input"]);
+    } finally {
+      teardown();
+    }
+  },
+);
+
 // ── chat startup failures ───────────────────────────────────────────
 
 /**

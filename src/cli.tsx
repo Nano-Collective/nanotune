@@ -79,19 +79,33 @@ dataCommand
 		'-e, --eval',
 		'Import into the validation set instead of training data',
 	)
-	.action(async (file: string, options: {yes?: boolean; eval?: boolean}) => {
-		const {DataImportCommand} = await import('./commands/data/import.js');
-		// Without a TTY there is no way to answer the prompt, so require --yes.
-		if (!options.yes && !supportsRawMode()) {
-			console.error(interactiveRequiredMessage('data import'));
-			console.error('Pass --yes to import without confirmation.');
-			process.exitCode = 1;
-			return;
-		}
-		render(
-			<DataImportCommand file={file} yes={options.yes} isEval={options.eval} />,
-		);
-	});
+	.option(
+		'--headerless',
+		"Treat a CSV file's first row as data, never as a header",
+	)
+	.action(
+		async (
+			file: string,
+			options: {yes?: boolean; eval?: boolean; headerless?: boolean},
+		) => {
+			const {DataImportCommand} = await import('./commands/data/import.js');
+			// Without a TTY there is no way to answer the prompt, so require --yes.
+			if (!options.yes && !supportsRawMode()) {
+				console.error(interactiveRequiredMessage('data import'));
+				console.error('Pass --yes to import without confirmation.');
+				process.exitCode = 1;
+				return;
+			}
+			render(
+				<DataImportCommand
+					file={file}
+					yes={options.yes}
+					isEval={options.eval}
+					headerless={options.headerless}
+				/>,
+			);
+		},
+	);
 
 dataCommand
 	.command('export <file>')
