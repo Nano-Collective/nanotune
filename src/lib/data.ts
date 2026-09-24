@@ -711,8 +711,9 @@ export function importFromJSONL(
 
 			errors.push(`Line ${i + 1}: Unrecognized format`);
 			skipped++;
-		} catch {
-			errors.push(`Line ${i + 1}: Invalid JSON`);
+		} catch (err) {
+			const detail = err instanceof Error ? err.message : String(err);
+			errors.push(`Line ${i + 1}: Invalid JSON: ${detail}`);
 			skipped++;
 		}
 	}
