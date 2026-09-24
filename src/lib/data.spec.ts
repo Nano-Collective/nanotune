@@ -145,6 +145,20 @@ test.serial("deleteExample removes the correct example", (t) => {
   t.is(data[1].messages[1].content, "C");
 });
 
+test.serial("deleteExample rejects a floating point index without deleting", (t) => {
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "1" }, false);
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "B", assistantOutput: "2" }, false);
+
+  // splice() would silently truncate 1.9 to 1 and delete the wrong item.
+  const err = t.throws(() => deleteExample(1.9, false));
+  t.regex(err?.message ?? "", /integer/);
+
+  const data = loadTrainingData();
+  t.is(data.length, 2);
+  t.is(data[0].messages[1].content, "A");
+  t.is(data[1].messages[1].content, "B");
+});
+
 // ── validateTrainingData ──────────────────────────────────────────────
 
 test.serial("validateTrainingData returns error when no data exists", (t) => {
