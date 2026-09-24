@@ -490,6 +490,19 @@ test.serial("importFromJSONL skips invalid JSON", (t) => {
   t.true(result.errors[0].includes("Invalid JSON"));
 });
 
+test.serial("importFromJSONL reports the SyntaxError detail for a bad line", (t) => {
+  const jsonlPath = join(TEST_DIR, "subtle.jsonl");
+  // Missing comma between fields: valid-looking prefix, fails mid-line.
+  writeFileSync(jsonlPath, '{"input":"list files" "output":"ls"}\n');
+
+  const result = importFromJSONL(jsonlPath, SYSTEM_CTX, false);
+  t.is(result.imported, 0);
+  t.is(result.skipped, 1);
+  // V8's exact wording varies by Node version, so only assert a non-empty
+  // detail rides along with the stable prefix.
+  t.regex(result.errors[0], /Line 1: Invalid JSON: .+/);
+});
+
 // ── importFromJSON ────────────────────────────────────────────────────
 
 test.serial("importFromJSON imports array of messages format", (t) => {
