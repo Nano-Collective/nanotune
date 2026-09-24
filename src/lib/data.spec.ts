@@ -898,6 +898,26 @@ test.serial("updateTrainingExample replaces with multi-turn example", (t) => {
   t.is(data[0].messages[3].content, "Turn 2");
 });
 
+test.serial("updateTrainingExample rejects a floating point index without writing", (t) => {
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "old", assistantOutput: "old-out" }, false);
+
+  const replacement: TrainingExample = {
+    messages: [
+      { role: "system", content: "You are helpful." },
+      { role: "user", content: "new" },
+      { role: "assistant", content: "new-out" },
+    ],
+  };
+  // examples[0.9] = ... would set a non-index property that JSON.stringify
+  // drops on save, silently losing the update instead of failing.
+  const err = t.throws(() => updateTrainingExample(0.9, replacement, false));
+  t.regex(err?.message ?? "", /integer/);
+
+  const data = loadTrainingData();
+  t.is(data.length, 1);
+  t.is(data[0].messages[1].content, "old");
+});
+
 // ── mergeEditedTurn ────────────────────────────────────────────────────
 
 test("mergeEditedTurn replaces user/assistant in place, preserving context", (t) => {

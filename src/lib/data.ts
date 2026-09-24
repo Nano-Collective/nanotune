@@ -148,6 +148,11 @@ export function updateTrainingExample(
 	example: TrainingExample,
 	isEval: boolean,
 ): void {
+	if (!Number.isInteger(index)) {
+		throw new Error(
+			`Invalid example index: ${index}. Index must be an integer.`,
+		);
+	}
 	const examples = loadTrainingData(isEval);
 	if (index >= 0 && index < examples.length) {
 		examples[index] = example;
