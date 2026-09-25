@@ -1,3 +1,23 @@
+## 1.8.0
+
+### Minor Changes
+
+- Added `nanotune clean --target <fused|base|all>` to also cover the shared base-model cache alongside the fused-model cache, and hardened the completeness checks behind both: an interrupted multi-shard fuse or a permission error reading a cache directory no longer produces a false "usable" or crashes `nanotune status`/`nanotune clean`. Thanks to @rohanshrma222. Closes #125.
+- `nanotune data import` gains a `--headerless` flag for CSV files. The importer used to auto-detect a header by checking whether the first row was exactly `input`/`output`, which meant a headerless file whose first *data* row genuinely was that literal pair got silently dropped as a "header". Passing `--headerless` skips auto-detection entirely so that row always imports as data; default behaviour is unchanged. Thanks to @akramcodez. Closes #136.
+- `nanotune status --json` and `nanotune data validate --json` now print a single JSON document to stdout, so the read-only commands can be consumed by scripts and CI. Diagnostics and the unknown-config-key warnings go to stderr; Ink never renders in this mode. The schema is documented in `docs/guides/json-output.md` and the `ValidationResult` now exposes `duplicateInputs` and `inconsistentContextMessages` counts that both views read rather than pattern-matching warning prose. Thanks to @yashksaini-coder. Closes #69 for `status` and `data validate`.
+
+### Patch Changes
+
+- Fix a crash-safety gap where an interrupted train/validation split could
+permanently lose the held-back validation examples. `saveTrainingData` now
+writes through the existing atomic file-write helper, and the split writes
+`valid.jsonl` before truncating `train.jsonl`, so an interruption between the
+two writes can at worst leave a recoverable duplicate — never a loss.
+- Detach the training `abort` listener once a run finishes, so aborting a reused signal later no longer sends SIGINT to a closed subprocess.
+- `nanotune benchmark` now errors with `Benchmark dataset is empty (<path>). Add at least one test.` when `tests.json` is an empty array, before any model is loaded or downloaded. Previously the run would proceed, write a result file with `passRate: null` (the result of `0/0 = NaN` serialised by `JSON.stringify`), and `benchmark compare` would later read it as a believable 0% regression against any healthy baseline. The dataset is now also validated before any model/sampling work, so a bad file fails immediately rather than after a multi-gigabyte download. Closes #163.
+- Fix `data list` edit overwriting the first turn when editing any other turn of a multi-turn example. `mergeEditedTurn` used to locate the turn to replace with `messages.findIndex(m => m.role === 'user'/'assistant')`, which always resolved to the first turn regardless of which one was being edited — the UI worked around this by only ever allowing turn 1 to be edited. `mergeEditedTurn` now takes an explicit turn index and locates that turn's messages by position, and `data list`'s `e` key now shows a turn picker for multi-turn examples so any turn can be selected and edited without disturbing the others. Closes #135.
+- `nanotune status`, `nanotune train`, `nanotune export`, `nanotune data validate` and `nanotune data list` no longer crash with a React reconciler stack trace when `config.json` is malformed, and `nanotune data validate` no longer crashes when `train.jsonl` contains a bad line — instead each command reports the file (and line, where applicable) and exits with code 1. Malformed lines in `train.jsonl` are preserved so the mutating helpers never silently delete user data; `--fix`/`--rewrite-context` and edit/delete skip when the data does not fully parse. Thanks to @addyCooks. Closes #126.
+- Require `isEval` on every helper in `src/lib/data.ts` that writes to the dataset. A caller that forgot the flag used to silently append to, or overwrite, the wrong file; the type checker now catches it at compile time. Read-only helpers (`loadTrainingData`, `countExamples`, `validateTrainingData`, the exporters) keep the `isEval = false` default — a missing flag shows the wrong set but destroys nothing. No runtime behaviour change. Thanks to @addyCooks. Closes #129.
 # 1.7.0
 
 ## Benchmarks are reproducible by default
