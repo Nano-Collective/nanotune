@@ -13,23 +13,54 @@ export function sanitizeModelId(modelId: string): string {
 }
 
 /**
+ * The whole base-model cache directory, shared across every project that
+ * fine-tunes from a base model this machine has already downloaded/quantized.
+ * Lives under the home directory (like `~/.nanotune/llama.cpp`) rather than
+ * the project's `.nanotune/models/`, since the expensive download+convert+
+ * quantize work is reusable across projects.
+ */
+export function getBaseModelCacheDir(): string {
+	return join(homedir(), '.nanotune', 'models', 'base-cache');
+}
+
+/**
  * Path to the cached quantized GGUF for a base model, keyed by model id and
- * quantization. Lives under the home directory (like `~/.nanotune/llama.cpp`)
- * rather than the project's `.nanotune/models/`, since the expensive
- * download+convert+quantize work is reusable across every project that
- * fine-tunes from the same base model.
+ * quantization.
  */
 export function getBaseModelCachePath(
 	baseModel: string,
 	quantization: QuantizationType,
 ): string {
 	return join(
-		homedir(),
-		'.nanotune',
-		'models',
-		'base-cache',
+		getBaseModelCacheDir(),
 		`${sanitizeModelId(baseModel)}-${quantization}.gguf`,
 	);
+}
+
+/**
+ * Whether the base-model cache directory has a real, complete cache entry
+ * in it. Each cached GGUF lands at its final filename via `renameSync` from
+ * a `.tmp-<pid>` sibling (see `sweepStaleCacheArtifacts`), so unlike the
+ * fused-model cache, a file's mere presence is normally enough — except a
+ * `.tmp-<pid>` file itself is never a complete entry, whether its writer is
+ * still running or crashed before `sweepStaleCacheArtifacts` could remove
+ * it. Ignoring those (rather than sweeping first) also means a directory
+ * holding only an in-progress download correctly reports nothing to clean.
+ *
+ * `dir` defaults to the real cache directory but can be overridden, so tests
+ * don't have to touch the developer's actual home directory.
+ */
+export function hasBaseModelCache(
+	dir: string = getBaseModelCacheDir(),
+): boolean {
+	if (!existsSync(dir)) {
+		return false;
+	}
+	try {
+		return readdirSync(dir).some(name => !name.includes('.tmp-'));
+	} catch {
+		return false;
+	}
 }
 
 /**
