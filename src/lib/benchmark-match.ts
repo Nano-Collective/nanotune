@@ -45,6 +45,14 @@ export function checkPass(
 		const expectedProcessed = processText(expected);
 		const expectedNormalized = normalizeText(expectedProcessed);
 
+		// An empty expected answer is not a matchable answer: contains/
+		// startsWith/partial (and the semantic delimiter branch) are all
+		// vacuously true against '', which would make the test pass no
+		// matter what the model produced.
+		if (expectedNormalized === '') {
+			continue;
+		}
+
 		switch (mode) {
 			case 'exact': {
 				if (actualProcessed === expectedProcessed) {
