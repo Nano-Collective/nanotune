@@ -8,7 +8,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import test from "ava";
 import {
+  getBaseModelCacheDir,
   getBaseModelCachePath,
+  hasBaseModelCache,
   sanitizeModelId,
   sweepStaleCacheArtifacts,
 } from "./model-cache.js";
@@ -37,6 +39,75 @@ test("getBaseModelCachePath varies with quantization", (t) => {
   const q4 = getBaseModelCachePath("org/model", "q4_k_m");
   const f16 = getBaseModelCachePath("org/model", "f16");
   t.not(q4, f16);
+});
+
+test("getBaseModelCacheDir matches getBaseModelCachePath's directory", (t) => {
+  const dir = getBaseModelCacheDir();
+  const path = getBaseModelCachePath("org/model", "q4_k_m");
+  t.is(dir, join(homedir(), ".nanotune", "models", "base-cache"));
+  t.true(path.startsWith(dir));
+});
+
+// ── hasBaseModelCache ────────────────────────────────────────────────
+
+const BASE_CACHE_TEST_DIR = join(process.cwd(), ".test-model-cache-base");
+
+test.serial("hasBaseModelCache is false when the directory doesn't exist", (t) => {
+  rmSync(BASE_CACHE_TEST_DIR, { recursive: true, force: true });
+  t.false(hasBaseModelCache(BASE_CACHE_TEST_DIR));
+});
+
+test.serial("hasBaseModelCache is false for an empty directory", (t) => {
+  rmSync(BASE_CACHE_TEST_DIR, { recursive: true, force: true });
+  mkdirSync(BASE_CACHE_TEST_DIR, { recursive: true });
+  try {
+    t.false(hasBaseModelCache(BASE_CACHE_TEST_DIR));
+  } finally {
+    rmSync(BASE_CACHE_TEST_DIR, { recursive: true, force: true });
+  }
+});
+
+test.serial("hasBaseModelCache is true once a cached GGUF is present", (t) => {
+  rmSync(BASE_CACHE_TEST_DIR, { recursive: true, force: true });
+  mkdirSync(BASE_CACHE_TEST_DIR, { recursive: true });
+  try {
+    writeFileSync(join(BASE_CACHE_TEST_DIR, "org--model-q4_k_m.gguf"), "stub");
+    t.true(hasBaseModelCache(BASE_CACHE_TEST_DIR));
+  } finally {
+    rmSync(BASE_CACHE_TEST_DIR, { recursive: true, force: true });
+  }
+});
+
+test.serial("hasBaseModelCache ignores an orphaned .tmp-<pid> leftover", (t) => {
+  // Regression: a crashed benchmark --base run can leave a .tmp-<pid>.gguf
+  // behind before sweepStaleCacheArtifacts gets a chance to remove it. That
+  // debris isn't a usable cache entry and shouldn't be reported as one.
+  rmSync(BASE_CACHE_TEST_DIR, { recursive: true, force: true });
+  mkdirSync(BASE_CACHE_TEST_DIR, { recursive: true });
+  try {
+    writeFileSync(
+      join(BASE_CACHE_TEST_DIR, "org--model-q4_k_m.tmp-999999.gguf"),
+      "stub",
+    );
+    t.false(hasBaseModelCache(BASE_CACHE_TEST_DIR));
+  } finally {
+    rmSync(BASE_CACHE_TEST_DIR, { recursive: true, force: true });
+  }
+});
+
+test.serial("hasBaseModelCache is true when a real entry sits alongside .tmp debris", (t) => {
+  rmSync(BASE_CACHE_TEST_DIR, { recursive: true, force: true });
+  mkdirSync(BASE_CACHE_TEST_DIR, { recursive: true });
+  try {
+    writeFileSync(join(BASE_CACHE_TEST_DIR, "org--model-q4_k_m.gguf"), "stub");
+    writeFileSync(
+      join(BASE_CACHE_TEST_DIR, "org--other-q4_k_m.tmp-999999.gguf"),
+      "stub",
+    );
+    t.true(hasBaseModelCache(BASE_CACHE_TEST_DIR));
+  } finally {
+    rmSync(BASE_CACHE_TEST_DIR, { recursive: true, force: true });
+  }
 });
 
 // ── sweepStaleCacheArtifacts ─────────────────────────────────────────
