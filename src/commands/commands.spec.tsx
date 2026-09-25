@@ -2,6 +2,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -14,6 +15,7 @@ import { getFusedModelDir } from "../lib/config.js";
 import { loadTrainingData } from "../lib/data.js";
 import { CleanCommand } from "./clean.js";
 import { ChatCommand, streamPreview } from "./chat.js";
+import { BenchmarkCommand } from "./benchmark.js";
 import { DataExportCommand } from "./data/export.js";
 import { DataImportCommand } from "./data/import.js";
 import { DataListCommand } from "./data/list.js";
@@ -1140,3 +1142,48 @@ test.serial("ChatCommand reports a model path that does not exist", async (t) =>
     teardown();
   }
 });
+
+// ── benchmark command: empty dataset is rejected (#163) ───────────────
+
+const BENCH_DIR = join(NANOTUNE_DIR, "benchmarks");
+
+test.serial(
+  "BenchmarkCommand rejects an empty tests.json with the new error message",
+  async (t) => {
+    // Regression for #163: an empty tests.json used to fall through to the
+    // summary and produce passRate: 0/0 = NaN, which JSON.stringify silently
+    // serialised as null and every downstream consumer then read as a 0%
+    // regression. It must now error before any model is loaded, with a
+    // message naming the file so the user knows where to look.
+    try {
+      setupProject();
+      mkdirSync(BENCH_DIR, { recursive: true });
+      writeFileSync(join(BENCH_DIR, "tests.json"), "[]");
+
+      const output = await renderCommand(
+        <BenchmarkCommand options={{}} />,
+        "Benchmark dataset is empty",
+      );
+
+      t.true(
+        output.includes("Benchmark dataset is empty"),
+        "should name the dataset as the problem",
+      );
+      t.true(
+        output.includes("tests.json"),
+        "should point the user at the offending file",
+      );
+
+      // Defensive: the previous bug also wrote a result file with
+      // passRate: null, so guard against the broken behaviour returning.
+      const benchEntries = readdirSync(BENCH_DIR).filter((name) =>
+        name.startsWith("benchmark-"),
+      );
+      t.is(benchEntries.length, 0, "must not write a benchmark result file");
+
+      process.exitCode = 0;
+    } finally {
+      teardown();
+    }
+  },
+);
