@@ -6,6 +6,7 @@ import {
   DEFAULT_BENCHMARK_TEMPERATURE,
   formatConversationForJudge,
   getTestDisplayPrompt,
+  resolveBenchmarkFlags,
   resolveSamplingOptions,
   summarizeSamples,
 } from "./benchmark-utils.js";
@@ -252,4 +253,160 @@ test("summarizeSamples handles an empty sample list", (t) => {
   t.false(summary.passed);
   t.is(summary.passRate, 0);
   t.is(summary.variance, 0);
+});
+
+// ── resolveBenchmarkFlags ───────────────────────────────────────────
+
+const SAMPLING = { temperature: 0, seed: 42 };
+
+test("resolveBenchmarkFlags defaults every flag the user didn't pass", (t) => {
+  const flags = resolveBenchmarkFlags({}, SAMPLING);
+
+  t.deepEqual(flags.serverOptions, {
+    threads: undefined,
+    gpuLayers: undefined,
+    ctxSize: 4096,
+    batchSize: 2048,
+    cpuOnly: undefined,
+  });
+  t.is(flags.generateOptions.maxTokens, 50);
+  t.is(flags.timeout, 30000);
+  t.deepEqual(flags.errors, []);
+});
+
+test("resolveBenchmarkFlags parses the flags it was given", (t) => {
+  const flags = resolveBenchmarkFlags(
+    {
+      threads: "8",
+      gpuLayers: "20",
+      ctxSize: "8192",
+      batchSize: "1024",
+      cpuOnly: true,
+      maxTokens: "512",
+      timeout: "60000",
+    },
+    SAMPLING,
+  );
+
+  t.deepEqual(flags.serverOptions, {
+    threads: 8,
+    gpuLayers: 20,
+    ctxSize: 8192,
+    batchSize: 1024,
+    cpuOnly: true,
+  });
+  t.is(flags.generateOptions.maxTokens, 512);
+  t.is(flags.timeout, 60000);
+  t.deepEqual(flags.errors, []);
+});
+
+test("resolveBenchmarkFlags carries the resolved sampling options through", (t) => {
+  const flags = resolveBenchmarkFlags({}, { temperature: 0.7, seed: 7 });
+
+  t.is(flags.generateOptions.temperature, 0.7);
+  t.is(flags.generateOptions.seed, 7);
+});
+
+test("resolveBenchmarkFlags rejects trailing garbage rather than truncating it", (t) => {
+  // Number.parseInt("4096x") returned 4096 and ran the whole suite under a
+  // context size the user never typed.
+  const flags = resolveBenchmarkFlags({ ctxSize: "4096x" }, SAMPLING);
+
+  t.is(flags.errors.length, 1);
+  t.true(flags.errors[0].includes("--ctx-size"));
+  t.is(flags.serverOptions.ctxSize, 4096); // the default, not the truncation
+});
+
+test("resolveBenchmarkFlags reports one error per unparseable flag", (t) => {
+  const flags = resolveBenchmarkFlags(
+    {
+      threads: "many",
+      gpuLayers: "abc",
+      batchSize: "2048!",
+      maxTokens: "lots",
+      timeout: "soon",
+    },
+    SAMPLING,
+  );
+
+  t.is(flags.errors.length, 5);
+  for (const flag of [
+    "--threads",
+    "--gpu-layers",
+    "--batch-size",
+    "--max-tokens",
+    "--timeout",
+  ]) {
+    t.true(
+      flags.errors.some((e) => e.includes(flag)),
+      `expected an error naming ${flag}`,
+    );
+  }
+});
+
+test("resolveBenchmarkFlags never hands a NaN to llama-server", (t) => {
+  // String(NaN) is what became the literal `-ngl NaN` argument, and
+  // JSON.stringify(NaN) is null, which llama-server silently replaces with
+  // its own default.
+  const flags = resolveBenchmarkFlags(
+    {
+      threads: "many",
+      gpuLayers: "abc",
+      ctxSize: "4096x",
+      batchSize: "2048!",
+      maxTokens: "lots",
+      timeout: "soon",
+    },
+    SAMPLING,
+  );
+
+  const values = [
+    ...Object.values(flags.serverOptions),
+    ...Object.values(flags.generateOptions),
+    flags.timeout,
+  ];
+  t.false(values.some((v) => typeof v === "number" && Number.isNaN(v)));
+  t.is(flags.timeout, 30000);
+  t.is(flags.generateOptions.maxTokens, 50);
+});
+
+test("resolveBenchmarkFlags applies a preset", (t) => {
+  const flags = resolveBenchmarkFlags({ preset: "low" }, SAMPLING);
+
+  t.is(flags.serverOptions.threads, 4);
+  t.is(flags.serverOptions.gpuLayers, 0);
+  t.true(flags.serverOptions.cpuOnly);
+  t.is(flags.serverOptions.ctxSize, 2048);
+  t.is(flags.generateOptions.maxTokens, 128);
+  t.deepEqual(flags.errors, []);
+});
+
+test("resolveBenchmarkFlags: a preset wins over the individual flags", (t) => {
+  const flags = resolveBenchmarkFlags(
+    { preset: "ultra", ctxSize: "512", maxTokens: "1" },
+    SAMPLING,
+  );
+
+  t.is(flags.serverOptions.ctxSize, 16384);
+  t.is(flags.generateOptions.maxTokens, 1024);
+});
+
+test("resolveBenchmarkFlags rejects an unknown preset", (t) => {
+  const flags = resolveBenchmarkFlags({ preset: "turbo" }, SAMPLING);
+
+  t.is(flags.errors.length, 1);
+  t.true(flags.errors[0].includes("Invalid preset: turbo"));
+  t.true(flags.errors[0].includes("low, medium, high, ultra"));
+});
+
+test("resolveBenchmarkFlags reports a bad flag even when a preset wins", (t) => {
+  // The preset supplies the values, but a typo the user typed is still a typo.
+  const flags = resolveBenchmarkFlags(
+    { preset: "low", gpuLayers: "abc" },
+    SAMPLING,
+  );
+
+  t.is(flags.serverOptions.gpuLayers, 0); // low preset value
+  t.is(flags.errors.length, 1);
+  t.true(flags.errors[0].includes("--gpu-layers"));
 });
