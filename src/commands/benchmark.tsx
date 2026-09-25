@@ -295,6 +295,50 @@ export function BenchmarkCommand({options}: Props) {
 			}
 			const benchmarksDir = ensureBenchmarksDir();
 
+			// Load benchmark dataset before any expensive setup. An empty
+			// array would otherwise fall through to the summary and produce
+			// passRate: 0/0 = NaN, which JSON.stringify silently substitutes
+			// with null — and every downstream consumer then reads it as a
+			// believable 0% regression against any baseline.
+			let tests: BenchmarkTest[] = [];
+			const datasetPath = options.dataset || join(benchmarksDir, 'tests.json');
+
+			if (existsSync(datasetPath)) {
+				const content = readFileSync(datasetPath, 'utf-8');
+				tests = JSON.parse(content);
+				if (tests.length === 0) {
+					setError(
+						`Benchmark dataset is empty (${datasetPath}). Add at least one test.`,
+					);
+					setStatus('error');
+					return;
+				}
+			} else {
+				// Create sample benchmark file with examples of different match modes
+				tests = [
+					{
+						id: 1,
+						prompt: 'list all files',
+						acceptable: ['ls', 'ls -la', 'ls -a', 'ls -l'],
+						category: 'basic',
+						match: 'semantic',
+					},
+					{
+						id: 2,
+						prompt: 'show current directory',
+						acceptable: ['pwd'],
+						category: 'basic',
+						match: 'startsWith',
+					},
+				];
+				writeFileAtomic(datasetPath, JSON.stringify(tests, null, 2));
+				setError(
+					`No benchmark dataset found. Created sample at ${datasetPath}`,
+				);
+				setStatus('error');
+				return;
+			}
+
 			if (options.model && options.base) {
 				setError(
 					'`--model` and `--base` are mutually exclusive — `--base` resolves the model itself.',
@@ -426,46 +470,6 @@ export function BenchmarkCommand({options}: Props) {
 
 			if (!existsSync(modelPath)) {
 				setError(`Model not found: ${modelPath}`);
-				setStatus('error');
-				return;
-			}
-
-			// Load benchmark dataset
-			let tests: BenchmarkTest[] = [];
-			const datasetPath = options.dataset || join(benchmarksDir, 'tests.json');
-
-			if (existsSync(datasetPath)) {
-				const content = readFileSync(datasetPath, 'utf-8');
-				tests = JSON.parse(content);
-				if (tests.length === 0) {
-					setError(
-						`Benchmark dataset is empty (${datasetPath}). Add at least one test.`,
-					);
-					setStatus('error');
-					return;
-				}
-			} else {
-				// Create sample benchmark file with examples of different match modes
-				tests = [
-					{
-						id: 1,
-						prompt: 'list all files',
-						acceptable: ['ls', 'ls -la', 'ls -a', 'ls -l'],
-						category: 'basic',
-						match: 'semantic',
-					},
-					{
-						id: 2,
-						prompt: 'show current directory',
-						acceptable: ['pwd'],
-						category: 'basic',
-						match: 'startsWith',
-					},
-				];
-				writeFileAtomic(datasetPath, JSON.stringify(tests, null, 2));
-				setError(
-					`No benchmark dataset found. Created sample at ${datasetPath}`,
-				);
 				setStatus('error');
 				return;
 			}
