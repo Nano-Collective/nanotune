@@ -106,6 +106,18 @@ function example(userInput: string) {
   };
 }
 
+function multiTurnExample(...turns: { user: string; assistant: string }[]) {
+  return {
+    messages: [
+      { role: "system", content: "You are helpful." },
+      ...turns.flatMap((t) => [
+        { role: "user", content: t.user },
+        { role: "assistant", content: t.assistant },
+      ]),
+    ],
+  };
+}
+
 async function renderCommand(node: React.ReactElement, expectedString?: string) {
   const instance = render(node);
   
@@ -660,6 +672,48 @@ test.serial(
       t.is(userContent(loadTrainingData(true)[0]), "valid-one");
       t.is(loadTrainingData(false).length, 1);
       t.is(loadTrainingData(true).length, 1);
+    } finally {
+      process.stdin.isTTY = originalTTY;
+      teardown();
+    }
+  },
+);
+
+test.serial(
+  "DataListCommand edits the selected turn in a multi-turn example, not the first",
+  async (t) => {
+    // Regression for #135: picking a turn other than the first used to still
+    // resolve to (and overwrite) the first turn's messages.
+    const originalTTY = process.stdin.isTTY;
+    try {
+      setupProject();
+      writeExamples([
+        multiTurnExample(
+          { user: "turn1-in", assistant: "turn1-out" },
+          { user: "turn2-in", assistant: "turn2-out" },
+        ),
+      ]);
+      process.stdin.isTTY = true;
+
+      const instance = render(<DataListCommand />);
+      await settle();
+      instance.stdin.write("e"); // enter edit mode -> turn picker (2 turns)
+      await settle();
+      instance.stdin.write(KEY.down); // move to turn 2
+      await settle();
+      instance.stdin.write(KEY.enter); // select turn 2
+      await settle();
+      instance.stdin.write(KEY.enter); // submit user input unchanged
+      await settle();
+      instance.stdin.write(KEY.enter); // submit assistant output unchanged
+      await settle();
+      instance.unmount();
+
+      const messages = loadTrainingData(false)[0].messages;
+      t.is(messages[1].content, "turn1-in");
+      t.is(messages[2].content, "turn1-out");
+      t.is(messages[3].content, "turn2-in");
+      t.is(messages[4].content, "turn2-out");
     } finally {
       process.stdin.isTTY = originalTTY;
       teardown();

@@ -17,6 +17,8 @@ import {
   exportToJSON,
   exportToJSONL,
   fixContextMessages,
+  getAllTurnsContent,
+  getTurnContent,
   importFromCSV,
   importFromJSON,
   importFromJSONL,
@@ -907,6 +909,7 @@ test("mergeEditedTurn replaces user/assistant in place, preserving context", (t)
       { role: "user", content: "old-in" },
       { role: "assistant", content: "old-out" },
     ],
+    0,
     "new-in",
     "new-out",
   );
@@ -917,7 +920,7 @@ test("mergeEditedTurn replaces user/assistant in place, preserving context", (t)
   ]);
 });
 
-test("mergeEditedTurn only touches the first turn in a multi-turn example", (t) => {
+test("mergeEditedTurn with turnIndex 0 only touches the first turn in a multi-turn example", (t) => {
   const result = mergeEditedTurn(
     [
       { role: "system", content: "ctx" },
@@ -926,6 +929,7 @@ test("mergeEditedTurn only touches the first turn in a multi-turn example", (t) 
       { role: "user", content: "turn2-in" },
       { role: "assistant", content: "turn2-out" },
     ],
+    0,
     "new-in",
     "new-out",
   );
@@ -938,12 +942,114 @@ test("mergeEditedTurn only touches the first turn in a multi-turn example", (t) 
   ]);
 });
 
+test("mergeEditedTurn edits the second turn without touching the first", (t) => {
+  const result = mergeEditedTurn(
+    [
+      { role: "system", content: "ctx" },
+      { role: "user", content: "turn1-in" },
+      { role: "assistant", content: "turn1-out" },
+      { role: "user", content: "old-in" },
+      { role: "assistant", content: "old-out" },
+    ],
+    1,
+    "new-in",
+    "new-out",
+  );
+  t.deepEqual(result, [
+    { role: "system", content: "ctx" },
+    { role: "user", content: "turn1-in" },
+    { role: "assistant", content: "turn1-out" },
+    { role: "user", content: "new-in" },
+    { role: "assistant", content: "new-out" },
+  ]);
+});
+
+test("mergeEditedTurn edits the last turn in a 3-turn example", (t) => {
+  const result = mergeEditedTurn(
+    [
+      { role: "user", content: "turn1-in" },
+      { role: "assistant", content: "turn1-out" },
+      { role: "user", content: "turn2-in" },
+      { role: "assistant", content: "turn2-out" },
+      { role: "user", content: "old-in" },
+      { role: "assistant", content: "old-out" },
+    ],
+    2,
+    "new-in",
+    "new-out",
+  );
+  t.deepEqual(result, [
+    { role: "user", content: "turn1-in" },
+    { role: "assistant", content: "turn1-out" },
+    { role: "user", content: "turn2-in" },
+    { role: "assistant", content: "turn2-out" },
+    { role: "user", content: "new-in" },
+    { role: "assistant", content: "new-out" },
+  ]);
+});
+
+test("mergeEditedTurn respects turn boundaries around an interleaved context message", (t) => {
+  const result = mergeEditedTurn(
+    [
+      { role: "user", content: "turn1-in" },
+      { role: "assistant", content: "turn1-out" },
+      { role: "system", content: "between-turns ctx" },
+      { role: "user", content: "old-in" },
+      { role: "assistant", content: "old-out" },
+    ],
+    1,
+    "new-in",
+    "new-out",
+  );
+  t.deepEqual(result, [
+    { role: "user", content: "turn1-in" },
+    { role: "assistant", content: "turn1-out" },
+    { role: "system", content: "between-turns ctx" },
+    { role: "user", content: "new-in" },
+    { role: "assistant", content: "new-out" },
+  ]);
+});
+
+test("mergeEditedTurn inserts a missing assistant message in turn 2 without disturbing turn 1", (t) => {
+  const result = mergeEditedTurn(
+    [
+      { role: "user", content: "turn1-in" },
+      { role: "assistant", content: "turn1-out" },
+      { role: "user", content: "old-in" },
+    ],
+    1,
+    "new-in",
+    "new-out",
+  );
+  t.deepEqual(result, [
+    { role: "user", content: "turn1-in" },
+    { role: "assistant", content: "turn1-out" },
+    { role: "user", content: "new-in" },
+    { role: "assistant", content: "new-out" },
+  ]);
+});
+
+test("mergeEditedTurn throws when turnIndex is out of range", (t) => {
+  t.throws(() =>
+    mergeEditedTurn(
+      [
+        { role: "user", content: "turn1-in" },
+        { role: "assistant", content: "turn1-out" },
+      ],
+      1,
+      "new-in",
+      "new-out",
+    ),
+  );
+});
+
 test("mergeEditedTurn inserts a missing assistant message after the user message", (t) => {
   const result = mergeEditedTurn(
     [
       { role: "system", content: "ctx" },
       { role: "user", content: "old-in" },
     ],
+    0,
     "new-in",
     "new-out",
   );
@@ -960,6 +1066,7 @@ test("mergeEditedTurn inserts a missing user message before the assistant messag
       { role: "system", content: "ctx" },
       { role: "assistant", content: "old-out" },
     ],
+    0,
     "new-in",
     "new-out",
   );
@@ -973,6 +1080,7 @@ test("mergeEditedTurn inserts a missing user message before the assistant messag
 test("mergeEditedTurn preserves an unrecognized message and appends a new turn when neither role is present", (t) => {
   const result = mergeEditedTurn(
     [{ role: "system", content: "stray context-only example" }],
+    0,
     "new-in",
     "new-out",
   );
@@ -991,6 +1099,7 @@ test("mergeEditedTurn preserves multiple non-user/assistant messages untouched",
       { role: "user", content: "old-in" },
       { role: "assistant", content: "old-out" },
     ],
+    0,
     "new-in",
     "new-out",
   );
@@ -1000,6 +1109,107 @@ test("mergeEditedTurn preserves multiple non-user/assistant messages untouched",
     { role: "user", content: "new-in" },
     { role: "assistant", content: "new-out" },
   ]);
+});
+
+// ── getTurnContent ─────────────────────────────────────────────────────
+
+test("getTurnContent reads the first turn's content", (t) => {
+  t.deepEqual(
+    getTurnContent(
+      [
+        { role: "system", content: "ctx" },
+        { role: "user", content: "turn1-in" },
+        { role: "assistant", content: "turn1-out" },
+        { role: "user", content: "turn2-in" },
+        { role: "assistant", content: "turn2-out" },
+      ],
+      0,
+    ),
+    { userContent: "turn1-in", assistantContent: "turn1-out" },
+  );
+});
+
+test("getTurnContent reads a later turn's content", (t) => {
+  t.deepEqual(
+    getTurnContent(
+      [
+        { role: "user", content: "turn1-in" },
+        { role: "assistant", content: "turn1-out" },
+        { role: "user", content: "turn2-in" },
+        { role: "assistant", content: "turn2-out" },
+      ],
+      1,
+    ),
+    { userContent: "turn2-in", assistantContent: "turn2-out" },
+  );
+});
+
+test("getTurnContent returns an empty string for a turn missing its assistant message", (t) => {
+  t.deepEqual(
+    getTurnContent(
+      [
+        { role: "user", content: "turn1-in" },
+        { role: "assistant", content: "turn1-out" },
+        { role: "user", content: "turn2-in" },
+      ],
+      1,
+    ),
+    { userContent: "turn2-in", assistantContent: "" },
+  );
+});
+
+test("getTurnContent throws when turnIndex is out of range", (t) => {
+  t.throws(() =>
+    getTurnContent(
+      [
+        { role: "user", content: "turn1-in" },
+        { role: "assistant", content: "turn1-out" },
+      ],
+      1,
+    ),
+  );
+});
+
+// ── getAllTurnsContent ─────────────────────────────────────────────────
+
+test("getAllTurnsContent reads every turn in one pass", (t) => {
+  t.deepEqual(
+    getAllTurnsContent([
+      { role: "system", content: "ctx" },
+      { role: "user", content: "turn1-in" },
+      { role: "assistant", content: "turn1-out" },
+      { role: "user", content: "turn2-in" },
+      { role: "assistant", content: "turn2-out" },
+      { role: "user", content: "turn3-in" },
+      { role: "assistant", content: "turn3-out" },
+    ]),
+    [
+      { userContent: "turn1-in", assistantContent: "turn1-out" },
+      { userContent: "turn2-in", assistantContent: "turn2-out" },
+      { userContent: "turn3-in", assistantContent: "turn3-out" },
+    ],
+  );
+});
+
+test("getAllTurnsContent returns an empty array when there are no turns", (t) => {
+  t.deepEqual(
+    getAllTurnsContent([{ role: "system", content: "stray context-only" }]),
+    [],
+  );
+});
+
+test("getAllTurnsContent fills in an empty string for a turn missing its assistant message", (t) => {
+  t.deepEqual(
+    getAllTurnsContent([
+      { role: "user", content: "turn1-in" },
+      { role: "assistant", content: "turn1-out" },
+      { role: "user", content: "turn2-in" },
+    ]),
+    [
+      { userContent: "turn1-in", assistantContent: "turn1-out" },
+      { userContent: "turn2-in", assistantContent: "" },
+    ],
+  );
 });
 
 test.serial("countTurns counts user messages as turns", (t) => {
