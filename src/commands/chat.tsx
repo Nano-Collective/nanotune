@@ -419,7 +419,8 @@ export function ChatCommand({options}: Props) {
 						return;
 					}
 					try {
-						appendToTrainingData({contextMessage: systemMessage, ...exchange});
+						const kept = {contextMessage: systemMessage, ...exchange};
+						appendToTrainingData(kept, false);
 						appendTurn({
 							role: 'info',
 							content: `Kept last exchange (${countExamples()} examples total).`,
