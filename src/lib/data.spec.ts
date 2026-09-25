@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "ava";
 import type { TrainingExample } from "../types/index.js";
@@ -27,6 +27,7 @@ import {
   mergeEditedTurn,
   parseCSV,
   parseTrainingData,
+  saveTrainingData,
   splitTrainValidation,
   updateTrainingExample,
   validateTrainingData,
@@ -839,6 +840,37 @@ test.serial("exportToCSV escapes commas, quotes, and newlines and round-trips th
   t.is(rows[1][1], "ok");
 });
 
+test.serial("exportToCSV skips examples with missing user or assistant messages", (t) => {
+  // Example with no user message
+  const noUser: TrainingExample = {
+    messages: [
+      SYSTEM_CTX,
+      { role: "assistant", content: "hello" },
+    ],
+  };
+  appendTrainingExample(noUser, false);
+  
+  // Example with no assistant message
+  const noAssistant: TrainingExample = {
+    messages: [
+      SYSTEM_CTX,
+      { role: "user", content: "hi" },
+    ],
+  };
+  appendTrainingExample(noAssistant, false);
+  
+  // Valid example
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "good", assistantOutput: "example" }, false);
+
+  const outPath = join(TEST_DIR, "out.csv");
+  const result = exportToCSV(outPath);
+  t.is(result.exported, 1);
+  t.is(result.skipped, 2);
+  t.is(result.errors.length, 2);
+  t.true(result.errors[0].includes("missing user or assistant message"));
+  t.true(result.errors[1].includes("missing user or assistant message"));
+});
+
 test.serial("exportData dispatches to correct writer by extension", (t) => {
   appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" }, false);
 
@@ -1585,6 +1617,77 @@ test.serial(
     const result = splitTrainValidation(0.1, 1);
     t.is(result.validCount, 1);
     t.is(result.trainCount, 1);
+  },
+);
+
+// ── splitTrainValidation crash-safety (#162) ──────────────────────────
+
+test.serial(
+  "splitTrainValidation leaves train.jsonl fully intact when the write to valid.jsonl fails",
+  (t) => {
+    seedExamples(10);
+
+    // Deterministic stand-in for the issue's repro (mkdir over valid.jsonl,
+    // then Ctrl+C between the two writes): occupy valid.jsonl's path with a
+    // non-empty directory so the atomic rename inside saveTrainingData
+    // reliably fails, the same way an interrupted write would have lost data.
+    const validPath = join(DATA_DIR, "valid.jsonl");
+    mkdirSync(validPath, { recursive: true });
+    writeFileSync(join(validPath, "keep.txt"), "keep");
+
+    t.throws(() => splitTrainValidation(0.1, 1));
+
+    // valid.jsonl is written before train.jsonl is touched, so the failed
+    // first write must leave every original example still in train.jsonl —
+    // nothing removed, nothing held only in memory.
+    t.is(countExamples(false), 10);
+    const remaining = loadTrainingData(false)
+      .map((ex) => ex.messages[1].content)
+      .sort();
+    t.deepEqual(
+      remaining,
+      Array.from({ length: 10 }, (_, i) => `q${i}`).sort(),
+    );
+  },
+);
+
+test.serial(
+  "saveTrainingData leaves no temp file behind when the underlying write fails",
+  (t) => {
+    seedExamples(1);
+
+    const trainPath = join(DATA_DIR, "train.jsonl");
+    rmSync(trainPath, { force: true });
+    mkdirSync(trainPath, { recursive: true });
+    writeFileSync(join(trainPath, "keep.txt"), "keep");
+
+    t.throws(() => saveTrainingData([], false));
+
+    // The temp file created by writeFileAtomic must be cleaned up even
+    // though the rename never landed - no `train.jsonl.tmp-*` sibling left
+    // behind in the data directory.
+    const entries = readdirSync(DATA_DIR);
+    t.false(entries.some((name) => name.startsWith("train.jsonl.tmp-")));
+  },
+);
+
+test.serial(
+  "saveTrainingData writes atomically and leaves no temp file on success",
+  (t) => {
+    const examples: TrainingExample[] = [
+      { messages: [{ role: "user", content: "hello" }, { role: "assistant", content: "world" }] },
+    ];
+    
+    saveTrainingData(examples, false);
+    
+    // Data was written successfully
+    t.is(countExamples(false), 1);
+    const loaded = loadTrainingData(false);
+    t.deepEqual(loaded, examples);
+    
+    // No temp file left behind
+    const entries = readdirSync(DATA_DIR);
+    t.false(entries.some((name) => name.startsWith("train.jsonl.tmp-")));
   },
 );
 
