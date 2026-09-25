@@ -10,4 +10,5 @@ overrides:
   lodash: '>=4.17.24'
   minimatch: '>=10.2.3'
   picomatch: '>=4.0.4'
+  smol-toml: '>=1.7.1'
   tar: '>=7.5.21'
