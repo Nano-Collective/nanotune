@@ -400,6 +400,43 @@ test.serial("importFromCSV still skips a real header row", (t) => {
   t.is(data[0].messages[1].content, "list files");
 });
 
+test.serial("importFromCSV with headerless imports a literal input,output data row", (t) => {
+  // Regression test for #136: a headerless file whose first data row happens
+  // to literally be "input","output" must not be mistaken for a header.
+  const csvPath = join(TEST_DIR, "literal-input-output.csv");
+  writeFileSync(csvPath, '"input","output"\n"second row","second output"\n');
+
+  const result = importFromCSV(csvPath, SYSTEM_CTX, false, { headerless: true });
+  t.is(result.imported, 2);
+  t.is(result.skipped, 0);
+
+  const data = loadTrainingData();
+  t.is(data[0].messages[1].content, "input");
+  t.is(data[0].messages[2].content, "output");
+});
+
+test.serial("importFromCSV with headerless still imports a real header row as data", (t) => {
+  const csvPath = join(TEST_DIR, "headerless-real-header.csv");
+  writeFileSync(csvPath, 'input,output\n"list files","ls"\n');
+
+  const result = importFromCSV(csvPath, SYSTEM_CTX, false, { headerless: true });
+  t.is(result.imported, 2);
+  t.is(result.skipped, 0);
+
+  const data = loadTrainingData();
+  t.is(data[0].messages[1].content, "input");
+  t.is(data[0].messages[2].content, "output");
+});
+
+test.serial("importData forwards headerless to the CSV importer", (t) => {
+  const csvPath = join(TEST_DIR, "import-data-headerless.csv");
+  writeFileSync(csvPath, '"input","output"\n"second row","second output"\n');
+
+  const result = importData(csvPath, SYSTEM_CTX, false, { headerless: true });
+  t.is(result.imported, 2);
+  t.is(result.skipped, 0);
+});
+
 test.serial("importFromCSV does not treat a partial header match as a header", (t) => {
   const csvPath = join(TEST_DIR, "partial-header.csv");
   writeFileSync(csvPath, 'input,"not a header"\n"x","y"\n');

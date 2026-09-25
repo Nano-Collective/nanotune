@@ -25,9 +25,19 @@ interface Props {
 	/** Skip the y/n confirmation — needed to run under CI or in a pipeline. */
 	yes?: boolean;
 	isEval?: boolean;
+	/**
+	 * Treat a CSV file's first row as data, never as a header — needed when
+	 * that row is genuinely "input","output" rather than a header.
+	 */
+	headerless?: boolean;
 }
 
-export function DataImportCommand({file, yes, isEval = false}: Props) {
+export function DataImportCommand({
+	file,
+	yes,
+	isEval = false,
+	headerless = false,
+}: Props) {
 	const {exit} = useApp();
 	const [status, setStatus] = useState<
 		'preview' | 'importing' | 'done' | 'error'
@@ -67,6 +77,7 @@ export function DataImportCommand({file, yes, isEval = false}: Props) {
 				filePath,
 				resolveContextMessage(config),
 				isEval,
+				{headerless},
 			);
 
 			setResult(importResult);
@@ -75,7 +86,7 @@ export function DataImportCommand({file, yes, isEval = false}: Props) {
 			setError(err instanceof Error ? err.message : 'Import failed');
 			setStatus('error');
 		}
-	}, [file, isEval]);
+	}, [file, isEval, headerless]);
 
 	// `--yes` skips straight past the confirmation prompt.
 	useEffect(() => {
