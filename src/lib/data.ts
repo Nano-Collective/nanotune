@@ -7,7 +7,12 @@ import {
 } from 'node:fs';
 import {join} from 'node:path';
 import type {ChatMessage, TrainingExample} from '../types/index.js';
-import {getDataDir, loadConfig, resolveContextMessage} from './config.js';
+import {
+	getDataDir,
+	loadConfig,
+	resolveContextMessage,
+	writeFileAtomic,
+} from './config.js';
 
 function ensureDataDir(): void {
 	const dataDir = getDataDir();
@@ -132,7 +137,7 @@ export function saveTrainingData(
 	ensureDataDir();
 	const path = isEval ? getEvalDataPath() : getTrainDataPath();
 	const content = `${examples.map(ex => JSON.stringify(ex)).join('\n')}\n`;
-	writeFileSync(path, content);
+	writeFileAtomic(path, content);
 }
 
 export function deleteExample(index: number, isEval: boolean): void {
@@ -156,18 +161,97 @@ export function updateTrainingExample(
 }
 
 /**
- * Replaces the first user/assistant turn in `messages` with new content,
- * leaving every other message untouched — regardless of shape. Handles
- * examples missing a user and/or assistant message by inserting rather than
- * guessing a position, so malformed data is never silently dropped.
+ * Locates the `turnIndex`-th turn's user/assistant message positions.
+ * A turn is the Nth `user` message and the first `assistant` message
+ * following it, up to (but not including) the next `user` message —
+ * matching the pairing `countTurns` counts. Throws for a turn index past
+ * the last existing turn, so every caller shares one definition of
+ * "valid turn" rather than guessing independently.
+ */
+function turnBounds(
+	messages: ChatMessage[],
+	turnIndex: number,
+): {userIdx: number; assistantIdx: number} {
+	const userIndices: number[] = [];
+	messages.forEach((m, i) => {
+		if (m.role === 'user') userIndices.push(i);
+	});
+
+	if (turnIndex > 0 && turnIndex >= userIndices.length) {
+		throw new Error(`Turn ${turnIndex + 1} does not exist`);
+	}
+
+	const userIdx = turnIndex < userIndices.length ? userIndices[turnIndex] : -1;
+	const searchEnd =
+		userIdx >= 0
+			? (userIndices[turnIndex + 1] ?? messages.length)
+			: (userIndices[0] ?? messages.length);
+
+	let assistantIdx = -1;
+	for (let i = userIdx >= 0 ? userIdx + 1 : 0; i < searchEnd; i++) {
+		if (messages[i].role === 'assistant') {
+			assistantIdx = i;
+			break;
+		}
+	}
+	return {userIdx, assistantIdx};
+}
+
+/**
+ * Reads the current content of the `turnIndex`-th turn, for prefilling an
+ * edit form. A missing user/assistant message in that turn reads back as
+ * an empty string.
+ */
+export function getTurnContent(
+	messages: ChatMessage[],
+	turnIndex: number,
+): {userContent: string; assistantContent: string} {
+	const {userIdx, assistantIdx} = turnBounds(messages, turnIndex);
+	return {
+		userContent: userIdx >= 0 ? messages[userIdx].content : '',
+		assistantContent: assistantIdx >= 0 ? messages[assistantIdx].content : '',
+	};
+}
+
+/**
+ * Reads every turn's content in one pass, for populating a turn picker
+ * without re-scanning `messages` once per turn.
+ */
+export function getAllTurnsContent(
+	messages: ChatMessage[],
+): Array<{userContent: string; assistantContent: string}> {
+	const userIndices: number[] = [];
+	messages.forEach((m, i) => {
+		if (m.role === 'user') userIndices.push(i);
+	});
+
+	return userIndices.map((userIdx, turnIndex) => {
+		const searchEnd = userIndices[turnIndex + 1] ?? messages.length;
+		let assistantContent = '';
+		for (let i = userIdx + 1; i < searchEnd; i++) {
+			if (messages[i].role === 'assistant') {
+				assistantContent = messages[i].content;
+				break;
+			}
+		}
+		return {userContent: messages[userIdx].content, assistantContent};
+	});
+}
+
+/**
+ * Replaces the `turnIndex`-th user/assistant turn in `messages` with new
+ * content, leaving every other turn untouched — regardless of shape.
+ * Handles a turn missing a user and/or assistant message by inserting
+ * rather than guessing a position, so malformed data is never silently
+ * dropped.
  */
 export function mergeEditedTurn(
 	messages: ChatMessage[],
+	turnIndex: number,
 	userInput: string,
 	assistantOutput: string,
 ): ChatMessage[] {
-	const userIdx = messages.findIndex(m => m.role === 'user');
-	const assistantIdx = messages.findIndex(m => m.role === 'assistant');
+	const {userIdx, assistantIdx} = turnBounds(messages, turnIndex);
 
 	const updated = [...messages];
 	if (userIdx >= 0) updated[userIdx] = {role: 'user', content: userInput};
@@ -596,10 +680,20 @@ export function parseCSV(content: string): string[][] {
 	return rows;
 }
 
+export interface ImportCSVOptions {
+	/**
+	 * Treat row 0 as data unconditionally, skipping header auto-detection.
+	 * Needed when a headerless file's first data row is itself literally
+	 * "input","output" — otherwise indistinguishable from a real header.
+	 */
+	headerless?: boolean;
+}
+
 export function importFromCSV(
 	filePath: string,
 	contextMessage: ChatMessage,
 	isEval: boolean,
+	options: ImportCSVOptions = {},
 ): ImportResult {
 	const errors: string[] = [];
 	let imported = 0;
@@ -615,8 +709,12 @@ export function importFromCSV(
 	// Skip the first row only when it is exactly the two column names. Matching
 	// loosely — by substring, or on either column alone — silently drops real
 	// rows such as `"explain the input parameter","..."` or `"input","a value"`.
+	// `options.headerless` bypasses this entirely for callers who already know
+	// the file has no header, since a literal "input","output" data row is
+	// otherwise indistinguishable from a real header.
 	const firstRowLower = rows[0].map(c => c.trim().toLowerCase());
 	const hasHeader =
+		!options.headerless &&
 		firstRowLower.length >= 2 &&
 		firstRowLower[0] === 'input' &&
 		firstRowLower[1] === 'output';
@@ -776,6 +874,7 @@ export function importData(
 	filePath: string,
 	contextMessage: ChatMessage,
 	isEval: boolean,
+	csvOptions: ImportCSVOptions = {},
 ): ImportResult {
 	if (!existsSync(filePath)) {
 		return {imported: 0, skipped: 0, errors: ['File not found']};
@@ -785,7 +884,7 @@ export function importData(
 
 	switch (ext) {
 		case 'csv':
-			return importFromCSV(filePath, contextMessage, isEval);
+			return importFromCSV(filePath, contextMessage, isEval, csvOptions);
 		case 'jsonl':
 			return importFromJSONL(filePath, contextMessage, isEval);
 		case 'json':
@@ -936,9 +1035,13 @@ export function splitTrainValidation(
 	const trainExamples = shuffled.slice(0, trainCount);
 	const validExamples = shuffled.slice(trainCount);
 
-	// Save both files
-	saveTrainingData(trainExamples, false);
+	// Write valid.jsonl before truncating train.jsonl. Each write is atomic
+	// (writeFileAtomic), so the only interruption window left is between the
+	// two calls - and with this order that window's worst case is both files
+	// temporarily containing the validation examples (a recoverable
+	// duplicate), never train.jsonl losing them before they land anywhere.
 	saveTrainingData(validExamples, true);
+	saveTrainingData(trainExamples, false);
 
 	return {trainCount, validCount};
 }

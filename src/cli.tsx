@@ -79,19 +79,33 @@ dataCommand
 		'-e, --eval',
 		'Import into the validation set instead of training data',
 	)
-	.action(async (file: string, options: {yes?: boolean; eval?: boolean}) => {
-		const {DataImportCommand} = await import('./commands/data/import.js');
-		// Without a TTY there is no way to answer the prompt, so require --yes.
-		if (!options.yes && !supportsRawMode()) {
-			console.error(interactiveRequiredMessage('data import'));
-			console.error('Pass --yes to import without confirmation.');
-			process.exitCode = 1;
-			return;
-		}
-		render(
-			<DataImportCommand file={file} yes={options.yes} isEval={options.eval} />,
-		);
-	});
+	.option(
+		'--headerless',
+		"Treat a CSV file's first row as data, never as a header",
+	)
+	.action(
+		async (
+			file: string,
+			options: {yes?: boolean; eval?: boolean; headerless?: boolean},
+		) => {
+			const {DataImportCommand} = await import('./commands/data/import.js');
+			// Without a TTY there is no way to answer the prompt, so require --yes.
+			if (!options.yes && !supportsRawMode()) {
+				console.error(interactiveRequiredMessage('data import'));
+				console.error('Pass --yes to import without confirmation.');
+				process.exitCode = 1;
+				return;
+			}
+			render(
+				<DataImportCommand
+					file={file}
+					yes={options.yes}
+					isEval={options.eval}
+					headerless={options.headerless}
+				/>,
+			);
+		},
+	);
 
 dataCommand
 	.command('export <file>')
@@ -360,22 +374,38 @@ program
 // Clean command
 program
 	.command('clean')
-	.description('Remove the cached fused model to reclaim disk space')
+	.description('Remove cached models (fused and/or base) to reclaim disk space')
 	.option('-y, --yes', 'Skip the confirmation prompt (for scripts and CI)')
-	.action(async (options: {yes?: boolean}) => {
+	.option('--target <fused|base|all>', 'Which cache to clean (default: fused)')
+	.action(async (options: {yes?: boolean; target?: string}) => {
+		const {CleanCommand, validateCleanTarget} = await import(
+			'./commands/clean.js'
+		);
 		// Only require --yes when there's actually a confirmation to answer —
 		// "nothing to clean" and "not a project" are safe to just report.
 		if (!options.yes && !supportsRawMode()) {
 			const {configExists, getFusedModelDir, hasUsableFusedModel} =
 				await import('./lib/config.js');
-			if (configExists() && hasUsableFusedModel(getFusedModelDir())) {
+			const {hasBaseModelCache} = await import('./lib/model-cache.js');
+			const targetResult = validateCleanTarget(options.target);
+			const wantsFused =
+				!('error' in targetResult) &&
+				(targetResult.target === 'fused' || targetResult.target === 'all');
+			const wantsBase =
+				!('error' in targetResult) &&
+				(targetResult.target === 'base' || targetResult.target === 'all');
+			const hasSomethingToConfirm =
+				(wantsFused &&
+					configExists() &&
+					hasUsableFusedModel(getFusedModelDir())) ||
+				(wantsBase && hasBaseModelCache());
+			if (hasSomethingToConfirm) {
 				console.error(interactiveRequiredMessage('clean'));
 				console.error('Pass --yes to clean without confirmation.');
 				process.exitCode = 1;
 				return;
 			}
 		}
-		const {CleanCommand} = await import('./commands/clean.js');
 		render(<CleanCommand options={options} />);
 	});
 

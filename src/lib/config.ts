@@ -1,4 +1,5 @@
 import {
+	type Dirent,
 	existsSync,
 	mkdirSync,
 	readdirSync,
@@ -76,8 +77,16 @@ export function getDirectorySize(dirPath: string): number {
 	if (!existsSync(dirPath)) {
 		return 0;
 	}
+	let entries: Dirent[];
+	try {
+		entries = readdirSync(dirPath, {withFileTypes: true});
+	} catch {
+		// Permission error (or similar) reading the directory itself, as
+		// opposed to an entry inside it below — nothing to sum.
+		return 0;
+	}
 	let total = 0;
-	for (const entry of readdirSync(dirPath, {withFileTypes: true})) {
+	for (const entry of entries) {
 		const entryPath = join(dirPath, entry.name);
 		try {
 			if (entry.isDirectory()) {
@@ -98,12 +107,40 @@ export function getDirectorySize(dirPath: string): number {
  * empty or partially-written directory. `mlx_lm.fuse` creates `--save-path`
  * before it finishes writing weights, so directory existence alone isn't a
  * reliable signal that a fuse completed.
+ *
+ * A model sharded across multiple `.safetensors` files ships a
+ * `model.safetensors.index.json` naming every shard in its `weight_map` — so
+ * when that index exists, completeness means every shard it lists is present,
+ * not just any single one (an interrupt after shard 1 of N would otherwise
+ * still read as usable). Single-file models have no index; any `.safetensors`
+ * file is the whole model.
  */
 export function hasUsableFusedModel(dirPath: string): boolean {
 	if (!existsSync(dirPath)) {
 		return false;
 	}
-	return readdirSync(dirPath).some(name => name.endsWith('.safetensors'));
+	const indexPath = join(dirPath, 'model.safetensors.index.json');
+	if (existsSync(indexPath)) {
+		try {
+			const index = JSON.parse(readFileSync(indexPath, 'utf-8')) as {
+				weight_map?: Record<string, string>;
+			};
+			const shardNames = new Set(Object.values(index.weight_map ?? {}));
+			return (
+				shardNames.size > 0 &&
+				[...shardNames].every(name => existsSync(join(dirPath, name)))
+			);
+		} catch {
+			return false; // Malformed or still-being-written index.json.
+		}
+	}
+	let entries: string[];
+	try {
+		entries = readdirSync(dirPath);
+	} catch {
+		return false;
+	}
+	return entries.some(name => name.endsWith('.safetensors'));
 }
 
 /**

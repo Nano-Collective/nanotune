@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "ava";
 import type { TrainingExample } from "../types/index.js";
@@ -17,6 +17,8 @@ import {
   exportToJSON,
   exportToJSONL,
   fixContextMessages,
+  getAllTurnsContent,
+  getTurnContent,
   importFromCSV,
   importFromJSON,
   importFromJSONL,
@@ -25,6 +27,7 @@ import {
   mergeEditedTurn,
   parseCSV,
   parseTrainingData,
+  saveTrainingData,
   splitTrainValidation,
   updateTrainingExample,
   validateTrainingData,
@@ -396,6 +399,43 @@ test.serial("importFromCSV still skips a real header row", (t) => {
 
   const data = loadTrainingData();
   t.is(data[0].messages[1].content, "list files");
+});
+
+test.serial("importFromCSV with headerless imports a literal input,output data row", (t) => {
+  // Regression test for #136: a headerless file whose first data row happens
+  // to literally be "input","output" must not be mistaken for a header.
+  const csvPath = join(TEST_DIR, "literal-input-output.csv");
+  writeFileSync(csvPath, '"input","output"\n"second row","second output"\n');
+
+  const result = importFromCSV(csvPath, SYSTEM_CTX, false, { headerless: true });
+  t.is(result.imported, 2);
+  t.is(result.skipped, 0);
+
+  const data = loadTrainingData();
+  t.is(data[0].messages[1].content, "input");
+  t.is(data[0].messages[2].content, "output");
+});
+
+test.serial("importFromCSV with headerless still imports a real header row as data", (t) => {
+  const csvPath = join(TEST_DIR, "headerless-real-header.csv");
+  writeFileSync(csvPath, 'input,output\n"list files","ls"\n');
+
+  const result = importFromCSV(csvPath, SYSTEM_CTX, false, { headerless: true });
+  t.is(result.imported, 2);
+  t.is(result.skipped, 0);
+
+  const data = loadTrainingData();
+  t.is(data[0].messages[1].content, "input");
+  t.is(data[0].messages[2].content, "output");
+});
+
+test.serial("importData forwards headerless to the CSV importer", (t) => {
+  const csvPath = join(TEST_DIR, "import-data-headerless.csv");
+  writeFileSync(csvPath, '"input","output"\n"second row","second output"\n');
+
+  const result = importData(csvPath, SYSTEM_CTX, false, { headerless: true });
+  t.is(result.imported, 2);
+  t.is(result.skipped, 0);
 });
 
 test.serial("importFromCSV does not treat a partial header match as a header", (t) => {
@@ -800,6 +840,37 @@ test.serial("exportToCSV escapes commas, quotes, and newlines and round-trips th
   t.is(rows[1][1], "ok");
 });
 
+test.serial("exportToCSV skips examples with missing user or assistant messages", (t) => {
+  // Example with no user message
+  const noUser: TrainingExample = {
+    messages: [
+      SYSTEM_CTX,
+      { role: "assistant", content: "hello" },
+    ],
+  };
+  appendTrainingExample(noUser, false);
+  
+  // Example with no assistant message
+  const noAssistant: TrainingExample = {
+    messages: [
+      SYSTEM_CTX,
+      { role: "user", content: "hi" },
+    ],
+  };
+  appendTrainingExample(noAssistant, false);
+  
+  // Valid example
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "good", assistantOutput: "example" }, false);
+
+  const outPath = join(TEST_DIR, "out.csv");
+  const result = exportToCSV(outPath);
+  t.is(result.exported, 1);
+  t.is(result.skipped, 2);
+  t.is(result.errors.length, 2);
+  t.true(result.errors[0].includes("missing user or assistant message"));
+  t.true(result.errors[1].includes("missing user or assistant message"));
+});
+
 test.serial("exportData dispatches to correct writer by extension", (t) => {
   appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "A", assistantOutput: "B" }, false);
 
@@ -907,6 +978,7 @@ test("mergeEditedTurn replaces user/assistant in place, preserving context", (t)
       { role: "user", content: "old-in" },
       { role: "assistant", content: "old-out" },
     ],
+    0,
     "new-in",
     "new-out",
   );
@@ -917,7 +989,7 @@ test("mergeEditedTurn replaces user/assistant in place, preserving context", (t)
   ]);
 });
 
-test("mergeEditedTurn only touches the first turn in a multi-turn example", (t) => {
+test("mergeEditedTurn with turnIndex 0 only touches the first turn in a multi-turn example", (t) => {
   const result = mergeEditedTurn(
     [
       { role: "system", content: "ctx" },
@@ -926,6 +998,7 @@ test("mergeEditedTurn only touches the first turn in a multi-turn example", (t) 
       { role: "user", content: "turn2-in" },
       { role: "assistant", content: "turn2-out" },
     ],
+    0,
     "new-in",
     "new-out",
   );
@@ -938,12 +1011,114 @@ test("mergeEditedTurn only touches the first turn in a multi-turn example", (t) 
   ]);
 });
 
+test("mergeEditedTurn edits the second turn without touching the first", (t) => {
+  const result = mergeEditedTurn(
+    [
+      { role: "system", content: "ctx" },
+      { role: "user", content: "turn1-in" },
+      { role: "assistant", content: "turn1-out" },
+      { role: "user", content: "old-in" },
+      { role: "assistant", content: "old-out" },
+    ],
+    1,
+    "new-in",
+    "new-out",
+  );
+  t.deepEqual(result, [
+    { role: "system", content: "ctx" },
+    { role: "user", content: "turn1-in" },
+    { role: "assistant", content: "turn1-out" },
+    { role: "user", content: "new-in" },
+    { role: "assistant", content: "new-out" },
+  ]);
+});
+
+test("mergeEditedTurn edits the last turn in a 3-turn example", (t) => {
+  const result = mergeEditedTurn(
+    [
+      { role: "user", content: "turn1-in" },
+      { role: "assistant", content: "turn1-out" },
+      { role: "user", content: "turn2-in" },
+      { role: "assistant", content: "turn2-out" },
+      { role: "user", content: "old-in" },
+      { role: "assistant", content: "old-out" },
+    ],
+    2,
+    "new-in",
+    "new-out",
+  );
+  t.deepEqual(result, [
+    { role: "user", content: "turn1-in" },
+    { role: "assistant", content: "turn1-out" },
+    { role: "user", content: "turn2-in" },
+    { role: "assistant", content: "turn2-out" },
+    { role: "user", content: "new-in" },
+    { role: "assistant", content: "new-out" },
+  ]);
+});
+
+test("mergeEditedTurn respects turn boundaries around an interleaved context message", (t) => {
+  const result = mergeEditedTurn(
+    [
+      { role: "user", content: "turn1-in" },
+      { role: "assistant", content: "turn1-out" },
+      { role: "system", content: "between-turns ctx" },
+      { role: "user", content: "old-in" },
+      { role: "assistant", content: "old-out" },
+    ],
+    1,
+    "new-in",
+    "new-out",
+  );
+  t.deepEqual(result, [
+    { role: "user", content: "turn1-in" },
+    { role: "assistant", content: "turn1-out" },
+    { role: "system", content: "between-turns ctx" },
+    { role: "user", content: "new-in" },
+    { role: "assistant", content: "new-out" },
+  ]);
+});
+
+test("mergeEditedTurn inserts a missing assistant message in turn 2 without disturbing turn 1", (t) => {
+  const result = mergeEditedTurn(
+    [
+      { role: "user", content: "turn1-in" },
+      { role: "assistant", content: "turn1-out" },
+      { role: "user", content: "old-in" },
+    ],
+    1,
+    "new-in",
+    "new-out",
+  );
+  t.deepEqual(result, [
+    { role: "user", content: "turn1-in" },
+    { role: "assistant", content: "turn1-out" },
+    { role: "user", content: "new-in" },
+    { role: "assistant", content: "new-out" },
+  ]);
+});
+
+test("mergeEditedTurn throws when turnIndex is out of range", (t) => {
+  t.throws(() =>
+    mergeEditedTurn(
+      [
+        { role: "user", content: "turn1-in" },
+        { role: "assistant", content: "turn1-out" },
+      ],
+      1,
+      "new-in",
+      "new-out",
+    ),
+  );
+});
+
 test("mergeEditedTurn inserts a missing assistant message after the user message", (t) => {
   const result = mergeEditedTurn(
     [
       { role: "system", content: "ctx" },
       { role: "user", content: "old-in" },
     ],
+    0,
     "new-in",
     "new-out",
   );
@@ -960,6 +1135,7 @@ test("mergeEditedTurn inserts a missing user message before the assistant messag
       { role: "system", content: "ctx" },
       { role: "assistant", content: "old-out" },
     ],
+    0,
     "new-in",
     "new-out",
   );
@@ -973,6 +1149,7 @@ test("mergeEditedTurn inserts a missing user message before the assistant messag
 test("mergeEditedTurn preserves an unrecognized message and appends a new turn when neither role is present", (t) => {
   const result = mergeEditedTurn(
     [{ role: "system", content: "stray context-only example" }],
+    0,
     "new-in",
     "new-out",
   );
@@ -991,6 +1168,7 @@ test("mergeEditedTurn preserves multiple non-user/assistant messages untouched",
       { role: "user", content: "old-in" },
       { role: "assistant", content: "old-out" },
     ],
+    0,
     "new-in",
     "new-out",
   );
@@ -1000,6 +1178,107 @@ test("mergeEditedTurn preserves multiple non-user/assistant messages untouched",
     { role: "user", content: "new-in" },
     { role: "assistant", content: "new-out" },
   ]);
+});
+
+// ── getTurnContent ─────────────────────────────────────────────────────
+
+test("getTurnContent reads the first turn's content", (t) => {
+  t.deepEqual(
+    getTurnContent(
+      [
+        { role: "system", content: "ctx" },
+        { role: "user", content: "turn1-in" },
+        { role: "assistant", content: "turn1-out" },
+        { role: "user", content: "turn2-in" },
+        { role: "assistant", content: "turn2-out" },
+      ],
+      0,
+    ),
+    { userContent: "turn1-in", assistantContent: "turn1-out" },
+  );
+});
+
+test("getTurnContent reads a later turn's content", (t) => {
+  t.deepEqual(
+    getTurnContent(
+      [
+        { role: "user", content: "turn1-in" },
+        { role: "assistant", content: "turn1-out" },
+        { role: "user", content: "turn2-in" },
+        { role: "assistant", content: "turn2-out" },
+      ],
+      1,
+    ),
+    { userContent: "turn2-in", assistantContent: "turn2-out" },
+  );
+});
+
+test("getTurnContent returns an empty string for a turn missing its assistant message", (t) => {
+  t.deepEqual(
+    getTurnContent(
+      [
+        { role: "user", content: "turn1-in" },
+        { role: "assistant", content: "turn1-out" },
+        { role: "user", content: "turn2-in" },
+      ],
+      1,
+    ),
+    { userContent: "turn2-in", assistantContent: "" },
+  );
+});
+
+test("getTurnContent throws when turnIndex is out of range", (t) => {
+  t.throws(() =>
+    getTurnContent(
+      [
+        { role: "user", content: "turn1-in" },
+        { role: "assistant", content: "turn1-out" },
+      ],
+      1,
+    ),
+  );
+});
+
+// ── getAllTurnsContent ─────────────────────────────────────────────────
+
+test("getAllTurnsContent reads every turn in one pass", (t) => {
+  t.deepEqual(
+    getAllTurnsContent([
+      { role: "system", content: "ctx" },
+      { role: "user", content: "turn1-in" },
+      { role: "assistant", content: "turn1-out" },
+      { role: "user", content: "turn2-in" },
+      { role: "assistant", content: "turn2-out" },
+      { role: "user", content: "turn3-in" },
+      { role: "assistant", content: "turn3-out" },
+    ]),
+    [
+      { userContent: "turn1-in", assistantContent: "turn1-out" },
+      { userContent: "turn2-in", assistantContent: "turn2-out" },
+      { userContent: "turn3-in", assistantContent: "turn3-out" },
+    ],
+  );
+});
+
+test("getAllTurnsContent returns an empty array when there are no turns", (t) => {
+  t.deepEqual(
+    getAllTurnsContent([{ role: "system", content: "stray context-only" }]),
+    [],
+  );
+});
+
+test("getAllTurnsContent fills in an empty string for a turn missing its assistant message", (t) => {
+  t.deepEqual(
+    getAllTurnsContent([
+      { role: "user", content: "turn1-in" },
+      { role: "assistant", content: "turn1-out" },
+      { role: "user", content: "turn2-in" },
+    ]),
+    [
+      { userContent: "turn1-in", assistantContent: "turn1-out" },
+      { userContent: "turn2-in", assistantContent: "" },
+    ],
+  );
 });
 
 test.serial("countTurns counts user messages as turns", (t) => {
@@ -1338,6 +1617,77 @@ test.serial(
     const result = splitTrainValidation(0.1, 1);
     t.is(result.validCount, 1);
     t.is(result.trainCount, 1);
+  },
+);
+
+// ── splitTrainValidation crash-safety (#162) ──────────────────────────
+
+test.serial(
+  "splitTrainValidation leaves train.jsonl fully intact when the write to valid.jsonl fails",
+  (t) => {
+    seedExamples(10);
+
+    // Deterministic stand-in for the issue's repro (mkdir over valid.jsonl,
+    // then Ctrl+C between the two writes): occupy valid.jsonl's path with a
+    // non-empty directory so the atomic rename inside saveTrainingData
+    // reliably fails, the same way an interrupted write would have lost data.
+    const validPath = join(DATA_DIR, "valid.jsonl");
+    mkdirSync(validPath, { recursive: true });
+    writeFileSync(join(validPath, "keep.txt"), "keep");
+
+    t.throws(() => splitTrainValidation(0.1, 1));
+
+    // valid.jsonl is written before train.jsonl is touched, so the failed
+    // first write must leave every original example still in train.jsonl —
+    // nothing removed, nothing held only in memory.
+    t.is(countExamples(false), 10);
+    const remaining = loadTrainingData(false)
+      .map((ex) => ex.messages[1].content)
+      .sort();
+    t.deepEqual(
+      remaining,
+      Array.from({ length: 10 }, (_, i) => `q${i}`).sort(),
+    );
+  },
+);
+
+test.serial(
+  "saveTrainingData leaves no temp file behind when the underlying write fails",
+  (t) => {
+    seedExamples(1);
+
+    const trainPath = join(DATA_DIR, "train.jsonl");
+    rmSync(trainPath, { force: true });
+    mkdirSync(trainPath, { recursive: true });
+    writeFileSync(join(trainPath, "keep.txt"), "keep");
+
+    t.throws(() => saveTrainingData([], false));
+
+    // The temp file created by writeFileAtomic must be cleaned up even
+    // though the rename never landed - no `train.jsonl.tmp-*` sibling left
+    // behind in the data directory.
+    const entries = readdirSync(DATA_DIR);
+    t.false(entries.some((name) => name.startsWith("train.jsonl.tmp-")));
+  },
+);
+
+test.serial(
+  "saveTrainingData writes atomically and leaves no temp file on success",
+  (t) => {
+    const examples: TrainingExample[] = [
+      { messages: [{ role: "user", content: "hello" }, { role: "assistant", content: "world" }] },
+    ];
+    
+    saveTrainingData(examples, false);
+    
+    // Data was written successfully
+    t.is(countExamples(false), 1);
+    const loaded = loadTrainingData(false);
+    t.deepEqual(loaded, examples);
+    
+    // No temp file left behind
+    const entries = readdirSync(DATA_DIR);
+    t.false(entries.some((name) => name.startsWith("train.jsonl.tmp-")));
   },
 );
 
