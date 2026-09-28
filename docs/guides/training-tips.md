@@ -50,15 +50,13 @@ The most effective approach is an iterative cycle of training and benchmarking:
 
 1. **Train** your model with the current dataset
 2. **Benchmark** to measure accuracy and identify failures
-3. **Review** the markdown report — focus on failed tests
-4. **Add training examples** that address the specific failures
-5. **Re-train and benchmark** again
+3. **Review** the failures and correct them into training examples
+4. **Re-train and benchmark** again
 
 ```bash
 nanotune train
 nanotune benchmark --preset medium
-# Review .nanotune/benchmarks/benchmark-*.md
-nanotune data add    # Add examples for failures
+nanotune benchmark review    # Walk each failure, type a corrected answer
 nanotune train
 nanotune benchmark --preset medium
 ```
