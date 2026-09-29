@@ -16,7 +16,7 @@ import type {
 	JudgeResult,
 } from '../types/index.js';
 import {getProjectDir} from './config.js';
-import {substituteEnvVars} from './env-substitution.js';
+import {isUnresolvedEnvRef, substituteEnvVars} from './env-substitution.js';
 
 const JUDGE_CONFIG_FILE = 'judge.json';
 
@@ -62,7 +62,22 @@ export function loadJudgeConfig(): JudgeProviderConfig {
 		);
 	}
 	const raw = JSON.parse(readFileSync(path, 'utf-8')) as JudgeProviderConfig;
-	return substituteEnvVars(raw);
+	const config = substituteEnvVars(raw);
+
+	// An unset `${VAR}` is left in place rather than blanked, so say which one is
+	// missing. Letting it through means a placeholder or empty credential reaches
+	// the provider, and the 401 that comes back reads as a bad account rather than
+	// an unexported shell variable.
+	for (const [field, value] of Object.entries(config)) {
+		if (isUnresolvedEnvRef(value)) {
+			throw new Error(
+				`judge.json "${field}" is set to ${value}, but that environment variable ` +
+					'is not set. Export it, or give it a default with ${VAR:-value}.',
+			);
+		}
+	}
+
+	return config;
 }
 
 /**
@@ -128,7 +143,10 @@ function createJudgeProvider(config: JudgeProviderConfig) {
 	return createOpenAICompatible({
 		name: config.name,
 		baseURL: config.baseUrl,
-		apiKey: config.apiKey ?? 'dummy-key',
+		// `||` and not `??`: an apiKey of '' means no key was configured, which is
+		// what local servers want. `??` let the empty string through and sent an
+		// empty bearer token instead of the placeholder these providers expect.
+		apiKey: config.apiKey || 'dummy-key',
 	});
 }
 

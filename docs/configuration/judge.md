@@ -48,6 +48,25 @@ Default values are also supported:
 
 This resolves at runtime from your shell environment, so the actual key is never stored in the config file.
 
+A value is substituted only when it is *entirely* one reference. Anything else
+is a literal and is used exactly as written, so a key pasted from a provider
+console survives even when it contains `$`:
+
+| Value | Result |
+|-------|--------|
+| `"${OPENROUTER_API_KEY}"` | the variable's value |
+| `"${OPENROUTER_API_KEY:-sk-default}"` | the variable's value, or `sk-default` if unset |
+| `"sk-ant-api03-AB$CD-EF"` | used as-is |
+| `"https://${REGION}.example.com/v1"` | used as-is — not a whole-value reference |
+
+If a referenced variable is unset and has no default, nanotune stops and names
+it rather than sending a blank credential:
+
+```
+judge.json "apiKey" is set to ${OPENROUTER_API_KEY}, but that environment
+variable is not set. Export it, or give it a default with ${VAR:-value}.
+```
+
 ## Supported Providers
 
 ### Cloud Providers
