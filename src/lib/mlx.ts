@@ -383,6 +383,7 @@ export async function* runTraining(
 	// config. Directory creation happens inside the try so a failed write still
 	// gets cleaned up in the finally below rather than leaking a temp dir.
 	let loraConfigDir: string | null = null;
+	let detachAbort: (() => void) | null = null;
 	try {
 		let loraConfigPath: string | undefined;
 		if (needsLoraConfig(options.fineTuneType)) {
@@ -408,7 +409,7 @@ export async function* runTraining(
 			},
 		);
 
-		stopOnAbort(subprocess, options.signal);
+		detachAbort = stopOnAbort(subprocess, options.signal);
 
 		const stdout = subprocess.stdout;
 		const stderr = subprocess.stderr;
@@ -478,6 +479,7 @@ export async function* runTraining(
 			throw err;
 		}
 	} finally {
+		detachAbort?.();
 		if (loraConfigDir) {
 			rmSync(loraConfigDir, {recursive: true, force: true});
 		}
@@ -505,21 +507,25 @@ export async function fuseAdapters(
  * Stop `subprocess` as soon as `signal` aborts. Split out from `runTraining`
  * so the wiring — including a signal that is already aborted, which never
  * fires an `abort` event — is testable without spawning a trainer.
+ *
+ * Returns a detach function. Callers must invoke it once the run is over:
+ * a caller-owned signal outlives the subprocess, and a listener left attached
+ * would signal a dead (or PID-recycled) process on a later abort.
  */
 export function stopOnAbort(
 	subprocess: ResultPromise,
 	signal?: AbortSignal,
-): void {
+): () => void {
 	if (!signal) {
-		return;
+		return () => {};
 	}
 	if (signal.aborted) {
 		abortTraining(subprocess);
-		return;
+		return () => {};
 	}
-	signal.addEventListener('abort', () => abortTraining(subprocess), {
-		once: true,
-	});
+	const onAbort = () => abortTraining(subprocess);
+	signal.addEventListener('abort', onAbort, {once: true});
+	return () => signal.removeEventListener('abort', onAbort);
 }
 
 export function abortTraining(subprocess: ResultPromise): void {

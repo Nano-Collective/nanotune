@@ -8,6 +8,8 @@ import {
 	countExamples,
 	countTurns,
 	deleteExample,
+	getAllTurnsContent,
+	getTurnContent,
 	loadTrainingData,
 	mergeEditedTurn,
 	parseTrainingData,
@@ -40,6 +42,8 @@ export function DataListCommand({isEval = false}: Props) {
 	const [hasConfig] = useState(() => configExists());
 
 	const [editIndex, setEditIndex] = useState<number | null>(null);
+	const [editTurnIndex, setEditTurnIndex] = useState<number | null>(null);
+	const [turnPickerIndex, setTurnPickerIndex] = useState(0);
 	const [editField, setEditField] = useState<EditField>('input');
 	const [editInput, setEditInput] = useState('');
 	const [editOutput, setEditOutput] = useState('');
@@ -50,12 +54,13 @@ export function DataListCommand({isEval = false}: Props) {
 	const pageData = data.slice(startIndex, startIndex + PAGE_SIZE);
 
 	const saveEdit = (userInput: string, assistantOutput: string) => {
-		if (editIndex === null) return;
+		if (editIndex === null || editTurnIndex === null) return;
 		try {
 			const original = data[editIndex];
 			const updated: {messages: ChatMessage[]} = {
 				messages: mergeEditedTurn(
 					original.messages,
+					editTurnIndex,
 					userInput,
 					assistantOutput,
 				),
@@ -64,6 +69,7 @@ export function DataListCommand({isEval = false}: Props) {
 			setData(loadTrainingData(isEval));
 			setExpandedIndex(null);
 			setEditIndex(null);
+			setEditTurnIndex(null);
 			setEditError(null);
 			setMessage({type: 'success', text: 'Example updated'});
 			setTimeout(() => setMessage(null), 2000);
@@ -92,7 +98,24 @@ export function DataListCommand({isEval = false}: Props) {
 	};
 
 	useKeyInput((_input, key) => {
-		if (editIndex === null) return;
+		if (editIndex === null || editTurnIndex === null) return;
+
+		if (key.escape) {
+			setEditIndex(null);
+			setEditTurnIndex(null);
+			setEditError(null);
+			return;
+		}
+
+		if (key.tab) {
+			setEditField(f => (f === 'input' ? 'output' : 'input'));
+		}
+	});
+
+	useKeyInput((_input, key) => {
+		if (editIndex === null || editTurnIndex !== null) return;
+		const ex = data[editIndex];
+		const totalTurns = ex ? countTurns(ex) : 0;
 
 		if (key.escape) {
 			setEditIndex(null);
@@ -100,8 +123,24 @@ export function DataListCommand({isEval = false}: Props) {
 			return;
 		}
 
-		if (key.tab) {
-			setEditField(f => (f === 'input' ? 'output' : 'input'));
+		if (key.upArrow) {
+			setTurnPickerIndex(i => Math.max(0, i - 1));
+		}
+
+		if (key.downArrow) {
+			setTurnPickerIndex(i => Math.min(totalTurns - 1, i + 1));
+		}
+
+		if (key.return && ex) {
+			const {userContent, assistantContent} = getTurnContent(
+				ex.messages,
+				turnPickerIndex,
+			);
+			setEditTurnIndex(turnPickerIndex);
+			setEditInput(userContent);
+			setEditOutput(assistantContent);
+			setEditField('input');
+			setEditError(null);
 		}
 	});
 
@@ -181,14 +220,24 @@ export function DataListCommand({isEval = false}: Props) {
 			const globalIndex = startIndex + selectedIndex;
 			if (globalIndex < data.length) {
 				const ex = data[globalIndex];
-				const userMsg = ex.messages.find(m => m.role === 'user');
-				const assistantMsg = ex.messages.find(m => m.role === 'assistant');
+				const totalTurns = countTurns(ex);
 				setEditIndex(globalIndex);
-				setEditInput(userMsg?.content ?? '');
-				setEditOutput(assistantMsg?.content ?? '');
-				setEditField('input');
 				setEditError(null);
 				setExpandedIndex(null);
+
+				if (totalTurns <= 1) {
+					const {userContent, assistantContent} = getTurnContent(
+						ex.messages,
+						0,
+					);
+					setEditTurnIndex(0);
+					setEditInput(userContent);
+					setEditOutput(assistantContent);
+					setEditField('input');
+				} else {
+					setEditTurnIndex(null);
+					setTurnPickerIndex(0);
+				}
 			}
 		}
 	});
@@ -220,9 +269,35 @@ export function DataListCommand({isEval = false}: Props) {
 		expandedIndex !== null ? pageData[expandedIndex] : null;
 
 	const editingExample = editIndex !== null ? data[editIndex] : null;
-	const editExtraTurns = editingExample ? countTurns(editingExample) - 1 : 0;
+	const editTotalTurns = editingExample ? countTurns(editingExample) : 0;
 
-	if (editingExample && editIndex !== null) {
+	if (editingExample && editIndex !== null && editTurnIndex === null) {
+		const turnRows = getAllTurnsContent(editingExample.messages).map(
+			({userContent, assistantContent}, i) => [
+				String(i + 1),
+				userContent,
+				assistantContent,
+			],
+		);
+
+		return (
+			<Box flexDirection="column" padding={1}>
+				<Header title={`Editing Example #${editIndex + 1} — select a turn`} />
+
+				<DataTable
+					headers={['Turn', 'Input', 'Output']}
+					rows={turnRows}
+					columnWidths={[6, 30, 30]}
+					selectedIndex={turnPickerIndex}
+				/>
+
+				<Text> </Text>
+				<Text dimColor>[Up/Down] Navigate [Enter] Select [Esc] Cancel</Text>
+			</Box>
+		);
+	}
+
+	if (editingExample && editIndex !== null && editTurnIndex !== null) {
 		return (
 			<Box flexDirection="column" padding={1}>
 				<Header title={`Editing Example #${editIndex + 1}`} />
@@ -233,11 +308,10 @@ export function DataListCommand({isEval = false}: Props) {
 					</Box>
 				)}
 
-				{editExtraTurns > 0 && (
+				{editTotalTurns > 1 && (
 					<Box marginBottom={1}>
 						<Text dimColor>
-							{editExtraTurns} additional turn{editExtraTurns > 1 ? 's' : ''}{' '}
-							preserved, not edited here.
+							Editing turn {editTurnIndex + 1} of {editTotalTurns}.
 						</Text>
 					</Box>
 				)}

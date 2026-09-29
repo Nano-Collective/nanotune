@@ -3,6 +3,8 @@ import {readFileSync} from 'node:fs';
 import {Command} from 'commander';
 import {render as inkRender} from 'ink';
 import type {ReactElement} from 'react';
+import type {BenchmarkRunOptions} from './lib/benchmark-run.js';
+import {getBenchmarksDir, sweepStaleAtomicWrites} from './lib/config.js';
 import {interactiveRequiredMessage, supportsRawMode} from './lib/tty.js';
 
 const pkg = JSON.parse(
@@ -79,19 +81,33 @@ dataCommand
 		'-e, --eval',
 		'Import into the validation set instead of training data',
 	)
-	.action(async (file: string, options: {yes?: boolean; eval?: boolean}) => {
-		const {DataImportCommand} = await import('./commands/data/import.js');
-		// Without a TTY there is no way to answer the prompt, so require --yes.
-		if (!options.yes && !supportsRawMode()) {
-			console.error(interactiveRequiredMessage('data import'));
-			console.error('Pass --yes to import without confirmation.');
-			process.exitCode = 1;
-			return;
-		}
-		render(
-			<DataImportCommand file={file} yes={options.yes} isEval={options.eval} />,
-		);
-	});
+	.option(
+		'--headerless',
+		"Treat a CSV file's first row as data, never as a header",
+	)
+	.action(
+		async (
+			file: string,
+			options: {yes?: boolean; eval?: boolean; headerless?: boolean},
+		) => {
+			const {DataImportCommand} = await import('./commands/data/import.js');
+			// Without a TTY there is no way to answer the prompt, so require --yes.
+			if (!options.yes && !supportsRawMode()) {
+				console.error(interactiveRequiredMessage('data import'));
+				console.error('Pass --yes to import without confirmation.');
+				process.exitCode = 1;
+				return;
+			}
+			render(
+				<DataImportCommand
+					file={file}
+					yes={options.yes}
+					isEval={options.eval}
+					headerless={options.headerless}
+				/>,
+			);
+		},
+	);
 
 dataCommand
 	.command('export <file>')
@@ -147,7 +163,7 @@ dataCommand
 				const {emitJson} = await import('./lib/json-output.js');
 				// Invalid data still prints its report — the report is the useful
 				// part — but exits non-zero, matching the Ink path's exit code.
-				emitJson(
+				await emitJson(
 					() =>
 						collectValidation({
 							fix: options.fix,
@@ -254,7 +270,30 @@ const benchmarkCommand = program
 		'--samples <n>',
 		'Run each test n times and report pass rate and variance (default: 1)',
 	)
-	.action(async options => {
+	.option('--json', 'Print the benchmark result as JSON on stdout')
+	.action(async (options: BenchmarkRunOptions & {json?: boolean}) => {
+		if (options.json) {
+			const {formatEventForStderr, runBenchmark} = await import(
+				'./lib/benchmark-run.js'
+			);
+			const {emitJson} = await import('./lib/json-output.js');
+			// A suite can run for minutes, so progress goes to stderr rather than
+			// leaving the caller staring at nothing — stdout stays empty until
+			// the one JSON document.
+			await emitJson(async () => {
+				for await (const event of runBenchmark(options)) {
+					if (event.type === 'done') {
+						return event.result;
+					}
+					const line = formatEventForStderr(event);
+					if (line) {
+						process.stderr.write(`${line}\n`);
+					}
+				}
+				throw new Error('Benchmark finished without producing a result.');
+			});
+			return;
+		}
 		const {BenchmarkCommand} = await import('./commands/benchmark.js');
 		render(<BenchmarkCommand options={options} />);
 	});
@@ -335,32 +374,53 @@ program
 		if (options.json) {
 			const {collectStatus} = await import('./lib/status.js');
 			const {emitJson} = await import('./lib/json-output.js');
-			emitJson(collectStatus);
+			await emitJson(collectStatus);
 			return;
 		}
 		const {StatusCommand} = await import('./commands/status.js');
 		render(<StatusCommand />);
 	});
 
+// Reap `.tmp-<pid>` leftovers from a previous run that was killed mid-write
+// before its own cleanup could run. Cheap (no-op when the directory doesn't
+// exist) and keeps a crashed `benchmark` from accumulating garbage forever.
+sweepStaleAtomicWrites(getBenchmarksDir());
+
 // Clean command
 program
 	.command('clean')
-	.description('Remove the cached fused model to reclaim disk space')
+	.description('Remove cached models (fused and/or base) to reclaim disk space')
 	.option('-y, --yes', 'Skip the confirmation prompt (for scripts and CI)')
-	.action(async (options: {yes?: boolean}) => {
+	.option('--target <fused|base|all>', 'Which cache to clean (default: fused)')
+	.action(async (options: {yes?: boolean; target?: string}) => {
+		const {CleanCommand, validateCleanTarget} = await import(
+			'./commands/clean.js'
+		);
 		// Only require --yes when there's actually a confirmation to answer —
 		// "nothing to clean" and "not a project" are safe to just report.
 		if (!options.yes && !supportsRawMode()) {
 			const {configExists, getFusedModelDir, hasUsableFusedModel} =
 				await import('./lib/config.js');
-			if (configExists() && hasUsableFusedModel(getFusedModelDir())) {
+			const {hasBaseModelCache} = await import('./lib/model-cache.js');
+			const targetResult = validateCleanTarget(options.target);
+			const wantsFused =
+				!('error' in targetResult) &&
+				(targetResult.target === 'fused' || targetResult.target === 'all');
+			const wantsBase =
+				!('error' in targetResult) &&
+				(targetResult.target === 'base' || targetResult.target === 'all');
+			const hasSomethingToConfirm =
+				(wantsFused &&
+					configExists() &&
+					hasUsableFusedModel(getFusedModelDir())) ||
+				(wantsBase && hasBaseModelCache());
+			if (hasSomethingToConfirm) {
 				console.error(interactiveRequiredMessage('clean'));
 				console.error('Pass --yes to clean without confirmation.');
 				process.exitCode = 1;
 				return;
 			}
 		}
-		const {CleanCommand} = await import('./commands/clean.js');
 		render(<CleanCommand options={options} />);
 	});
 

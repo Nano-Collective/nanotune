@@ -211,8 +211,56 @@ test("stopOnAbort signals only once", (t) => {
 
 test("stopOnAbort without a signal never touches the subprocess", (t) => {
   const { subprocess, signals } = fakeSubprocess();
-  stopOnAbort(subprocess, undefined);
+  const detach = stopOnAbort(subprocess, undefined);
+  detach();
   t.deepEqual(signals, []);
+});
+
+test("stopOnAbort detach stops a later abort from signalling a dead process", (t) => {
+  // A caller-owned signal outlives the run: once training is over, aborting it
+  // must not SIGINT a closed subprocess whose PID may have been recycled.
+  const { subprocess, signals } = fakeSubprocess();
+  const controller = new AbortController();
+  const detach = stopOnAbort(subprocess, controller.signal);
+
+  detach();
+  controller.abort();
+
+  t.deepEqual(signals, []);
+});
+
+test("stopOnAbort detach is safe to call twice", (t) => {
+  const { subprocess, signals } = fakeSubprocess();
+  const controller = new AbortController();
+  const detach = stopOnAbort(subprocess, controller.signal);
+
+  detach();
+  detach();
+  controller.abort();
+
+  t.deepEqual(signals, []);
+});
+
+test("stopOnAbort detach after an abort leaves the stop intact", (t) => {
+  const { subprocess, signals } = fakeSubprocess();
+  const controller = new AbortController();
+  const detach = stopOnAbort(subprocess, controller.signal);
+
+  controller.abort();
+  detach();
+
+  t.deepEqual(signals, ["SIGINT"]);
+});
+
+test("stopOnAbort detach for an already-aborted signal is a no-op", (t) => {
+  const { subprocess, signals } = fakeSubprocess();
+  const controller = new AbortController();
+  controller.abort();
+
+  const detach = stopOnAbort(subprocess, controller.signal);
+  detach();
+
+  t.deepEqual(signals, ["SIGINT"]);
 });
 
 test("stopOnAbort terminates a real running child process", async (t) => {

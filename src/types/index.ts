@@ -185,6 +185,14 @@ export interface BenchmarkResult {
 	};
 	/** True when this run benchmarked the base (pre-fine-tuning) model as a control. */
 	isBase?: boolean;
+	/**
+	 * Why the run stopped early, when it did — currently only a llama-server
+	 * that exited mid-suite. Present on a partial run and absent on a complete
+	 * one, so a consumer can tell the two apart: `summary` already scores
+	 * against the tests that actually ran, which on its own reads exactly like
+	 * a complete run with a different pass rate.
+	 */
+	warning?: string;
 	summary: {
 		total: number;
 		passed: number;
