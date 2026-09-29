@@ -1,0 +1,5 @@
+---
+'@nanocollective/nanotune': patch
+---
+
+`nanotune benchmark` and `nanotune chat` now reject numeric flags they cannot parse instead of running under a value you never typed. They used `parseInt`/`parseFloat` with no check, so `--ctx-size 4096x` quietly became `4096`, and anything that failed outright became `NaN` and reached llama-server: `--gpu-layers abc` spawned `-ngl NaN`, a bad `--max-tokens`/`--temperature`/`--top-p` was dropped from the request so llama-server used its own default, and `--timeout soon` fired immediately and aborted every test. Every numeric flag on both commands now goes through one shared parser and fails with `Invalid value for --flag`, matching `nanotune train`, before any download or server spawn. Two behaviour changes: a fractional value for an integer flag such as `--ctx-size 4096.5` is rejected rather than truncated, and a typo'd numeric flag passed alongside a valid `--preset` now errors instead of being ignored (the preset still wins on values). Thanks to @addyCooks. Closes #134.

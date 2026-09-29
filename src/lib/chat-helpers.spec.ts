@@ -6,6 +6,7 @@ import {
 	buildGenerateOptions,
 	buildServerOptions,
 	lastExchange,
+	parseNumericFlag,
 	parseSlashCommand,
 	saveTranscript,
 } from "./chat-helpers.js";
@@ -115,7 +116,7 @@ test("parseSlashCommand does NOT send unknown slash commands as messages", (t) =
 // ── buildServerOptions ────────────────────────────────────────────────
 
 test("buildServerOptions defaults when no flags are passed", (t) => {
-	t.deepEqual(buildServerOptions({}), {
+	t.deepEqual(buildServerOptions({}).options, {
 		threads: undefined,
 		gpuLayers: undefined,
 		ctxSize: 4096,
@@ -125,7 +126,7 @@ test("buildServerOptions defaults when no flags are passed", (t) => {
 });
 
 test("buildServerOptions parses numeric flags into numbers", (t) => {
-	const result = buildServerOptions({
+	const {options: result} = buildServerOptions({
 		threads: "8",
 		gpuLayers: "20",
 		ctxSize: "8192",
@@ -138,11 +139,11 @@ test("buildServerOptions parses numeric flags into numbers", (t) => {
 });
 
 test("buildServerOptions passes cpuOnly through", (t) => {
-	t.is(buildServerOptions({ cpuOnly: true }).cpuOnly, true);
+	t.is(buildServerOptions({ cpuOnly: true }).options.cpuOnly, true);
 });
 
 test("buildServerOptions applies the 'low' preset", (t) => {
-	const result = buildServerOptions({ preset: "low" });
+	const {options: result} = buildServerOptions({ preset: "low" });
 	// From BENCHMARK_PRESETS.low — 4 threads, CPU-only.
 	t.is(result.threads, 4);
 	t.is(result.gpuLayers, 0);
@@ -152,7 +153,7 @@ test("buildServerOptions applies the 'low' preset", (t) => {
 });
 
 test("buildServerOptions applies the 'high' preset", (t) => {
-	const result = buildServerOptions({ preset: "high" });
+	const {options: result} = buildServerOptions({ preset: "high" });
 	t.is(result.threads, undefined); // auto
 	t.is(result.gpuLayers, undefined); // max
 	t.falsy(result.cpuOnly);
@@ -161,7 +162,7 @@ test("buildServerOptions applies the 'high' preset", (t) => {
 
 test("buildServerOptions: preset wins over individual flags", (t) => {
 	// User passes both — preset is the source of truth (matches benchmark).
-	const result = buildServerOptions({
+	const {options: result} = buildServerOptions({
 		preset: "low",
 		threads: "16",
 		ctxSize: "99999",
@@ -171,7 +172,7 @@ test("buildServerOptions: preset wins over individual flags", (t) => {
 });
 
 test("buildServerOptions: unknown preset falls back to individual flags", (t) => {
-	const result = buildServerOptions({ preset: "nonexistent", threads: "12" });
+	const {options: result} = buildServerOptions({ preset: "nonexistent", threads: "12" });
 	t.is(result.threads, 12);
 	t.is(result.ctxSize, 4096); // default, since preset lookup missed
 });
@@ -180,18 +181,18 @@ test("buildServerOptions: unknown preset falls back to individual flags", (t) =>
 
 test("buildGenerateOptions defaults maxTokens to 256 for chat REPL", (t) => {
 	// Higher than benchmark's 50 because chat replies need to be useful.
-	t.is(buildGenerateOptions({}).maxTokens, 256);
+	t.is(buildGenerateOptions({}).options.maxTokens, 256);
 });
 
 test("buildGenerateOptions defaults temperature to 0.8 and topP to 0.9", (t) => {
-	const result = buildGenerateOptions({});
+	const {options: result} = buildGenerateOptions({});
 	t.is(result.temperature, 0.8);
 	t.is(result.topP, 0.9);
 	t.is(result.seed, undefined);
 });
 
 test("buildGenerateOptions parses numeric flags", (t) => {
-	const result = buildGenerateOptions({
+	const {options: result} = buildGenerateOptions({
 		maxTokens: "512",
 		temperature: "0.2",
 		topP: "0.95",
@@ -204,18 +205,18 @@ test("buildGenerateOptions parses numeric flags", (t) => {
 });
 
 test("buildGenerateOptions uses preset maxTokens when no flag is passed", (t) => {
-	const result = buildGenerateOptions({ preset: "ultra" });
+	const {options: result} = buildGenerateOptions({ preset: "ultra" });
 	t.is(result.maxTokens, 1024); // ultra preset
 });
 
 test("buildGenerateOptions: explicit --max-tokens overrides preset value", (t) => {
-	const result = buildGenerateOptions({ preset: "low", maxTokens: "999" });
+	const {options: result} = buildGenerateOptions({ preset: "low", maxTokens: "999" });
 	// Flag wins because the user passed it explicitly.
 	t.is(result.maxTokens, 999);
 });
 
 test("buildGenerateOptions: unknown preset falls back to the 256 default", (t) => {
-	const result = buildGenerateOptions({ preset: "nonexistent" });
+	const {options: result} = buildGenerateOptions({ preset: "nonexistent" });
 	t.is(result.maxTokens, 256);
 });
 
@@ -468,4 +469,135 @@ test.serial("saveTranscript ends the file with a newline", (t) => {
 		const path = saveTranscript(SYSTEM, HISTORY, "session.json");
 		t.true(readFileSync(path, "utf-8").endsWith("}\n]\n"));
 	});
+});
+
+// ── parseNumericFlag ──────────────────────────────────────────────────
+
+test("parseNumericFlag leaves an absent flag absent without erroring", (t) => {
+	const errors: string[] = [];
+	t.is(parseNumericFlag(undefined, "--threads", errors), undefined);
+	t.deepEqual(errors, []);
+});
+
+test("parseNumericFlag parses a plain number", (t) => {
+	const errors: string[] = [];
+	t.is(parseNumericFlag("8", "--threads", errors, true), 8);
+	t.is(parseNumericFlag(" 0.25 ", "--temperature", errors), 0.25);
+	t.is(parseNumericFlag("0", "--seed", errors, true), 0);
+	t.deepEqual(errors, []);
+});
+
+test("parseNumericFlag rejects trailing garbage rather than truncating it", (t) => {
+	// Number.parseInt("4096x") would return 4096 and run the whole benchmark
+	// under a value the user never typed.
+	const errors: string[] = [];
+	t.is(parseNumericFlag("4096x", "--ctx-size", errors, true), undefined);
+	t.is(errors.length, 1);
+	t.true(errors[0].includes("--ctx-size"));
+	t.true(errors[0].includes("4096x"));
+});
+
+test("parseNumericFlag rejects a value that parses to NaN", (t) => {
+	// Unchecked, this reaches llama-server as the literal argument "NaN".
+	const errors: string[] = [];
+	t.is(parseNumericFlag("abc", "--gpu-layers", errors, true), undefined);
+	t.is(errors.length, 1);
+	t.true(errors[0].includes("--gpu-layers"));
+});
+
+test("parseNumericFlag rejects a blank value", (t) => {
+	// Number("") is 0, so the blank has to be screened out explicitly.
+	const errors: string[] = [];
+	t.is(parseNumericFlag("   ", "--threads", errors, true), undefined);
+	t.is(errors.length, 1);
+});
+
+test("parseNumericFlag rejects Infinity and a fractional integer flag", (t) => {
+	const errors: string[] = [];
+	t.is(parseNumericFlag("Infinity", "--ctx-size", errors, true), undefined);
+	t.is(parseNumericFlag("4096.5", "--ctx-size", errors, true), undefined);
+	t.is(errors.length, 2);
+	// A float flag still accepts a fraction.
+	t.is(parseNumericFlag("0.95", "--top-p", errors), 0.95);
+	t.is(errors.length, 2);
+});
+
+// ── numeric flag validation ───────────────────────────────────────────
+
+test("buildServerOptions reports no errors when every flag parses", (t) => {
+	t.deepEqual(
+		buildServerOptions({ threads: "8", ctxSize: "8192" }).errors,
+		[],
+	);
+	t.deepEqual(buildServerOptions({}).errors, []);
+});
+
+test("buildServerOptions reports one error per unparseable flag", (t) => {
+	const { errors } = buildServerOptions({
+		threads: "many",
+		gpuLayers: "abc",
+		ctxSize: "4096x",
+		batchSize: "2048!",
+	});
+	t.is(errors.length, 4);
+	t.true(errors[0].includes("--threads"));
+	t.true(errors[1].includes("--gpu-layers"));
+	t.true(errors[2].includes("--ctx-size"));
+	t.true(errors[3].includes("--batch-size"));
+});
+
+test("buildServerOptions does not smuggle a rejected value through as NaN", (t) => {
+	// The caller bails on `errors`, but the returned options must not carry a
+	// NaN either — String(NaN) is what became the literal `-ngl NaN` argument.
+	const { options } = buildServerOptions({ gpuLayers: "abc", ctxSize: "4096x" });
+	t.is(options.gpuLayers, undefined);
+	t.is(options.ctxSize, 4096); // the default, not the truncated "4096x"
+});
+
+test("buildServerOptions still reports a bad flag when a preset wins", (t) => {
+	// The preset supplies the values, but a typo the user typed is still a typo.
+	const result = buildServerOptions({ preset: "low", ctxSize: "4096x" });
+	t.is(result.options.ctxSize, 2048);
+	t.is(result.errors.length, 1);
+});
+
+test("buildGenerateOptions reports one error per unparseable flag", (t) => {
+	const { errors } = buildGenerateOptions({
+		maxTokens: "lots",
+		temperature: "hot",
+		topP: "0.9abc",
+		seed: "later",
+	});
+	t.is(errors.length, 4);
+	t.true(errors[0].includes("--max-tokens"));
+	t.true(errors[1].includes("--temperature"));
+	t.true(errors[2].includes("--top-p"));
+	t.true(errors[3].includes("--seed"));
+});
+
+test("buildGenerateOptions does not smuggle a rejected value through as NaN", (t) => {
+	// JSON.stringify(NaN) is null, so llama-server would silently fall back to
+	// its own default instead of failing.
+	const { options } = buildGenerateOptions({
+		maxTokens: "lots",
+		temperature: "hot",
+		topP: "0.9abc",
+		seed: "later",
+	});
+	t.is(options.maxTokens, 256);
+	t.is(options.temperature, 0.8);
+	t.is(options.topP, 0.9);
+	t.is(options.seed, undefined);
+});
+
+test("buildGenerateOptions accepts explicit zeroes", (t) => {
+	// The defaults fall back with `??`, not `||`, so a legitimate zero the user
+	// typed survives instead of being replaced by the default.
+	const { options, errors } = buildGenerateOptions({
+		temperature: "0",
+		seed: "0",
+	});
+	t.is(options.temperature, 0);
+	t.is(options.seed, 0);
+	t.deepEqual(errors, []);
 });

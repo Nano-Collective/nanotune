@@ -95,6 +95,21 @@ test("resolveRunOptions rejects an unknown preset and lists the valid ones", (t)
   t.true(error?.message.includes("low, medium, high, ultra"));
 });
 
+test("resolveRunOptions rejects an unparseable numeric flag", (t) => {
+  const ctx = t.throws(() => resolveRunOptions({ ctxSize: "4096x" }, SAMPLING));
+  t.true(ctx?.message.includes("--ctx-size"));
+
+  const timeout = t.throws(() =>
+    resolveRunOptions({ timeout: "abc" }, SAMPLING),
+  );
+  t.true(timeout?.message.includes("--timeout"));
+});
+
+test("resolveRunOptions returns the timeout, defaulting to 30s", (t) => {
+  t.is(resolveRunOptions({}, SAMPLING).timeout, 30000);
+  t.is(resolveRunOptions({ timeout: "5000" }, SAMPLING).timeout, 5000);
+});
+
 // ── validateTests ─────────────────────────────────────────────────────
 
 test("validateTests accepts a single-turn prompt test", (t) => {

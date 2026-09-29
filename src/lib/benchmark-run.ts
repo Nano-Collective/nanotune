@@ -1,8 +1,6 @@
 import {existsSync, mkdirSync, readFileSync, renameSync, rmSync} from 'node:fs';
 import {dirname, join} from 'node:path';
 import {
-	BENCHMARK_PRESETS,
-	type BenchmarkPreset,
 	type BenchmarkResult,
 	type BenchmarkTest,
 	type BenchmarkTestResult,
@@ -14,6 +12,7 @@ import {
 	buildMessages,
 	formatConversationForJudge,
 	getTestDisplayPrompt,
+	resolveBenchmarkFlags,
 	resolveSamplingOptions,
 	type SamplingOptions,
 	summarizeSamples,
@@ -112,12 +111,14 @@ const DEFAULT_DEPS: BenchmarkDeps = {
 	callJudge,
 };
 
-const VALID_PRESETS: BenchmarkPreset[] = ['low', 'medium', 'high', 'ultra'];
-
 /**
- * Turn the raw flags into llama-server and generation options. A `--preset`
- * replaces the individual flags wholesale rather than merging with them, which
- * is why the two branches share nothing but the resolved sampling values.
+ * Turn the raw flags into llama-server and generation options plus the
+ * per-test timeout. A `--preset` replaces the individual flags wholesale
+ * rather than merging with them.
+ *
+ * Delegates to `resolveBenchmarkFlags`, which rejects any unparseable numeric
+ * flag (`--ctx-size 4096x`, `--timeout abc`) instead of letting `parseInt`
+ * truncate it or pass `NaN` on to llama-server. Throws on the first error.
  *
  * Split out of `runBenchmark` so the flag wiring is testable without a server,
  * the same split as `buildTrainingArgs` against `runTraining`.
@@ -125,52 +126,19 @@ const VALID_PRESETS: BenchmarkPreset[] = ['low', 'medium', 'high', 'ultra'];
 export function resolveRunOptions(
 	options: BenchmarkRunOptions,
 	sampling: Pick<SamplingOptions, 'temperature' | 'seed'>,
-): {serverOptions: ServerOptions; generateOptions: GenerateOptions} {
-	if (options.preset) {
-		if (!VALID_PRESETS.includes(options.preset as BenchmarkPreset)) {
-			throw new Error(
-				`Invalid preset: ${options.preset}. Valid presets: ${VALID_PRESETS.join(', ')}`,
-			);
-		}
-
-		const preset = BENCHMARK_PRESETS[options.preset as BenchmarkPreset];
-		return {
-			serverOptions: {
-				threads: preset.threads,
-				gpuLayers: preset.gpuLayers,
-				ctxSize: preset.ctxSize,
-				batchSize: preset.batchSize,
-				cpuOnly: preset.gpuLayers === 0,
-			},
-			generateOptions: {
-				maxTokens: preset.maxTokens,
-				temperature: sampling.temperature,
-				seed: sampling.seed,
-			},
-		};
+): {
+	serverOptions: ServerOptions;
+	generateOptions: GenerateOptions;
+	timeout: number;
+} {
+	const flags = resolveBenchmarkFlags(options, sampling);
+	if (flags.errors.length > 0) {
+		throw new Error(flags.errors[0]);
 	}
-
 	return {
-		serverOptions: {
-			threads: options.threads
-				? Number.parseInt(options.threads, 10)
-				: undefined,
-			gpuLayers: options.gpuLayers
-				? Number.parseInt(options.gpuLayers, 10)
-				: undefined,
-			ctxSize: options.ctxSize ? Number.parseInt(options.ctxSize, 10) : 4096,
-			batchSize: options.batchSize
-				? Number.parseInt(options.batchSize, 10)
-				: 2048,
-			cpuOnly: options.cpuOnly,
-		},
-		generateOptions: {
-			maxTokens: options.maxTokens
-				? Number.parseInt(options.maxTokens, 10)
-				: 50,
-			temperature: sampling.temperature,
-			seed: sampling.seed,
-		},
+		serverOptions: flags.serverOptions,
+		generateOptions: flags.generateOptions,
+		timeout: flags.timeout,
 	};
 }
 
@@ -533,7 +501,10 @@ export async function* runBenchmark(
 
 	// Resolving the options this early also rejects a bad `--preset` before the
 	// base-model download rather than after it.
-	const {serverOptions, generateOptions} = resolveRunOptions(options, sampling);
+	const {serverOptions, generateOptions, timeout} = resolveRunOptions(
+		options,
+		sampling,
+	);
 
 	let modelPath: string;
 	if (options.base) {
@@ -663,10 +634,6 @@ export async function* runBenchmark(
 		}
 		judgeConfig = loadJudgeConfig();
 	}
-
-	const timeout = options.timeout
-		? Number.parseInt(options.timeout, 10)
-		: 30000;
 
 	const failures: BenchmarkResult['failures'] = [];
 	const allResults: BenchmarkTestResult[] = [];

@@ -1,4 +1,11 @@
-import type {BenchmarkTest, ChatMessage} from '../types/index.js';
+import {
+	BENCHMARK_PRESETS,
+	type BenchmarkPreset,
+	type BenchmarkTest,
+	type ChatMessage,
+} from '../types/index.js';
+import {buildServerOptions, parseNumericFlag} from './chat-helpers.js';
+import type {GenerateOptions, ServerOptions} from './llama-cpp.js';
 
 /**
  * Get the display prompt for a benchmark test.
@@ -154,5 +161,90 @@ export function summarizeSamples(passes: boolean[]): {
 		passed: passRate > 0.5, // Strict majority: more than half must pass
 		passRate,
 		variance: passRate * (1 - passRate),
+	};
+}
+
+const VALID_PRESETS: BenchmarkPreset[] = ['low', 'medium', 'high', 'ultra'];
+
+/** Everything a benchmark run needs from the llama-server/generation flags. */
+export interface BenchmarkFlags {
+	serverOptions: ServerOptions;
+	generateOptions: GenerateOptions;
+	/** Per-test timeout in milliseconds. */
+	timeout: number;
+	/** One message per rejected flag; empty when everything parsed. */
+	errors: string[];
+}
+
+/**
+ * Resolve the llama-server and generation flags, defaulting anything the user
+ * didn't pass. Sampling (`--temperature`/`--seed`) is resolved separately by
+ * `resolveSamplingOptions` and passed in.
+ *
+ * Like the sampling flags, an unparseable value is an error rather than
+ * something to pass on: `Number.parseInt` would have accepted `--ctx-size
+ * 4096x` as 4096, and `--gpu-layers abc` would have reached llama-server as
+ * the literal argument `-ngl NaN` (or, for `--max-tokens`, as a null field in
+ * the completion body that llama-server quietly replaces with its own
+ * default). Callers report the first error and stop, before the download and
+ * the server spawn.
+ */
+export function resolveBenchmarkFlags(
+	options: {
+		preset?: string;
+		threads?: string;
+		gpuLayers?: string;
+		ctxSize?: string;
+		batchSize?: string;
+		cpuOnly?: boolean;
+		maxTokens?: string;
+		timeout?: string;
+	},
+	sampling: {temperature: number; seed: number},
+): BenchmarkFlags {
+	const errors: string[] = [];
+	if (
+		options.preset &&
+		!VALID_PRESETS.includes(options.preset as BenchmarkPreset)
+	) {
+		errors.push(
+			`Invalid preset: ${options.preset}. Valid presets: ${VALID_PRESETS.join(', ')}`,
+		);
+	}
+
+	const server = buildServerOptions({
+		preset: options.preset,
+		threads: options.threads,
+		gpuLayers: options.gpuLayers,
+		ctxSize: options.ctxSize,
+		batchSize: options.batchSize,
+		cpuOnly: options.cpuOnly,
+	});
+	errors.push(...server.errors);
+
+	const maxTokens = parseNumericFlag(
+		options.maxTokens,
+		'--max-tokens',
+		errors,
+		true,
+	);
+	// setTimeout(fn, NaN) fires immediately, so an unparseable --timeout would
+	// abort every test the moment it started rather than failing here.
+	const timeout =
+		parseNumericFlag(options.timeout, '--timeout', errors, true) ?? 30000;
+
+	const preset = options.preset
+		? BENCHMARK_PRESETS[options.preset as BenchmarkPreset]
+		: undefined;
+	return {
+		serverOptions: server.options,
+		generateOptions: {
+			// A preset sets the whole profile, so it wins over --max-tokens.
+			maxTokens: preset?.maxTokens ?? maxTokens ?? 50,
+			temperature: sampling.temperature,
+			seed: sampling.seed,
+		},
+		timeout,
+		errors,
 	};
 }
