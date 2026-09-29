@@ -9,8 +9,9 @@ import {
 	statSync,
 	writeFileSync,
 } from 'node:fs';
-import {join} from 'node:path';
+import {basename, dirname, join} from 'node:path';
 import {z} from 'zod';
+import {isProcessAlive} from './model-cache.js';
 import {
 	type BenchmarkResult,
 	type ChatMessage,
@@ -215,42 +216,76 @@ function suggestKey(unknownKey: string, validKeys: string[]): string | null {
 	return best;
 }
 
-// Unwraps the optional/default wrappers ConfigSchema uses to reach the object
-// shape underneath. Anything else — arrays of objects, `.nullable()`, unions —
-// returns null, and that subtree goes unchecked rather than mis-reported.
-// Nothing in ConfigSchema hits that today; if a nested object ever gains one of
-// those wrappers, teach this function about it or its unknown keys go unwarned.
+// Unwraps wrappers around an object schema to reach its shape. Arrays and
+// unions are handled by collectUnknownKeys, which can descend through them.
 function shapeOf(schema: z.ZodType): Record<string, z.ZodType> | null {
 	if (schema instanceof z.ZodObject) {
 		return schema.shape as Record<string, z.ZodType>;
 	}
-	if (schema instanceof z.ZodOptional || schema instanceof z.ZodDefault) {
+	if (
+		schema instanceof z.ZodOptional ||
+		schema instanceof z.ZodDefault ||
+		schema instanceof z.ZodNullable
+	) {
 		return shapeOf(schema.unwrap() as z.ZodType);
 	}
 	return null;
 }
 
+function unwrapSchemas(schema: z.ZodType): z.ZodType[] {
+	if (
+		schema instanceof z.ZodOptional ||
+		schema instanceof z.ZodDefault ||
+		schema instanceof z.ZodNullable
+	) {
+		return unwrapSchemas(schema.unwrap() as z.ZodType);
+	}
+	if (schema instanceof z.ZodUnion) {
+		return schema.options.flatMap(option => unwrapSchemas(option as z.ZodType));
+	}
+	return [schema];
+}
+
 function collectUnknownKeys(
 	value: unknown,
-	schema: z.ZodType,
+	schemas: z.ZodType[],
 	path: string,
 	warnings: string[],
 ): void {
-	const shape = shapeOf(schema);
-	if (
-		!shape ||
-		value === null ||
-		typeof value !== 'object' ||
-		Array.isArray(value)
-	) {
+	const unwrappedSchemas = schemas.flatMap(unwrapSchemas);
+	if (Array.isArray(value)) {
+		const elementSchemas = unwrappedSchemas
+			.filter(schema => schema instanceof z.ZodArray)
+			.map(schema => schema.element as z.ZodType);
+		for (const [index, child] of value.entries()) {
+			collectUnknownKeys(
+				child,
+				elementSchemas,
+				path + '[' + index + ']',
+				warnings,
+			);
+		}
 		return;
 	}
 
-	const validKeys = Object.keys(shape);
+	if (value === null || typeof value !== 'object') {
+		return;
+	}
+
+	const shapes = unwrappedSchemas
+		.map(shapeOf)
+		.filter((shape): shape is Record<string, z.ZodType> => shape !== null);
+	if (shapes.length === 0) {
+		return;
+	}
+
+	const validKeys = [...new Set(shapes.flatMap(shape => Object.keys(shape)))];
 	for (const [key, child] of Object.entries(value)) {
-		const fullPath = path ? `${path}.${key}` : key;
-		const known = Object.hasOwn(shape, key) ? shape[key] : undefined;
-		if (!known) {
+		const fullPath = path ? path + '.' + key : key;
+		const childSchemas = shapes
+			.filter(shape => Object.hasOwn(shape, key))
+			.map(shape => shape[key]);
+		if (childSchemas.length === 0) {
 			const suggestion = suggestKey(key, validKeys);
 			warnings.push(
 				`unknown key "${fullPath}" in ${CONFIG_FILE} — ignored.` +
@@ -258,13 +293,16 @@ function collectUnknownKeys(
 			);
 			continue;
 		}
-		collectUnknownKeys(child, known, fullPath, warnings);
+		collectUnknownKeys(child, childSchemas, fullPath, warnings);
 	}
 }
 
-export function findUnknownConfigKeys(raw: unknown): string[] {
+export function findUnknownConfigKeys(
+	raw: unknown,
+	schema: z.ZodType = ConfigSchema,
+): string[] {
 	const warnings: string[] = [];
-	collectUnknownKeys(raw, ConfigSchema, '', warnings);
+	collectUnknownKeys(raw, [schema], '', warnings);
 	return warnings;
 }
 
@@ -340,14 +378,52 @@ export function saveConfig(config: Config): void {
 }
 
 /**
+ * Remove `.tmp-<pid>` files in `dir` whose owning process is gone. These are
+ * the atomic-write intermediates that accumulate when a process is killed
+ * between its temp write and rename — the `finally` that would normally reap
+ * them never runs. Only files whose pid is dead are swept: a live pid's temp
+ * belongs to a concurrent write (same directory, different target path).
+ * `prefix` restricts the sweep to a single target basename, so a write never
+ * touches unrelated files in a directory it shares with user data.
+ */
+function removeStaleTemps(dir: string, prefix?: string): void {
+	if (!existsSync(dir)) {
+		return;
+	}
+	for (const name of readdirSync(dir)) {
+		if (prefix && !name.startsWith(prefix)) {
+			continue;
+		}
+		const owner = name.match(/\.tmp-(\d+)$/);
+		if (!owner || isProcessAlive(Number.parseInt(owner[1], 10))) {
+			continue;
+		}
+		rmSync(join(dir, name), {force: true});
+	}
+}
+
+/**
+ * Sweep every stale `.tmp-<pid>` sibling in `dir`, regardless of which target
+ * path it belongs to. Run at startup so orphans from a crashed run are gone
+ * the next time any command starts — even when the writing command itself is
+ * never run again. A no-op if `dir` does not exist.
+ */
+export function sweepStaleAtomicWrites(dir: string): void {
+	removeStaleTemps(dir);
+}
+
+/**
  * Write `contents` to `path` via a sibling temp file renamed into place.
  * rename(2) is atomic, so an interrupted or failed write leaves either the
  * previous file or the complete new one — never a truncated file that a later
  * read mistakes for a whole one. The temp carries the pid so concurrent runs
  * cannot scribble over each other's, and the `finally` clears it on the paths
- * where the rename never happened.
+ * where the rename never happened. A process killed mid-write (SIGKILL,
+ * crash) skips that cleanup; a sweep of dead-pid leftovers for this target is
+ * done up front so the next run heals the last one.
  */
 export function writeFileAtomic(path: string, contents: string): void {
+	removeStaleTemps(dirname(path), `${basename(path)}.tmp-`);
 	const tmp = `${path}.tmp-${process.pid}`;
 	try {
 		writeFileSync(tmp, contents);

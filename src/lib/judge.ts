@@ -214,7 +214,16 @@ export function parseJudgeResponse(
 	};
 }
 
-/** Call the LLM judge to evaluate a response */
+/**
+ * Call the LLM judge to evaluate a response.
+ *
+ * `abortSignal` is forwarded into `generateText` so the caller can bound the
+ * call. Without one there is nothing stopping a provider that accepts the
+ * connection and never replies from hanging the caller forever — and the AI
+ * SDK's own retry policy sits on top of that, re-issuing a request nobody is
+ * timing. The signal covers the retries too: it cancels the in-flight fetch
+ * and interrupts the backoff delay between attempts.
+ */
 export async function callJudge(
 	prompt: string,
 	response: string,
@@ -222,6 +231,7 @@ export async function callJudge(
 	config: JudgeProviderConfig,
 	passThreshold = 7,
 	referenceAnswers?: string[],
+	abortSignal?: AbortSignal,
 ): Promise<JudgeResult> {
 	const provider = createJudgeProvider(config);
 	const model = provider(config.model);
@@ -237,6 +247,7 @@ export async function callJudge(
 	const result = await generateText({
 		model,
 		messages: [{role: 'user', content: judgePrompt}],
+		abortSignal,
 	});
 
 	try {

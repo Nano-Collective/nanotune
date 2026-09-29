@@ -3,6 +3,8 @@ import {readFileSync} from 'node:fs';
 import {Command} from 'commander';
 import {render as inkRender} from 'ink';
 import type {ReactElement} from 'react';
+import type {BenchmarkRunOptions} from './lib/benchmark-run.js';
+import {getBenchmarksDir, sweepStaleAtomicWrites} from './lib/config.js';
 import {interactiveRequiredMessage, supportsRawMode} from './lib/tty.js';
 
 const pkg = JSON.parse(
@@ -161,7 +163,7 @@ dataCommand
 				const {emitJson} = await import('./lib/json-output.js');
 				// Invalid data still prints its report — the report is the useful
 				// part — but exits non-zero, matching the Ink path's exit code.
-				emitJson(
+				await emitJson(
 					() =>
 						collectValidation({
 							fix: options.fix,
@@ -268,7 +270,30 @@ const benchmarkCommand = program
 		'--samples <n>',
 		'Run each test n times and report pass rate and variance (default: 1)',
 	)
-	.action(async options => {
+	.option('--json', 'Print the benchmark result as JSON on stdout')
+	.action(async (options: BenchmarkRunOptions & {json?: boolean}) => {
+		if (options.json) {
+			const {formatEventForStderr, runBenchmark} = await import(
+				'./lib/benchmark-run.js'
+			);
+			const {emitJson} = await import('./lib/json-output.js');
+			// A suite can run for minutes, so progress goes to stderr rather than
+			// leaving the caller staring at nothing — stdout stays empty until
+			// the one JSON document.
+			await emitJson(async () => {
+				for await (const event of runBenchmark(options)) {
+					if (event.type === 'done') {
+						return event.result;
+					}
+					const line = formatEventForStderr(event);
+					if (line) {
+						process.stderr.write(`${line}\n`);
+					}
+				}
+				throw new Error('Benchmark finished without producing a result.');
+			});
+			return;
+		}
 		const {BenchmarkCommand} = await import('./commands/benchmark.js');
 		render(<BenchmarkCommand options={options} />);
 	});
@@ -349,12 +374,17 @@ program
 		if (options.json) {
 			const {collectStatus} = await import('./lib/status.js');
 			const {emitJson} = await import('./lib/json-output.js');
-			emitJson(collectStatus);
+			await emitJson(collectStatus);
 			return;
 		}
 		const {StatusCommand} = await import('./commands/status.js');
 		render(<StatusCommand />);
 	});
+
+// Reap `.tmp-<pid>` leftovers from a previous run that was killed mid-write
+// before its own cleanup could run. Cheap (no-op when the directory doesn't
+// exist) and keeps a crashed `benchmark` from accumulating garbage forever.
+sweepStaleAtomicWrites(getBenchmarksDir());
 
 // Clean command
 program
