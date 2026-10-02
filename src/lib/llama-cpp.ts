@@ -7,6 +7,7 @@ import {pipeline} from 'node:stream/promises';
 import {execa, type ResultPromise} from 'execa';
 import type {ChatMessage, QuantizationType} from '../types/index.js';
 import {assertSupportedPlatform} from './platform.js';
+import {HttpError, retry} from './retry.js';
 
 const LLAMA_CPP_DIR = join(homedir(), '.nanotune', 'llama.cpp');
 const LLAMA_CPP_BIN_DIR = join(LLAMA_CPP_DIR, 'bin');
@@ -41,13 +42,13 @@ async function getLatestRelease(): Promise<{
 	tag: string;
 	downloadUrl: string;
 }> {
-	const response = await fetch(GITHUB_API_LATEST, {
-		headers: {Accept: 'application/vnd.github.v3+json'},
-	});
-
-	if (!response.ok) {
-		throw new Error(`Failed to fetch release info: ${response.statusText}`);
-	}
+	// A 502 from the GitHub API is usually gone within a second or two, and
+	// losing the whole install over one blip is a poor trade for a 1 s wait.
+	const response = await retry(() =>
+		fetch(GITHUB_API_LATEST, {
+			headers: {Accept: 'application/vnd.github.v3+json'},
+		}).then(checkedFetch(GITHUB_API_LATEST)),
+	);
 
 	const release = (await response.json()) as GitHubRelease;
 
@@ -66,18 +67,54 @@ async function getLatestRelease(): Promise<{
 	};
 }
 
+/**
+ * Turn a non-2xx response into an `HttpError` so the retry classifier can see
+ * the status. `fetch` resolves on a 404, so without this every failure looks
+ * alike and a missing asset gets the same three attempts as an overloaded CDN.
+ */
+function checkedFetch(url: string): (response: Response) => Response {
+	return response => {
+		if (!response.ok) {
+			throw new HttpError(
+				url,
+				response.status,
+				response.statusText,
+				response.headers.get('retry-after'),
+			);
+		}
+		return response;
+	};
+}
+
+/**
+ * Fetch `url` and stream the body to `destPath`, retrying the pair as a single
+ * unit.
+ *
+ * The retry is safe because `createWriteStream` opens with the default `'w'`
+ * flag, which truncates: an attempt that dies at 60% leaves a short file, and
+ * the next attempt overwrites it from zero rather than appending. That is
+ * load-bearing — an append flag here would produce a corrupt tarball that
+ * `tar -xzf` fails on with an error pointing nowhere near the network.
+ */
+async function downloadToFile(url: string, destPath: string): Promise<void> {
+	await retry(async () => {
+		const response = await fetch(url).then(checkedFetch(url));
+		if (!response.body) {
+			throw new Error(`No response body for ${url}`);
+		}
+
+		await pipeline(
+			response.body as unknown as NodeJS.ReadableStream,
+			createWriteStream(destPath),
+		);
+	});
+}
+
 async function downloadAndExtract(url: string, destDir: string): Promise<void> {
 	const tarPath = join(destDir, 'llama.tar.gz');
 
 	// Download
-	const response = await fetch(url);
-	if (!response.ok || !response.body) {
-		throw new Error(`Failed to download: ${response.statusText}`);
-	}
-
-	// Save to file
-	const fileStream = createWriteStream(tarPath);
-	await pipeline(response.body as unknown as NodeJS.ReadableStream, fileStream);
+	await downloadToFile(url, tarPath);
 
 	// Extract
 	await execa('tar', ['-xzf', tarPath, '-C', destDir, '--strip-components=1']);
@@ -115,15 +152,7 @@ async function downloadConvertScript(tag: string): Promise<void> {
 	// Download the convert script matching the release version
 	const scriptUrl = `https://raw.githubusercontent.com/ggerganov/llama.cpp/${tag}/convert_hf_to_gguf.py`;
 
-	const response = await fetch(scriptUrl);
-	if (!response.ok || !response.body) {
-		throw new Error(
-			`Failed to download convert script: ${response.statusText}`,
-		);
-	}
-
-	const fileStream = createWriteStream(scriptPath);
-	await pipeline(response.body as unknown as NodeJS.ReadableStream, fileStream);
+	await downloadToFile(scriptUrl, scriptPath);
 	await chmod(scriptPath, 0o755);
 
 	// Download the bundled gguf-py package (the script uses this instead of pip gguf)
@@ -133,16 +162,7 @@ async function downloadConvertScript(tag: string): Promise<void> {
 	const ggufTarUrl = `https://github.com/ggerganov/llama.cpp/archive/${tag}.tar.gz`;
 	const ggufTarPath = join(LLAMA_CPP_DIR, 'repo.tar.gz');
 
-	const ggufResponse = await fetch(ggufTarUrl);
-	if (!ggufResponse.ok || !ggufResponse.body) {
-		throw new Error(`Failed to download gguf-py: ${ggufResponse.statusText}`);
-	}
-
-	const ggufFileStream = createWriteStream(ggufTarPath);
-	await pipeline(
-		ggufResponse.body as unknown as NodeJS.ReadableStream,
-		ggufFileStream,
-	);
+	await downloadToFile(ggufTarUrl, ggufTarPath);
 
 	// Extract just the gguf-py directory
 	await execa('tar', [
