@@ -1,5 +1,5 @@
 import {existsSync, mkdirSync, readFileSync, renameSync, rmSync} from 'node:fs';
-import {dirname, join} from 'node:path';
+import {basename, dirname, join} from 'node:path';
 import {
 	BENCHMARK_PRESETS,
 	type BenchmarkPreset,
@@ -674,7 +674,11 @@ export async function* runBenchmark(
 
 	// Start llama-server once for the whole run — cold-starting per test would
 	// multiply latency by N and cache the model from disk N times.
-	const serverHandle = await deps.startLlamaServer(modelPath, serverOptions);
+	const modelAlias = basename(modelPath);
+	const serverHandle = await deps.startLlamaServer(modelPath, {
+		...serverOptions,
+		alias: modelAlias,
+	});
 
 	// The server can die under us mid-run (OOM, an incompatible GGUF, an
 	// external kill). `exited` settles the moment it does — stop there and

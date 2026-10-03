@@ -429,6 +429,13 @@ export interface ServerOptions {
 	ctxSize?: number;
 	batchSize?: number;
 	cpuOnly?: boolean;
+	/**
+	 * Name reported back by the server's own API (chat-completion responses,
+	 * `/v1/models`, `/props`) via `--alias`. Without it llama-server falls
+	 * back to the raw model path, so anything inspecting the running server
+	 * directly can't tell which model/quantization is loaded.
+	 */
+	alias?: string;
 }
 
 /** Per-request generation options (passed in the chat completions body). */
@@ -502,38 +509,23 @@ export async function waitForServerOrExit(
 }
 
 /**
- * Start a llama-server child process bound to a free local port. Caller must
- * stop it with `stopLlamaServer` (the kill is non-graceful but llama-server
- * is happy to be killed).
+ * Build the llama-server CLI args. Pulled out of `startLlamaServer` so the
+ * flag-building logic is unit-testable without spawning the real binary,
+ * which isn't available in CI.
  */
-export async function startLlamaServer(
+export function buildServerArgs(
 	modelPath: string,
+	port: number,
 	options: ServerOptions = {},
-	startupTimeoutMs = 60_000,
-): Promise<ServerHandle> {
+): string[] {
 	const {
 		threads,
 		gpuLayers,
 		ctxSize = 4096,
 		batchSize = 2048,
 		cpuOnly,
+		alias,
 	} = options;
-
-	const serverBin = join(LLAMA_CPP_BIN_DIR, 'llama-server');
-
-	// Ensure llama-server is available (may be missing from older installations)
-	if (!existsSync(serverBin)) {
-		for await (const _ of installLlamaCpp()) {
-			// consume install progress
-		}
-		if (!existsSync(serverBin)) {
-			throw new Error(
-				'llama-server binary not found after installation. Please re-run `nanotune export` to update llama.cpp.',
-			);
-		}
-	}
-
-	const port = await findFreePort();
 
 	const args: string[] = [
 		'-m',
@@ -557,6 +549,40 @@ export async function startLlamaServer(
 	if (cpuOnly) {
 		args.push('-ngl', '0');
 	}
+	if (alias) {
+		args.push('--alias', alias);
+	}
+
+	return args;
+}
+
+/**
+ * Start a llama-server child process bound to a free local port. Caller must
+ * stop it with `stopLlamaServer` (the kill is non-graceful but llama-server
+ * is happy to be killed).
+ */
+export async function startLlamaServer(
+	modelPath: string,
+	options: ServerOptions = {},
+	startupTimeoutMs = 60_000,
+): Promise<ServerHandle> {
+	const serverBin = join(LLAMA_CPP_BIN_DIR, 'llama-server');
+
+	// Ensure llama-server is available (may be missing from older installations)
+	if (!existsSync(serverBin)) {
+		for await (const _ of installLlamaCpp()) {
+			// consume install progress
+		}
+		if (!existsSync(serverBin)) {
+			throw new Error(
+				'llama-server binary not found after installation. Please re-run `nanotune export` to update llama.cpp.',
+			);
+		}
+	}
+
+	const port = await findFreePort();
+
+	const args = buildServerArgs(modelPath, port, options);
 
 	const serverProcess = execa(serverBin, args, {
 		stdin: 'ignore',
