@@ -1,8 +1,12 @@
 import {
 	appendFileSync,
+	closeSync,
 	existsSync,
 	mkdirSync,
+	openSync,
 	readFileSync,
+	readSync,
+	statSync,
 	writeFileSync,
 } from 'node:fs';
 import {join} from 'node:path';
@@ -103,8 +107,25 @@ export function appendTrainingExample(
 ): void {
 	ensureDataDir();
 	const path = isEval ? getEvalDataPath() : getTrainDataPath();
-	const line = `${JSON.stringify(example)}\n`;
-	appendFileSync(path, line);
+	// A hand-edited file may end without a newline; appending straight onto it
+	// would glue this example to the previous line and corrupt both.
+	let prefix = '';
+	if (existsSync(path)) {
+		const {size} = statSync(path);
+		if (size > 0) {
+			const last = Buffer.alloc(1);
+			const fd = openSync(path, 'r');
+			try {
+				readSync(fd, last, 0, 1, size - 1);
+			} finally {
+				closeSync(fd);
+			}
+			if (last[0] !== 0x0a) {
+				prefix = '\n';
+			}
+		}
+	}
+	appendFileSync(path, `${prefix}${JSON.stringify(example)}\n`);
 }
 
 export function appendToTrainingData(

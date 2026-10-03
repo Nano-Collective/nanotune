@@ -949,6 +949,21 @@ test.serial("appendTrainingExample writes multi-turn examples", (t) => {
   t.is(data[0].messages[4].content, "I'm doing well, thanks!");
 });
 
+test.serial("appendTrainingExample starts a new line when the file lacks a trailing newline", (t) => {
+  appendTrainingExample({ messages: [{ role: "user", content: "first" }] }, false);
+  const path = join(DATA_DIR, "train.jsonl");
+  writeFileSync(path, readFileSync(path, "utf-8").trimEnd());
+
+  appendTrainingExample({ messages: [{ role: "user", content: "second" }] }, false);
+
+  t.is(countExamples(), 2);
+  t.deepEqual(
+    loadTrainingData().map((e) => e.messages[0].content),
+    ["first", "second"],
+  );
+  t.true(readFileSync(path, "utf-8").endsWith("\n"));
+});
+
 test.serial("updateTrainingExample replaces with multi-turn example", (t) => {
   appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "old", assistantOutput: "old-out" }, false);
 
