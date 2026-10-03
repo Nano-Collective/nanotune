@@ -717,6 +717,32 @@ test.serial("validateTrainingData reports a bad line as an error", (t) => {
   t.true(result.errors.includes("Example 2: invalid JSON"));
 });
 
+const WRONG_SHAPE_LINES = [
+  "null",
+  '{"foo":1}',
+  '{"messages":[null,{"role":"assistant","content":"x"}]}',
+  '{"messages":[{"role":"user","content":5}]}',
+];
+
+test.serial("wrong-shaped lines are reported, not thrown on, by every consumer", (t) => {
+  writeConfig();
+  writeRawTrain(GOOD_LINE + "\n" + WRONG_SHAPE_LINES.join("\n") + "\n");
+
+  const { examples, errors } = parseTrainingData(false);
+  t.is(examples.length, 1);
+  t.deepEqual(errors, [2, 3, 4, 5].map((n) => `Example ${n}: invalid structure`));
+
+  const result = validateTrainingData(SYSTEM_CTX, false);
+  t.false(result.valid);
+  t.true(result.errors.includes("Example 2: invalid structure"));
+
+  const before = readFileSync(join(DATA_DIR, "train.jsonl"), "utf-8");
+  t.throws(() => dedupeExamples(false), { message: "Example 2: invalid structure" });
+  t.is(readFileSync(join(DATA_DIR, "train.jsonl"), "utf-8"), before);
+
+  t.throws(() => collectValidation({ fix: true }), { message: "Example 2: invalid structure" });
+});
+
 test.serial("validateTrainingData does not call a malformed file empty", (t) => {
   writeRawTrain("not json at all\n");
 

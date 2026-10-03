@@ -46,8 +46,22 @@ export function countExamples(isEval = false): number {
 
 export interface ParsedTrainingData {
 	examples: TrainingExample[];
-	/** One `Example N: invalid JSON` per unparseable line, in file order. */
+	/**
+	 * One `Example N: invalid JSON` per unparseable line, or `Example N: invalid
+	 * structure` per line that parses but isn't `{messages: [{role, content}]}`,
+	 * in file order.
+	 */
 	errors: string[];
+}
+
+function isWellFormedExample(value: unknown): value is TrainingExample {
+	const messages = (value as {messages?: unknown} | null)?.messages;
+	return (
+		Array.isArray(messages) &&
+		messages.every(
+			m => typeof m?.role === 'string' && typeof m?.content === 'string',
+		)
+	);
 }
 
 /**
@@ -69,10 +83,17 @@ export function parseTrainingData(isEval = false): ParsedTrainingData {
 	}
 	const lines = content.split('\n').filter(line => line.trim());
 	lines.forEach((line, i) => {
+		let parsed: unknown;
 		try {
-			examples.push(JSON.parse(line) as TrainingExample);
+			parsed = JSON.parse(line);
 		} catch {
 			errors.push(`Example ${i + 1}: invalid JSON`);
+			return;
+		}
+		if (isWellFormedExample(parsed)) {
+			examples.push(parsed);
+		} else {
+			errors.push(`Example ${i + 1}: invalid structure`);
 		}
 	});
 	return {examples, errors};
@@ -341,14 +362,6 @@ export function validateTrainingData(
 
 	for (let i = 0; i < examples.length; i++) {
 		const ex = examples[i];
-
-		// Check structure
-		if (!ex.messages || !Array.isArray(ex.messages)) {
-			errors.push(
-				`Example ${i + 1}: Invalid structure - missing messages array`,
-			);
-			continue;
-		}
 
 		if (ex.messages.length < 2) {
 			errors.push(

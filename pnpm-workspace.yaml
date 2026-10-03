@@ -12,3 +12,11 @@ overrides:
   picomatch: '>=4.0.4'
   smol-toml: '>=1.7.1'
   tar: '>=7.5.21'
+
+# braces <=3.0.3 (GHSA-vfj7-8cjw-p6xm) has no patched release on npm yet, so it
+# cannot be overridden. It is only reached through ava > globby > fast-glob >
+# micromatch (test-file globbing), never shipped. Drop this once braces >=3.0.4
+# is published.
+auditConfig:
+  ignoreGhsas:
+    - GHSA-vfj7-8cjw-p6xm
