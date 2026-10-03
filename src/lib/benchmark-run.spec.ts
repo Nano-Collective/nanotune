@@ -690,18 +690,27 @@ interface FakeLog {
   prompts: string[];
   completions: number;
   stopped: number;
+  serverOptions: unknown[];
 }
 
 function makeDeps(spec: FakeSpec = {}): { deps: BenchmarkDeps; log: FakeLog } {
-  const log: FakeLog = { seeds: [], prompts: [], completions: 0, stopped: 0 };
+  const log: FakeLog = {
+    seeds: [],
+    prompts: [],
+    completions: 0,
+    stopped: 0,
+    serverOptions: [],
+  };
   let settleExited: () => void = () => {};
   const exited = new Promise<unknown>((resolve) => {
     settleExited = () => resolve(undefined);
   });
 
   const deps = {
-    startLlamaServer: async () =>
-      ({ port: 1234, process: {}, exited }) as unknown as ServerHandle,
+    startLlamaServer: async (_modelPath: string, options: unknown) => {
+      log.serverOptions.push(options);
+      return { port: 1234, process: {}, exited } as unknown as ServerHandle;
+    },
     chatCompletion: async (
       _handle: unknown,
       messages: ChatMessage[],
@@ -788,6 +797,19 @@ test.serial("runBenchmark scores matching responses as passes", async (t) => {
     nav: { passed: 1, total: 1 },
   });
   t.deepEqual(result.failures, []);
+});
+
+test.serial("runBenchmark passes the model's basename as the server alias", async (t) => {
+  const model = writeModel();
+  writeDataset([
+    { id: 1, prompt: "list files", acceptable: ["ls"], category: "basic" },
+  ]);
+  const { deps, log } = makeDeps();
+
+  await collect({ model }, deps);
+
+  t.is(log.serverOptions.length, 1);
+  t.is((log.serverOptions[0] as { alias?: string }).alias, "test.gguf");
 });
 
 test.serial("runBenchmark records a non-matching response as a failure", async (t) => {

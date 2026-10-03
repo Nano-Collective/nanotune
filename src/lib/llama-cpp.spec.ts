@@ -8,6 +8,7 @@ import type {
 	StreamChunk,
 } from "./llama-cpp.js";
 import {
+	buildServerArgs,
 	chatCompletionStream,
 	createServerHandle,
 	exportModel,
@@ -273,6 +274,42 @@ test("exportModel does not jump to 100% before quantization finishes", async (t)
 	t.is(start.value?.progress, 0);
 	t.is(converting.value?.progress, 25);
 	t.is(scaleProgress(50, 100, undefined), 75);
+});
+
+// ── server args ───────────────────────────────────────────────────────
+
+test("buildServerArgs omits --alias when no alias is given", (t) => {
+	const args = buildServerArgs("model.gguf", 1234, {});
+	t.false(args.includes("--alias"));
+});
+
+test("buildServerArgs passes --alias when given", (t) => {
+	const args = buildServerArgs("model.gguf", 1234, {alias: "my-model-q4"});
+	const idx = args.indexOf("--alias");
+	t.not(idx, -1);
+	t.is(args[idx + 1], "my-model-q4");
+});
+
+test("buildServerArgs omits --alias for an empty string", (t) => {
+	const args = buildServerArgs("model.gguf", 1234, {alias: ""});
+	t.false(args.includes("--alias"));
+});
+
+test("buildServerArgs combines --alias with threads/gpuLayers/cpuOnly", (t) => {
+	const args = buildServerArgs("model.gguf", 1234, {
+		alias: "my-model-q4",
+		threads: 8,
+		gpuLayers: 20,
+		cpuOnly: true,
+	});
+	t.true(args.includes("-t"));
+	t.is(args[args.indexOf("-t") + 1], "8");
+	// cpuOnly forces -ngl 0 after gpuLayers already pushed its own -ngl 20.
+	t.deepEqual(
+		args.filter((_, i) => args[i - 1] === "-ngl"),
+		["20", "0"],
+	);
+	t.is(args[args.indexOf("--alias") + 1], "my-model-q4");
 });
 
 // ── server lifecycle ──────────────────────────────────────────────────
