@@ -1,9 +1,21 @@
 {
 	"types": [
-		{ "name": "bug", "description": "Something that exists does not work as intended" },
-		{ "name": "enhancement", "description": "A new feature, or a change to how something works" },
-		{ "name": "question", "description": "Asks how something works or whether something is possible" },
-		{ "name": "documentation", "description": "The docs are missing, wrong or unclear" }
+		{
+			"name": "bug",
+			"description": "Something that exists does not work as intended"
+		},
+		{
+			"name": "enhancement",
+			"description": "A new feature, or a change to how something works"
+		},
+		{
+			"name": "question",
+			"description": "Asks how something works or whether something is possible"
+		},
+		{
+			"name": "documentation",
+			"description": "The docs are missing, wrong or unclear"
+		}
 	],
 	"areas": {
 		"area:data": "Dataset management: data add/import/list/validate/split, train.jsonl and valid.jsonl",
