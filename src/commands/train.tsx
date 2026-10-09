@@ -11,6 +11,7 @@ import {
 	useAutoExit,
 	useKeyInput,
 } from '../components/index.js';
+import {TrainingDone} from '../components/TrainingDone.js';
 import {
 	configExists,
 	getAdaptersDir,
@@ -28,6 +29,7 @@ import {
 	shouldTreatAsStop,
 } from '../lib/mlx.js';
 import {assertSupportedPlatform} from '../lib/platform.js';
+import {startTrainingRun} from '../lib/training-runs.js';
 import {TrainingConfigSchema, type TrainingProgress} from '../types/index.js';
 
 // Maps TrainingConfigSchema field names to the CLI flag that overrides them,
@@ -42,6 +44,8 @@ const TRAINING_FLAG_NAMES: Record<string, string> = {
 	numLayers: '--num-layers',
 	stepsPerEval: '--steps-per-eval',
 	saveEvery: '--save-every',
+	earlyStoppingPatience: '--early-stopping-patience',
+	loadBestModelAtEnd: '--load-best-model-at-end',
 	fineTuneType: '--fine-tune-type',
 	loraRank: '--lora-rank',
 	loraAlpha: '--lora-alpha',
@@ -71,6 +75,8 @@ interface Props {
 		numLayers?: string;
 		stepsPerEval?: string;
 		saveEvery?: string;
+		earlyStoppingPatience?: string;
+		loadBestModelAtEnd?: boolean;
 		fineTuneType?: string;
 		loraRank?: string;
 		loraAlpha?: string;
@@ -117,6 +123,9 @@ export function TrainCommand({options}: Props) {
 	// than re-reading config.training.saveEvery and naming the wrong iteration.
 	const [saveEvery, setSaveEvery] = useState<number | null>(null);
 	const abortRef = useRef<AbortController | null>(null);
+	const runHistoryRef = useRef<ReturnType<typeof startTrainingRun> | null>(
+		null,
+	);
 
 	// Ctrl+C is ours to handle here (the command renders with
 	// `exitOnCtrlC: false`), so mid-training it stops the trainer gracefully
@@ -129,6 +138,12 @@ export function TrainCommand({options}: Props) {
 				abortRef.current?.abort();
 				setStatus('stopping');
 			} else if (status === 'stopping') {
+				try {
+					runHistoryRef.current?.finish('stopped');
+				} catch (err) {
+					setError(`Could not save training run history: ${String(err)}`);
+					return;
+				}
 				process.exit(130);
 			} else {
 				exit();
@@ -158,6 +173,9 @@ export function TrainCommand({options}: Props) {
 	}, [status]);
 
 	const run = useCallback(async () => {
+		let outcome: 'completed' | 'stopped' | 'failed' = 'failed';
+		let failure: string | undefined;
+		let earlyStopped = false;
 		try {
 			// Parse the seed before any work happens. Number.parseInt would turn
 			// a typo into NaN and mulberry32 would coerce that to 0, producing a
@@ -215,6 +233,8 @@ export function TrainCommand({options}: Props) {
 				numLayers: numericOverride(options.numLayers),
 				stepsPerEval: numericOverride(options.stepsPerEval),
 				saveEvery: numericOverride(options.saveEvery),
+				earlyStoppingPatience: numericOverride(options.earlyStoppingPatience),
+				loadBestModelAtEnd: options.loadBestModelAtEnd,
 				fineTuneType: options.fineTuneType,
 				loraRank: numericOverride(options.loraRank),
 				loraAlpha: numericOverride(options.loraAlpha),
@@ -288,6 +308,14 @@ export function TrainCommand({options}: Props) {
 			if (seed !== undefined && !split.didSplit) {
 				setSeedIgnored(true);
 			}
+			const adapterFile = join(getAdaptersDir(), 'adapters.safetensors');
+			runHistoryRef.current = startTrainingRun({
+				baseModel: config.baseModel,
+				training,
+				adapterFile,
+				examples: {train: split.trainCount, validation: split.validCount},
+				resume: Boolean(options.resume),
+			});
 
 			// Download model if not cached
 			setStatus('downloading');
@@ -331,11 +359,20 @@ export function TrainCommand({options}: Props) {
 				adapterPath: getAdaptersDir(),
 				resume: options.resume,
 				signal: controller.signal,
+				onLoss: point => runHistoryRef.current?.update(point),
+				onCheckpoint: () => runHistoryRef.current?.checkpoint(),
+				onSelection: summary => {
+					earlyStopped = summary.earlyStopped === true;
+					runHistoryRef.current?.selection(summary);
+				},
 			};
 
 			for await (const update of runTraining(trainingOptions)) {
 				setProgress(update);
-				setLossHistory(prev => [...prev, update.trainLoss]);
+				if (update.isTrainReport && update.trainLoss != null) {
+					const trainLoss = update.trainLoss;
+					setLossHistory(prev => [...prev, trainLoss]);
+				}
 
 				// Calculate ETA
 				const elapsedMs = Date.now() - startTime;
@@ -351,14 +388,32 @@ export function TrainCommand({options}: Props) {
 				}
 			}
 
-			setStatus(controller.signal.aborted ? 'stopped' : 'done');
+			const stopped = controller.signal.aborted;
+			outcome = stopped || earlyStopped ? 'stopped' : 'completed';
+			setStatus(stopped ? 'stopped' : 'done');
 		} catch (err) {
 			if (shouldTreatAsStop(abortRef.current?.signal)) {
+				outcome = 'stopped';
 				setStatus('stopped');
 				return;
 			}
-			setError(err instanceof Error ? err.message : 'Training failed');
+			const message = err instanceof Error ? err.message : 'Training failed';
+			failure = message;
+			setError(message);
 			setStatus('error');
+		} finally {
+			const run = runHistoryRef.current;
+			if (run) {
+				try {
+					run.finish(outcome, failure);
+				} catch (err) {
+					const message =
+						err instanceof Error ? err.message : 'Unknown file-system error';
+					setError(`Could not save training run history: ${message}`);
+					setStatus('error');
+				}
+				runHistoryRef.current = null;
+			}
 		}
 	}, [
 		options.iterations,
@@ -367,6 +422,8 @@ export function TrainCommand({options}: Props) {
 		options.numLayers,
 		options.stepsPerEval,
 		options.saveEvery,
+		options.earlyStoppingPatience,
+		options.loadBestModelAtEnd,
 		options.fineTuneType,
 		options.loraRank,
 		options.loraAlpha,
@@ -478,13 +535,15 @@ export function TrainCommand({options}: Props) {
 					</Box>
 
 					<Box>
-						<Text>
-							Train Loss:{' '}
-							<Text color="green">{progress.trainLoss.toFixed(4)}</Text>
-						</Text>
-						{progress.valLoss && (
+						{progress.trainLoss != null && (
 							<Text>
-								{' | '}Val Loss:{' '}
+								Train Loss:{' '}
+								<Text color="green">{progress.trainLoss.toFixed(4)}</Text>
+							</Text>
+						)}
+						{progress.valLoss != null && (
+							<Text>
+								{progress.trainLoss != null ? ' | ' : ''}Val Loss:{' '}
 								<Text color="green">{progress.valLoss.toFixed(4)}</Text>
 							</Text>
 						)}
@@ -552,24 +611,7 @@ export function TrainCommand({options}: Props) {
 				</Box>
 			)}
 
-			{status === 'done' && (
-				<Box flexDirection="column">
-					<StatusMessage variant="success">Training complete!</StatusMessage>
-					<Text> </Text>
-					{progress && (
-						<Text>
-							Final loss:{' '}
-							<Text color="green">{progress.trainLoss.toFixed(4)}</Text>
-						</Text>
-					)}
-					<Text> </Text>
-					<Text>
-						Next: <Text color="cyan">nanotune export</Text>
-					</Text>
-					<Text> </Text>
-					<ExitHint>Press any key to exit</ExitHint>
-				</Box>
-			)}
+			{status === 'done' && <TrainingDone progress={progress} />}
 
 			{status === 'error' && (
 				<Box flexDirection="column">

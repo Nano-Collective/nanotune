@@ -32,6 +32,8 @@ export const TrainingConfigSchema = z.object({
 	gradCheckpoint: z.boolean().default(false),
 	valBatches: z.int().nonnegative().default(25),
 	seed: z.int().nonnegative().default(0),
+	earlyStoppingPatience: z.int().nonnegative().default(0),
+	loadBestModelAtEnd: z.boolean().default(false),
 });
 
 export const ExportConfigSchema = z.object({
@@ -60,8 +62,13 @@ export type ExportConfig = z.infer<typeof ExportConfigSchema>;
 export interface TrainingProgress {
 	iteration: number;
 	totalIterations: number;
-	trainLoss: number;
+	trainLoss?: number;
 	valLoss?: number;
+	isTrainReport?: boolean;
+	earlyStopped?: boolean;
+	restoredBest?: boolean;
+	bestIteration?: number;
+	bestValLoss?: number;
 }
 
 export interface DownloadProgress {

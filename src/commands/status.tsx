@@ -120,6 +120,43 @@ export function StatusCommand() {
 						{'  '}Last Run: {formatRelativeTime(report.training.lastRun)}
 					</Text>
 				)}
+				{report.training.adapterRun && (
+					<Box flexDirection="column" marginTop={1}>
+						<Text bold>{'  '}Current adapter run:</Text>
+						<Text>
+							{'    '}Outcome: {report.training.adapterRun.status}
+						</Text>
+						<Text>
+							{'    '}Model: {report.training.adapterRun.baseModel}
+						</Text>
+						<Text>
+							{'    '}Settings:{' '}
+							{report.training.adapterRun.training.fineTuneType},{' '}
+							{report.training.adapterRun.training.iterations} iterations, lr{' '}
+							{report.training.adapterRun.training.learningRate}
+						</Text>
+						<Text>
+							{'    '}Data: {report.training.adapterRun.examples.train} train /{' '}
+							{report.training.adapterRun.examples.validation} validation
+						</Text>
+						<Text>
+							{'    '}Duration:{' '}
+							{Math.round(report.training.adapterRun.durationMs / 1000)}s
+						</Text>
+						{report.training.adapterRun.finalTrainLoss !== null && (
+							<Text>
+								{'    '}Final train loss:{' '}
+								{report.training.adapterRun.finalTrainLoss.toFixed(4)}
+							</Text>
+						)}
+						{report.training.adapterRun.finalValLoss !== null && (
+							<Text>
+								{'    '}Final validation loss:{' '}
+								{report.training.adapterRun.finalValLoss.toFixed(4)}
+							</Text>
+						)}
+					</Box>
+				)}
 
 				<Text> </Text>
 				<Text bold>Exports:</Text>

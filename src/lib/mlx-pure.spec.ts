@@ -34,6 +34,8 @@ function options(overrides: Partial<MLXTrainingOptions> = {}): MLXTrainingOption
 		gradCheckpoint: false,
 		valBatches: 25,
 		seed: 42,
+		earlyStoppingPatience: 0,
+		loadBestModelAtEnd: false,
 		...overrides,
 	};
 }

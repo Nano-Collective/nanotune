@@ -1,4 +1,11 @@
-import {mkdtempSync, rmSync, writeFileSync} from 'node:fs';
+import {
+	copyFileSync,
+	existsSync,
+	mkdtempSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {execa, type ResultPromise} from 'execa';
@@ -8,6 +15,11 @@ import type {
 	FineTuneType,
 	TrainingProgress,
 } from '../types/index.js';
+import {
+	EARLY_STOPPING_SCRIPT,
+	parseSelectionEvent,
+	type SelectionEvent,
+} from './early-stopping.js';
 
 export interface MLXTrainingOptions {
 	model: string;
@@ -28,12 +40,43 @@ export interface MLXTrainingOptions {
 	gradCheckpoint: boolean;
 	valBatches: number;
 	seed: number;
+	earlyStoppingPatience: number;
+	loadBestModelAtEnd: boolean;
 	/**
 	 * Optional AbortSignal for stopping a run early. Aborting sends SIGINT so
 	 * MLX writes its checkpoint before exiting; the generator then returns
 	 * normally, since a user-requested stop is not a training failure.
 	 */
 	signal?: AbortSignal;
+	/** All loss reports, including standalone validation evaluations. */
+	onLoss?: (point: TrainingLossPoint) => void;
+	/** Called once MLX reports a checkpoint write has completed. */
+	onCheckpoint?: () => void;
+	onSelection?: (progress: TrainingProgress) => void;
+}
+
+export interface TrainingLossPoint {
+	iteration: number;
+	trainLoss?: number;
+	valLoss?: number;
+}
+
+/** MLX reports train and validation losses on separate lines. */
+export function parseTrainingLoss(line: string): TrainingLossPoint | null {
+	const prefix = line.match(
+		/Iter\s+(\d+)(?:\s*\([^)]+\))?:\s*(?:Train|Val) loss/i,
+	);
+	if (!prefix) return null;
+	const number = '([+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:e[+-]?\\d+)?)';
+	const train = line.match(new RegExp(`Train loss\\s+${number}`, 'i'));
+	const val = line.match(new RegExp(`Val loss\\s+${number}`, 'i'));
+	const point: TrainingLossPoint = {iteration: Number(prefix[1])};
+	if (train && Number.isFinite(Number(train[1])))
+		point.trainLoss = Number(train[1]);
+	if (val && Number.isFinite(Number(val[1]))) point.valLoss = Number(val[1]);
+	return point.trainLoss === undefined && point.valLoss === undefined
+		? null
+		: point;
 }
 
 // mlx_lm has no flat CLI flags for LoRA rank/scale/dropout. They are only
@@ -376,6 +419,49 @@ export function buildTrainingArgs(
 	return args;
 }
 
+const ANSI = /\u001B\[[0-9;]*[A-Za-z]/g;
+
+const RICH_VAL = /^\s*(\d+)\s+val\s+([0-9]*\.?[0-9]+)/i;
+const RICH_TRAIN = /^\s*(\d+)\s+([0-9]*\.?[0-9]+)\s+[▼▲]/;
+
+interface ParsedTrainingLine {
+	iteration: number;
+	trainLoss?: number;
+	valLoss?: number;
+}
+
+export function parseTrainingLogLine(raw: string): ParsedTrainingLine | null {
+	const line = raw.replace(ANSI, '');
+	const plain = parseTrainingLoss(line);
+	if (plain) return plain;
+	const val = line.match(RICH_VAL);
+	if (val) {
+		return {
+			iteration: Number.parseInt(val[1], 10),
+			valLoss: Number.parseFloat(val[2]),
+		};
+	}
+	const richTrain = line.match(RICH_TRAIN);
+	if (richTrain) {
+		return {
+			iteration: Number.parseInt(richTrain[1], 10),
+			trainLoss: Number.parseFloat(richTrain[2]),
+		};
+	}
+	return null;
+}
+
+/** Publish a fully copied checkpoint atomically; a failed copy keeps the target. */
+export function restoreAdapterFile(src: string, dest: string): void {
+	const temp = `${dest}.restore-${process.pid}.tmp`;
+	try {
+		copyFileSync(src, temp);
+		renameSync(temp, dest);
+	} finally {
+		rmSync(temp, {force: true});
+	}
+}
+
 export async function* runTraining(
 	options: MLXTrainingOptions,
 ): AsyncGenerator<TrainingProgress> {
@@ -384,6 +470,9 @@ export async function* runTraining(
 	// gets cleaned up in the finally below rather than leaking a temp dir.
 	let loraConfigDir: string | null = null;
 	let detachAbort: (() => void) | null = null;
+	let subprocess: ResultPromise | undefined;
+	let subprocessSettled = false;
+	let selectionDir: string | null = null;
 	try {
 		let loraConfigPath: string | undefined;
 		if (needsLoraConfig(options.fineTuneType)) {
@@ -399,15 +488,32 @@ export async function* runTraining(
 			);
 		}
 
-		const subprocess = execa(
-			'python3',
-			buildTrainingArgs(options, loraConfigPath),
-			{
-				stdout: 'pipe',
-				stderr: 'pipe',
-				buffer: false,
-			},
-		);
+		const selectBest =
+			options.earlyStoppingPatience > 0 || options.loadBestModelAtEnd;
+		if (selectBest)
+			selectionDir = mkdtempSync(join(tmpdir(), 'nanotune-selection-'));
+		const bestPath = selectionDir
+			? join(selectionDir, 'best.safetensors')
+			: null;
+		const args = buildTrainingArgs(options, loraConfigPath);
+		// The wrapper runs the same CLI, injecting a callback at the evaluation
+		// boundary. A unique path excludes every previous run's checkpoints.
+		const argv =
+			selectBest && bestPath
+				? [
+						'-c',
+						EARLY_STOPPING_SCRIPT,
+						String(options.earlyStoppingPatience),
+						String(options.loadBestModelAtEnd),
+						bestPath,
+						...args.slice(3),
+					]
+				: args;
+		subprocess = execa('python3', argv, {
+			stdout: 'pipe',
+			stderr: 'pipe',
+			buffer: false,
+		});
 
 		detachAbort = stopOnAbort(subprocess, options.signal);
 
@@ -426,6 +532,50 @@ export async function* runTraining(
 		}
 
 		let buffer = '';
+		let selection: SelectionEvent | null = null;
+		let last: TrainingProgress | null = null;
+		let latestValLoss: number | undefined;
+		function parseUpdate(line: string): TrainingProgress | null {
+			const event = parseSelectionEvent(line);
+			if (event?.type === 'selection') {
+				selection = event;
+				return null;
+			}
+			if (event?.type === 'validation') {
+				if (event.valLoss !== null) {
+					options.onLoss?.({
+						iteration: event.iteration,
+						valLoss: event.valLoss,
+					});
+					latestValLoss = event.valLoss;
+				}
+				return null;
+			}
+			if (/Saved (?:adapter|final) weights/i.test(line))
+				options.onCheckpoint?.();
+			const point = parseTrainingLogLine(line);
+			if (!point) return null;
+			// Structured evaluations already carry the correct optimizer step.
+			if (!selectBest) {
+				options.onLoss?.(point);
+				if (point.valLoss !== undefined) latestValLoss = point.valLoss;
+			} else if (point.trainLoss !== undefined) {
+				options.onLoss?.({
+					iteration: point.iteration,
+					trainLoss: point.trainLoss,
+				});
+			}
+			if (point.trainLoss === undefined) return null;
+			const update = {
+				iteration: point.iteration,
+				totalIterations: options.iterations,
+				trainLoss: point.trainLoss,
+				valLoss: latestValLoss,
+				isTrainReport: true,
+			};
+			last = update;
+			return update;
+		}
 
 		// The for-await can throw ABORT_ERR if the process exits mid-stream, which
 		// is exactly what a SIGINT stop looks like. Let the subprocess result below
@@ -433,23 +583,12 @@ export async function* runTraining(
 		try {
 			for await (const chunk of stdout) {
 				buffer += chunk.toString();
-				const lines = buffer.split('\n');
+				const lines = buffer.split(/\r\n|\n|\r/);
 				buffer = lines.pop() || '';
 
 				for (const line of lines) {
-					// Parse: "Iter 10: Train loss 1.234, Val loss 1.456"
-					// or: "Iter 10 (15.2 it/s): Train loss 1.234"
-					const match = line.match(
-						/Iter\s+(\d+)(?:\s*\([^)]+\))?:\s*Train loss\s+([\d.]+)(?:,\s*Val loss\s+([\d.]+))?/i,
-					);
-					if (match) {
-						yield {
-							iteration: Number.parseInt(match[1], 10),
-							totalIterations: options.iterations,
-							trainLoss: Number.parseFloat(match[2]),
-							valLoss: match[3] ? Number.parseFloat(match[3]) : undefined,
-						};
-					}
+					const update = parseUpdate(line);
+					if (update) yield update;
 				}
 			}
 		} catch (err) {
@@ -458,31 +597,70 @@ export async function* runTraining(
 			}
 		}
 
+		const finalUpdate = parseUpdate(buffer);
+		if (finalUpdate) yield finalUpdate;
 		try {
 			await subprocess;
+			subprocessSettled = true;
 		} catch (err) {
-			// A stop we asked for: MLX has flushed its checkpoint, so return
-			// normally instead of reporting the interrupted run as a failure.
-			if (options.signal?.aborted) {
-				return;
+			subprocessSettled = true;
+			if (!options.signal?.aborted) {
+				const errorMessage =
+					err instanceof Error ? err.message : 'Training failed';
+				const stderrTrimmed = stderrOutput.trim();
+				if (stderrTrimmed) {
+					const stderrLines = stderrTrimmed.split('\n');
+					const relevantLines = stderrLines.slice(-10).join('\n');
+					throw new Error(`${errorMessage}\n\nDetails:\n${relevantLines}`);
+				}
+				throw err;
 			}
-			// Include stderr in the error message for better debugging
-			const errorMessage =
-				err instanceof Error ? err.message : 'Training failed';
-			const stderrTrimmed = stderrOutput.trim();
-			if (stderrTrimmed) {
-				// Extract the most relevant part of the error (last few lines usually have the actual error)
-				const stderrLines = stderrTrimmed.split('\n');
-				const relevantLines = stderrLines.slice(-10).join('\n');
-				throw new Error(`${errorMessage}\n\nDetails:\n${relevantLines}`);
+		}
+
+		if (options.signal?.aborted) return;
+		if (selectBest) {
+			// Successful exit must include the callback's result. Never infer a
+			// best checkpoint from console output or a stale numbered file.
+			const result = selection as SelectionEvent | null;
+			if (!result)
+				throw new Error('MLX did not report best-checkpoint selection.');
+			let restoredBest = false;
+			if (result.restoreBest && bestPath) {
+				if (!existsSync(bestPath))
+					throw new Error('The evaluated best checkpoint is missing.');
+				restoreAdapterFile(
+					bestPath,
+					join(options.adapterPath, 'adapters.safetensors'),
+				);
+				restoredBest = true;
+				options.onCheckpoint?.();
 			}
-			throw err;
+			const summary: TrainingProgress = {
+				iteration: (last as TrainingProgress | null)?.iteration ?? 0,
+				totalIterations: options.iterations,
+				trainLoss: (last as TrainingProgress | null)?.trainLoss,
+				valLoss: latestValLoss,
+				isTrainReport: false,
+				earlyStopped: result.earlyStopped,
+				restoredBest,
+				bestIteration: result.bestIteration ?? undefined,
+				bestValLoss: result.bestValLoss ?? undefined,
+			};
+			options.onSelection?.(summary);
+			yield summary;
 		}
 	} finally {
 		detachAbort?.();
+		// A failed history write or a consumer ending the generator must not
+		// leave a trainer updating weights after its run has been finalized.
+		if (subprocess && !subprocessSettled) {
+			subprocess.kill('SIGINT');
+			await subprocess.catch(() => {});
+		}
 		if (loraConfigDir) {
 			rmSync(loraConfigDir, {recursive: true, force: true});
 		}
+		if (selectionDir) rmSync(selectionDir, {recursive: true, force: true});
 	}
 }
 
