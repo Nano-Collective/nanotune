@@ -273,6 +273,7 @@ test.serial("DataValidateCommand reports a valid dataset", async (t) => {
     const output = await renderCommand(<DataValidateCommand />, "Training data is valid");
     t.true(output.includes("Training data is valid!"));
     t.true(output.includes("Examples:"));
+    t.true(output.includes("Within max sequence length"));
   } finally {
     teardown();
   }
@@ -292,6 +293,30 @@ test.serial("DataValidateCommand reports errors and warnings", async (t) => {
     t.true(output.includes("Expected at least 2 messages"));
     t.true(output.includes("Warnings:"));
     t.true(output.includes("duplicate user inputs"));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("DataValidateCommand warns when an example looks longer than maxSeqLength", async (t) => {
+  try {
+    setupProject();
+    writeFileSync(
+      join(NANOTUNE_DIR, "config.json"),
+      JSON.stringify(
+        { ...CONFIG, training: { ...CONFIG.training, maxSeqLength: 4 } },
+        null,
+        2,
+      ),
+    );
+    writeExamples([example("hello")]);
+    const output = await renderCommand(
+      <DataValidateCommand />,
+      "Training data is valid",
+    );
+    t.true(output.includes("Training data is valid!"));
+    t.true(output.includes("may be longer than maxSeqLength (4)"));
+    t.true(output.includes("example 1"));
   } finally {
     teardown();
   }

@@ -116,6 +116,7 @@ This checks for:
 - Context message consistency
 - Minimum example count
 - Consecutive same-role messages (broken turn alternation)
+- Examples that look longer than `maxSeqLength`
 
 Pass `--fix` to remove exact-duplicate examples (identical messages, not just matching input text), or `--rewrite-context` to rewrite mismatched context messages to match your current config:
 
