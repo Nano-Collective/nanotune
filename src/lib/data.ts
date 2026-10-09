@@ -333,6 +333,18 @@ export function countTurns(example: TrainingExample): number {
 	return turns;
 }
 
+/**
+ * The key by which two examples count as sharing an input: the first user-role
+ * message, trimmed and lowercased. Shared by the in-set duplicate warning and
+ * the train/validation overlap check so the two cannot disagree about what
+ * "the same input" means. Undefined for an example with no non-empty user
+ * message, which never matches anything.
+ */
+function inputKeyOf(example: TrainingExample): string | undefined {
+	const userMsg = example.messages.find(m => m.role === 'user');
+	return userMsg?.content?.trim().toLowerCase() || undefined;
+}
+
 export interface ValidationResult {
 	valid: boolean;
 	errors: string[];
@@ -425,8 +437,7 @@ export function validateTrainingData(
 		}
 
 		// Check duplicates based on user-role messages
-		const userMsg = ex.messages.find(m => m.role === 'user');
-		const inputKey = userMsg?.content?.trim().toLowerCase();
+		const inputKey = inputKeyOf(ex);
 		if (inputKey && seenInputs.has(inputKey)) {
 			duplicateCount++;
 		} else if (inputKey) {
@@ -491,6 +502,76 @@ export function dedupeExamples(isEval: boolean): DedupeResult {
 	return {removedCount: removedIndexes.length, removedIndexes};
 }
 
+export interface TrainValidOverlapResult {
+	/** Distinct normalized user inputs present in both sets. */
+	overlapCount: number;
+	/**
+	 * 1-based example numbers in train.jsonl whose input also appears in
+	 * valid.jsonl. Numbered the way `validateTrainingData` numbers examples -
+	 * the Nth parseable example, which is the Nth line only when every line
+	 * ahead of it parsed. A file with unparseable lines reports those
+	 * separately as errors.
+	 */
+	trainIndexes: number[];
+	/** The same, for the examples in valid.jsonl. */
+	validIndexes: number[];
+}
+
+/**
+ * Find user inputs present in both train.jsonl and valid.jsonl — data leakage,
+ * which makes validation loss look better than the model really is. The split
+ * produces disjoint sets, but the two files can drift apart afterwards (a
+ * hand-edit, a re-import, or an interrupted split that left a recoverable
+ * duplicate), so the overlap is recomputed from disk rather than assumed gone.
+ *
+ * Direction-agnostic: leakage is a property of the pair, so one intersection
+ * reports both sides' positions and the caller picks which to show. That also
+ * means `validate` and `validate --eval` cannot report different counts.
+ *
+ * Reads through parseTrainingData, not loadTrainingData: a malformed line is
+ * already reported as a structural error by that set's own validation, and must
+ * not make this check throw.
+ */
+export function findTrainValidOverlap(): TrainValidOverlapResult {
+	// A fresh object per return: callers own what they get, and sharing one
+	// literal would hand every no-overlap caller the same two arrays.
+	const none = (): TrainValidOverlapResult => ({
+		overlapCount: 0,
+		trainIndexes: [],
+		validIndexes: [],
+	});
+
+	const trainKeys = parseTrainingData(false).examples.map(inputKeyOf);
+	const validKeys = parseTrainingData(true).examples.map(inputKeyOf);
+
+	const validSet = new Set(validKeys.filter(k => k !== undefined));
+	if (validSet.size === 0) {
+		return none();
+	}
+
+	// Distinct shared inputs, not rows: an input repeated inside train.jsonl is
+	// the separate noDuplicateInputs check's business, and counting rows here
+	// would report the same leak twice.
+	const shared = new Set<string>();
+	for (const key of trainKeys) {
+		if (key !== undefined && validSet.has(key)) {
+			shared.add(key);
+		}
+	}
+	if (shared.size === 0) {
+		return none();
+	}
+
+	const positions = (keys: (string | undefined)[]): number[] =>
+		keys.flatMap((k, i) => (k !== undefined && shared.has(k) ? [i + 1] : []));
+
+	return {
+		overlapCount: shared.size,
+		trainIndexes: positions(trainKeys),
+		validIndexes: positions(validKeys),
+	};
+}
+
 export interface ContextFixResult {
 	fixedCount: number;
 }
@@ -548,6 +629,12 @@ export interface ValidationChecks {
 	validJsonStructure: boolean;
 	contextMessageConsistency: boolean;
 	noDuplicateInputs: boolean;
+	/**
+	 * True when no user input appears in both train.jsonl and valid.jsonl.
+	 * Reported for both sets: leakage is a property of the pair, so `--eval`
+	 * flags the same condition from the validation side.
+	 */
+	noTrainValidOverlap: boolean;
 	/** Always true for a validation set — the 50-example floor is a training-set rule. */
 	minimumExampleCount: boolean;
 }
@@ -559,6 +646,12 @@ export interface ValidationReport {
 	valid: boolean;
 	errors: string[];
 	warnings: string[];
+	/**
+	 * Distinct user inputs present in both train.jsonl and valid.jsonl. The
+	 * count behind the leakage warning; `checks.noTrainValidOverlap` is derived
+	 * from this, never from the warning prose.
+	 */
+	trainValidOverlap: number;
 	checks: ValidationChecks;
 	/** Null unless `--fix` or `--rewrite-context` ran. */
 	fixes: ValidationFixes | null;
@@ -598,17 +691,38 @@ export function collectValidation({
 	const examples = countExamples(isEval);
 	const result = validateTrainingData(contextMessage, isEval);
 
+	// Cross-file, so it lives here rather than in validateTrainingData, which is
+	// single-set by contract and early-returns on an empty set - skipping the
+	// check exactly when one of the two files is empty. Computed after the
+	// fixes, like the counts above, so the report describes what is on disk.
+	const overlap = findTrainValidOverlap();
+	const warnings = [...result.warnings];
+	if (overlap.overlapCount > 0) {
+		const file = isEval ? EVAL_FILE : TRAIN_FILE;
+		const rows = isEval ? overlap.validIndexes : overlap.trainIndexes;
+		// Truncated: a badly diverged pair of files would otherwise flood the
+		// warning list with row numbers.
+		const shown = rows.slice(0, 5).join(', ');
+		const more = rows.length > 5 ? ', ...' : '';
+		const plural = overlap.overlapCount > 1;
+		warnings.push(
+			`${overlap.overlapCount} user input${plural ? 's' : ''} appear${plural ? '' : 's'} in both ${TRAIN_FILE} and ${EVAL_FILE} (data leakage) - ${file} example${rows.length > 1 ? 's' : ''} ${shown}${more}`,
+		);
+	}
+
 	return {
 		set: isEval ? 'eval' : 'train',
 		examples,
 		valid: result.valid,
 		errors: result.errors,
-		warnings: result.warnings,
+		warnings,
+		trainValidOverlap: overlap.overlapCount,
 		checks: {
 			dataFileExists: examples > 0,
 			validJsonStructure: result.errors.length === 0,
 			contextMessageConsistency: result.inconsistentContextMessages === 0,
 			noDuplicateInputs: result.duplicateInputs === 0,
+			noTrainValidOverlap: overlap.overlapCount === 0,
 			// A validation set is a slice of the training data, so the 50-example
 			// floor does not apply to it — matching the rule `validateTrainingData`
 			// already uses when deciding whether to warn.

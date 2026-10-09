@@ -135,11 +135,13 @@ disk.
   "valid": true,
   "errors": [],
   "warnings": ["12 duplicate user inputs found"],
+  "trainValidOverlap": 0,
   "checks": {
     "dataFileExists": true,
     "validJsonStructure": true,
     "contextMessageConsistency": true,
     "noDuplicateInputs": false,
+    "noTrainValidOverlap": true,
     "minimumExampleCount": true
   },
   "fixes": null
@@ -153,10 +155,12 @@ disk.
 | `valid` | boolean | False when `errors` is non-empty; drives the exit code |
 | `errors[]` | string[] | Problems that make the data untrainable |
 | `warnings[]` | string[] | Advisory notes; do not affect `valid` |
+| `trainValidOverlap` | number | Distinct user inputs present in both `train.jsonl` and `valid.jsonl` |
 | `checks.dataFileExists` | boolean | True when the set holds at least one example |
 | `checks.validJsonStructure` | boolean | True when there are no structural errors |
 | `checks.contextMessageConsistency` | boolean | True when every example's context message matches `config.json` |
 | `checks.noDuplicateInputs` | boolean | True when no two examples share a user input |
+| `checks.noTrainValidOverlap` | boolean | True when no user input appears in both sets. Reported identically with `--eval`, since leakage is a property of the pair |
 | `checks.minimumExampleCount` | boolean | True at 50+ examples. Always true for a validation set, which is a slice of the training data and not subject to the floor |
 | `fixes` | object \| null | `null` unless `--fix` or `--rewrite-context` ran |
 | `fixes.duplicatesRemoved` | number | Exact-duplicate examples deleted by `--fix` |
@@ -171,6 +175,7 @@ Fail a CI job on invalid data, or on a specific check:
 ```bash
 nanotune data validate --json          # exits 1 when the data is invalid
 nanotune data validate --json | jq -e '.checks.contextMessageConsistency'
+nanotune data validate --json | jq -e '.checks.noTrainValidOverlap'
 ```
 
 ## `nanotune benchmark --json`

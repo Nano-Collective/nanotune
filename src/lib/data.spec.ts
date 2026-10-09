@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "ava";
 import type { TrainingExample } from "../types/index.js";
@@ -16,6 +16,7 @@ import {
   exportToCSV,
   exportToJSON,
   exportToJSONL,
+  findTrainValidOverlap,
   fixContextMessages,
   getAllTurnsContent,
   getTurnContent,
@@ -2155,4 +2156,166 @@ test.serial("collectValidation throws the init hint outside a project", (t) => {
   const error = t.throws(() => collectValidation());
 
   t.true(error?.message.includes("Not a Nanotune project"));
+});
+
+// ── findTrainValidOverlap ─────────────────────────────────────────────
+
+function addTrain(userInput: string, assistantOutput = "out") {
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput, assistantOutput }, false);
+}
+
+function addValid(userInput: string, assistantOutput = "out") {
+  appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput, assistantOutput }, true);
+}
+
+test.serial("findTrainValidOverlap reports overlapping inputs with positions on both sides", (t) => {
+  addTrain("A");
+  addTrain("B");
+  addTrain("C");
+  addValid("Z");
+  addValid("B");
+
+  const overlap = findTrainValidOverlap();
+
+  t.is(overlap.overlapCount, 1);
+  t.deepEqual(overlap.trainIndexes, [2]);
+  t.deepEqual(overlap.validIndexes, [2]);
+});
+
+test.serial("findTrainValidOverlap returns no overlap for a clean split", (t) => {
+  addTrain("A");
+  addTrain("B");
+  addValid("C");
+
+  const overlap = findTrainValidOverlap();
+
+  t.is(overlap.overlapCount, 0);
+  t.deepEqual(overlap.trainIndexes, []);
+  t.deepEqual(overlap.validIndexes, []);
+});
+
+test.serial("findTrainValidOverlap is silent when valid.jsonl is missing", (t) => {
+  addTrain("A");
+
+  // Guard against the test passing because nothing was written at all.
+  t.true(existsSync(join(DATA_DIR, "train.jsonl")));
+  t.false(existsSync(join(DATA_DIR, "valid.jsonl")));
+
+  t.is(findTrainValidOverlap().overlapCount, 0);
+});
+
+test.serial("findTrainValidOverlap normalizes case and surrounding whitespace", (t) => {
+  addTrain("  Hello  ");
+  addValid("hello");
+
+  const overlap = findTrainValidOverlap();
+
+  t.is(overlap.overlapCount, 1);
+  t.deepEqual(overlap.trainIndexes, [1]);
+});
+
+test.serial("findTrainValidOverlap ignores examples with no user message", (t) => {
+  const noUser: TrainingExample = {
+    messages: [SYSTEM_CTX, { role: "assistant", content: "orphan" }],
+  };
+  writeFileSync(join(DATA_DIR, "train.jsonl"), `${JSON.stringify(noUser)}\n`);
+  writeFileSync(join(DATA_DIR, "valid.jsonl"), `${JSON.stringify(noUser)}\n`);
+
+  t.is(findTrainValidOverlap().overlapCount, 0);
+});
+
+test.serial("findTrainValidOverlap counts a repeated input once", (t) => {
+  addTrain("B", "first");
+  addTrain("B", "second");
+  addValid("B");
+
+  const overlap = findTrainValidOverlap();
+
+  // Distinct inputs, not rows - the in-set repeat is noDuplicateInputs' job.
+  t.is(overlap.overlapCount, 1);
+  t.deepEqual(overlap.trainIndexes, [1, 2]);
+});
+
+test.serial("findTrainValidOverlap survives a malformed line in valid.jsonl", (t) => {
+  addTrain("A");
+  addValid("A");
+  appendFileSync(join(DATA_DIR, "valid.jsonl"), "not json\n");
+
+  t.notThrows(() => findTrainValidOverlap());
+
+  const overlap = findTrainValidOverlap();
+  t.is(overlap.overlapCount, 1);
+  t.deepEqual(overlap.validIndexes, [1]);
+});
+
+test.serial("findTrainValidOverlap numbers parseable examples, skipping unparseable lines", (t) => {
+  // Deliberate: the positions follow validateTrainingData's "Example N"
+  // convention (the Nth parseable example), not raw file lines, so the two
+  // cannot point at different examples for the same file.
+  const ex = (userInput: string): string =>
+    JSON.stringify({
+      messages: [
+        SYSTEM_CTX,
+        { role: "user", content: userInput },
+        { role: "assistant", content: "out" },
+      ],
+    });
+  writeFileSync(
+    join(DATA_DIR, "train.jsonl"),
+    `GARBAGE NOT JSON
+${ex("alpha")}
+${ex("leaked")}
+`,
+  );
+  writeFileSync(join(DATA_DIR, "valid.jsonl"), `${ex("leaked")}
+`);
+
+  const overlap = findTrainValidOverlap();
+
+  t.is(overlap.overlapCount, 1);
+  // "leaked" is on file line 3, but is the 2nd parseable example.
+  t.deepEqual(overlap.trainIndexes, [2]);
+});
+
+// ── collectValidation: train/validation overlap ───────────────────────
+
+test.serial("collectValidation flags leakage through checks, not warning text", (t) => {
+  writeConfig();
+  addTrain("A");
+  addValid("A");
+
+  const report = collectValidation();
+
+  t.is(report.trainValidOverlap, 1);
+  t.false(report.checks.noTrainValidOverlap);
+  // Leakage is a warning, not an error - it must not fail validation.
+  t.true(report.valid);
+  t.true(report.warnings.some((w) => w.includes("data leakage")));
+});
+
+test.serial("collectValidation reports leakage from the validation side with --eval", (t) => {
+  writeConfig();
+  addTrain("A");
+  addTrain("B");
+  addValid("B");
+
+  const report = collectValidation({ isEval: true });
+
+  t.is(report.trainValidOverlap, 1);
+  t.false(report.checks.noTrainValidOverlap);
+  const warning = report.warnings.find((w) => w.includes("data leakage"));
+  t.true(warning?.includes("valid.jsonl example 1"));
+});
+
+test.serial("collectValidation passes the overlap check on a clean split", (t) => {
+  writeConfig();
+  for (const input of ["A", "B", "C", "D"]) {
+    addTrain(input);
+  }
+  splitTrainValidation(0.25, 42);
+
+  const report = collectValidation();
+
+  t.is(report.trainValidOverlap, 0);
+  t.true(report.checks.noTrainValidOverlap);
 });

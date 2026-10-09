@@ -297,6 +297,26 @@ test.serial("DataValidateCommand reports errors and warnings", async (t) => {
   }
 });
 
+test.serial("DataValidateCommand reports train/validation overlap", async (t) => {
+  try {
+    setupProject();
+    writeExamples([example("hello"), example("goodbye")]);
+    writeEvalExamples([example("hello")]);
+    const output = await renderCommand(<DataValidateCommand />, "data leakage");
+    // The check label renders either way, so the warning line is what proves
+    // the overlap was actually found - and it must name the offending example.
+    t.true(output.includes("No train/validation overlap"));
+    // Asserted as two short substrings rather than the whole sentence: the
+    // full warning is ~98 columns and would be broken up by Ink's wrap.
+    t.true(output.includes("data leakage"));
+    t.true(output.includes("train.jsonl example 1"));
+    // A warning, not an error - the dataset itself is still structurally fine.
+    t.true(output.includes("Training data is valid!"));
+  } finally {
+    teardown();
+  }
+});
+
 // ── data validate writes once per invocation ─────────────────
 
 // The fixes used to sit loose in the render body, where nothing bounded how
