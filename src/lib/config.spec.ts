@@ -209,6 +209,18 @@ test("TrainingConfigSchema still allows fractional loraAlpha and loraDropout", (
   t.true(result.success);
 });
 
+test("TrainingConfigSchema defaults early stopping off", (t) => {
+  const result = TrainingConfigSchema.parse({});
+  t.is(result.earlyStoppingPatience, 0);
+  t.is(result.loadBestModelAtEnd, false);
+});
+
+test("TrainingConfigSchema rejects a negative or fractional earlyStoppingPatience", (t) => {
+  t.false(TrainingConfigSchema.safeParse({ earlyStoppingPatience: -1 }).success);
+  t.false(TrainingConfigSchema.safeParse({ earlyStoppingPatience: 1.5 }).success);
+  t.true(TrainingConfigSchema.safeParse({ earlyStoppingPatience: 0 }).success);
+});
+
 test("TrainingConfigSchema rejects NaN from an unparseable flag", (t) => {
   // What `--lora-rank abc` becomes by the time it reaches validation.
   t.false(TrainingConfigSchema.safeParse({ loraRank: Number.NaN }).success);
@@ -246,6 +258,8 @@ test("createDefaultConfig sets correct defaults", (t) => {
   t.is(config.training.gradCheckpoint, false);
   t.is(config.training.valBatches, 25);
   t.is(config.training.seed, 0);
+  t.is(config.training.earlyStoppingPatience, 0);
+  t.is(config.training.loadBestModelAtEnd, false);
 });
 
 test("resolveContextMessage prefers contextMessage over systemPrompt", (t) => {
@@ -270,6 +284,8 @@ test("resolveContextMessage prefers contextMessage over systemPrompt", (t) => {
       gradCheckpoint: false,
       valBatches: 25,
       seed: 0,
+      earlyStoppingPatience: 0,
+      loadBestModelAtEnd: false,
     },
     export: {
       quantization: "q4_k_m" as const,
@@ -303,6 +319,8 @@ test("resolveContextMessage falls back to systemPrompt", (t) => {
       gradCheckpoint: false,
       valBatches: 25,
       seed: 0,
+      earlyStoppingPatience: 0,
+      loadBestModelAtEnd: false,
     },
     export: {
       quantization: "q4_k_m" as const,

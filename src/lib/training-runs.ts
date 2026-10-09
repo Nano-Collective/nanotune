@@ -8,6 +8,7 @@ import {
 } from 'node:fs';
 import {join, relative} from 'node:path';
 import {z} from 'zod';
+import type {TrainingProgress} from '../types/index.js';
 import {type TrainingConfig, TrainingConfigSchema} from '../types/index.js';
 import {
 	getProjectDir,
@@ -44,6 +45,10 @@ export const TrainingRunRecordSchema = z.object({
 	adapterModifiedAt: z.string().datetime().nullable(),
 	error: z.string().optional(),
 	resumedFromRunId: z.string().uuid().nullable().optional(),
+	earlyStopped: z.boolean().optional(),
+	restoredBest: z.boolean().optional(),
+	bestIteration: z.number().int().nonnegative().optional(),
+	bestValLoss: z.number().finite().optional(),
 });
 
 export type TrainingRunRecord = z.infer<typeof TrainingRunRecordSchema>;
@@ -97,6 +102,13 @@ export function startTrainingRun(options: {
 	persist();
 	return {
 		checkpoint: persist,
+		selection(progress: TrainingProgress) {
+			record.earlyStopped = progress.earlyStopped;
+			record.restoredBest = progress.restoredBest;
+			record.bestIteration = progress.bestIteration;
+			record.bestValLoss = progress.bestValLoss;
+			persist();
+		},
 		update(point: TrainingLossPoint) {
 			record.lossHistory.push(point);
 			if (point.trainLoss !== undefined)

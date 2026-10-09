@@ -11,6 +11,7 @@ import {
 	useAutoExit,
 	useKeyInput,
 } from '../components/index.js';
+import {TrainingDone} from '../components/TrainingDone.js';
 import {
 	configExists,
 	getAdaptersDir,
@@ -43,6 +44,8 @@ const TRAINING_FLAG_NAMES: Record<string, string> = {
 	numLayers: '--num-layers',
 	stepsPerEval: '--steps-per-eval',
 	saveEvery: '--save-every',
+	earlyStoppingPatience: '--early-stopping-patience',
+	loadBestModelAtEnd: '--load-best-model-at-end',
 	fineTuneType: '--fine-tune-type',
 	loraRank: '--lora-rank',
 	loraAlpha: '--lora-alpha',
@@ -72,6 +75,8 @@ interface Props {
 		numLayers?: string;
 		stepsPerEval?: string;
 		saveEvery?: string;
+		earlyStoppingPatience?: string;
+		loadBestModelAtEnd?: boolean;
 		fineTuneType?: string;
 		loraRank?: string;
 		loraAlpha?: string;
@@ -170,6 +175,7 @@ export function TrainCommand({options}: Props) {
 	const run = useCallback(async () => {
 		let outcome: 'completed' | 'stopped' | 'failed' = 'failed';
 		let failure: string | undefined;
+		let earlyStopped = false;
 		try {
 			// Parse the seed before any work happens. Number.parseInt would turn
 			// a typo into NaN and mulberry32 would coerce that to 0, producing a
@@ -227,6 +233,8 @@ export function TrainCommand({options}: Props) {
 				numLayers: numericOverride(options.numLayers),
 				stepsPerEval: numericOverride(options.stepsPerEval),
 				saveEvery: numericOverride(options.saveEvery),
+				earlyStoppingPatience: numericOverride(options.earlyStoppingPatience),
+				loadBestModelAtEnd: options.loadBestModelAtEnd,
 				fineTuneType: options.fineTuneType,
 				loraRank: numericOverride(options.loraRank),
 				loraAlpha: numericOverride(options.loraAlpha),
@@ -353,11 +361,18 @@ export function TrainCommand({options}: Props) {
 				signal: controller.signal,
 				onLoss: point => runHistoryRef.current?.update(point),
 				onCheckpoint: () => runHistoryRef.current?.checkpoint(),
+				onSelection: summary => {
+					earlyStopped = summary.earlyStopped === true;
+					runHistoryRef.current?.selection(summary);
+				},
 			};
 
 			for await (const update of runTraining(trainingOptions)) {
 				setProgress(update);
-				setLossHistory(prev => [...prev, update.trainLoss]);
+				if (update.isTrainReport && update.trainLoss != null) {
+					const trainLoss = update.trainLoss;
+					setLossHistory(prev => [...prev, trainLoss]);
+				}
 
 				// Calculate ETA
 				const elapsedMs = Date.now() - startTime;
@@ -374,7 +389,7 @@ export function TrainCommand({options}: Props) {
 			}
 
 			const stopped = controller.signal.aborted;
-			outcome = stopped ? 'stopped' : 'completed';
+			outcome = stopped || earlyStopped ? 'stopped' : 'completed';
 			setStatus(stopped ? 'stopped' : 'done');
 		} catch (err) {
 			if (shouldTreatAsStop(abortRef.current?.signal)) {
@@ -407,6 +422,8 @@ export function TrainCommand({options}: Props) {
 		options.numLayers,
 		options.stepsPerEval,
 		options.saveEvery,
+		options.earlyStoppingPatience,
+		options.loadBestModelAtEnd,
 		options.fineTuneType,
 		options.loraRank,
 		options.loraAlpha,
@@ -518,13 +535,15 @@ export function TrainCommand({options}: Props) {
 					</Box>
 
 					<Box>
-						<Text>
-							Train Loss:{' '}
-							<Text color="green">{progress.trainLoss.toFixed(4)}</Text>
-						</Text>
-						{progress.valLoss !== undefined && (
+						{progress.trainLoss != null && (
 							<Text>
-								{' | '}Val Loss:{' '}
+								Train Loss:{' '}
+								<Text color="green">{progress.trainLoss.toFixed(4)}</Text>
+							</Text>
+						)}
+						{progress.valLoss != null && (
+							<Text>
+								{progress.trainLoss != null ? ' | ' : ''}Val Loss:{' '}
 								<Text color="green">{progress.valLoss.toFixed(4)}</Text>
 							</Text>
 						)}
@@ -592,24 +611,7 @@ export function TrainCommand({options}: Props) {
 				</Box>
 			)}
 
-			{status === 'done' && (
-				<Box flexDirection="column">
-					<StatusMessage variant="success">Training complete!</StatusMessage>
-					<Text> </Text>
-					{progress && (
-						<Text>
-							Final loss:{' '}
-							<Text color="green">{progress.trainLoss.toFixed(4)}</Text>
-						</Text>
-					)}
-					<Text> </Text>
-					<Text>
-						Next: <Text color="cyan">nanotune export</Text>
-					</Text>
-					<Text> </Text>
-					<ExitHint>Press any key to exit</ExitHint>
-				</Box>
-			)}
+			{status === 'done' && <TrainingDone progress={progress} />}
 
 			{status === 'error' && (
 				<Box flexDirection="column">

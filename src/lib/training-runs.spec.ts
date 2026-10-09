@@ -36,6 +36,8 @@ function record(id: string, startedAt: string): TrainingRunRecord {
 			gradCheckpoint: false,
 			valBatches: 25,
 			seed: 0,
+			earlyStoppingPatience: 0,
+			loadBestModelAtEnd: false,
 		},
 		examples: {train: 12, validation: 3},
 		durationMs: 12000,

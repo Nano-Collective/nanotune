@@ -196,6 +196,18 @@ program
 	.option('--num-layers <n>', 'Number of layers to fine-tune')
 	.option('--steps-per-eval <n>', 'Run validation every N steps')
 	.option('--save-every <n>', 'Save a checkpoint every N steps')
+	.option(
+		'--early-stopping-patience <n>',
+		'Stop after N validation checks with no improvement (0 disables)',
+	)
+	.option(
+		'--load-best-model-at-end',
+		'Restore the best validation checkpoint when training finishes',
+	)
+	.option(
+		'--no-load-best-model-at-end',
+		'Keep the final checkpoint when training finishes',
+	)
 	.option('--fine-tune-type <type>', 'Fine-tuning type: lora, dora, or full')
 	.option('--lora-rank <n>', 'LoRA rank')
 	.option('--lora-alpha <n>', 'LoRA alpha (scaling factor)')
