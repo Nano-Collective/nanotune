@@ -689,7 +689,8 @@ test.serial("parseTrainingData reports a bad line instead of throwing", (t) => {
 
   const { examples, errors } = parseTrainingData(false);
   t.is(examples.length, 2);
-  t.deepEqual(errors, ["Example 2: invalid JSON"]);
+  const syntaxError = t.throws(() => JSON.parse("not json at all"));
+  t.deepEqual(errors, [`Example 2: invalid JSON: ${syntaxError?.message}`]);
 });
 
 test.serial("parseTrainingData numbers bad lines by file position", (t) => {
@@ -697,7 +698,9 @@ test.serial("parseTrainingData numbers bad lines by file position", (t) => {
 
   const { examples, errors } = parseTrainingData(false);
   t.is(examples.length, 1);
-  t.deepEqual(errors, ["Example 1: invalid JSON", "Example 3: invalid JSON"]);
+  t.is(errors.length, 2);
+  t.true(errors[0]?.startsWith("Example 1: invalid JSON: "));
+  t.true(errors[1]?.startsWith("Example 3: invalid JSON: "));
 });
 
 test.serial("parseTrainingData reports nothing on clean data", (t) => {
@@ -714,7 +717,7 @@ test.serial("loadTrainingData still throws, naming the bad line", (t) => {
   // Deliberately strict: the mutating helpers load, transform and write the
   // whole file back, so skipping the line here would delete it on save.
   const err = t.throws(() => loadTrainingData(false));
-  t.is(err?.message, "Example 2: invalid JSON");
+  t.true(err?.message.startsWith("Example 2: invalid JSON: "));
 });
 
 test.serial("a malformed line survives a failed delete", (t) => {
@@ -738,7 +741,9 @@ test.serial("validateTrainingData reports a bad line as an error", (t) => {
 
   const result = validateTrainingData(SYSTEM_CTX, false);
   t.false(result.valid);
-  t.true(result.errors.includes("Example 2: invalid JSON"));
+  t.true(
+    result.errors.some(error => error.startsWith("Example 2: invalid JSON: ")),
+  );
 });
 
 const WRONG_SHAPE_LINES = [
@@ -772,7 +777,8 @@ test.serial("validateTrainingData does not call a malformed file empty", (t) => 
 
   const result = validateTrainingData(SYSTEM_CTX, false);
   t.false(result.valid);
-  t.deepEqual(result.errors, ["Example 1: invalid JSON"]);
+  t.is(result.errors.length, 1);
+  t.true(result.errors[0]?.startsWith("Example 1: invalid JSON: "));
 });
 
 // ── importData ────────────────────────────────────────────────────────
