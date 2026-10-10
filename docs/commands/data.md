@@ -137,6 +137,7 @@ Validate your training data before training. Checks for:
 - Valid JSON structure
 - Required fields present
 - No duplicate examples
+- No overlap between `train.jsonl` and `valid.jsonl` (data leakage)
 - Context message consistency
 - Minimum example count
 - Consecutive same-role messages (broken turn alternation)
@@ -159,6 +160,17 @@ nanotune data validate --fix --rewrite-context
 After a split, `data validate` reports on `train.jsonl` only. Pass `--eval` to
 check `valid.jsonl` too — the "recommend at least 50 examples" warning is not
 applied there, since a validation set is a slice of the training data.
+
+The two sets are also intersected against each other: `data validate` compares
+the normalized user inputs of `train.jsonl` and `valid.jsonl` and warns when any
+appear in both. A clean split produces disjoint sets, but the two files can drift
+apart afterwards — a hand-edit, a re-import, or an interrupted split — and an
+example the model trained on will score misleadingly well in validation. The
+warning names the offending examples in whichever set you are validating,
+numbered as `data list` numbers them; the finding is symmetric, so `--eval`
+reports the same overlap from the validation side. It is a warning, not an
+error: `valid` and the exit code are unaffected, and nothing is deleted —
+remove the leaked examples yourself with `d` in `data list`.
 
 `--json` prints the same findings as a single JSON document on stdout, with the
 exit code unchanged (`1` when the data is invalid), for use in CI:
