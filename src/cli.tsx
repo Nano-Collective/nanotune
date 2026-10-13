@@ -206,6 +206,14 @@ program
 	.option('--resume', 'Resume from last checkpoint')
 	.option('--dry-run', 'Validate config without training')
 	.option('--seed <n>', 'Seed for a reproducible train/validation split')
+	.option(
+		'--validation-ratio <n>',
+		'Portion of the data to hold out for validation (default: 0.1)',
+	)
+	.option(
+		'--stratify <mode>',
+		'Split by the categories in each example’s tags: auto, on, or off',
+	)
 	// Distinct from --seed above: that one seeds Nanotune's train/validation
 	// split, this one seeds mlx_lm's training run.
 	.option('--train-seed <n>', "Random seed for mlx_lm's training run")

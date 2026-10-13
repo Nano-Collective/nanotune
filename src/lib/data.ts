@@ -547,6 +547,15 @@ export interface ValidationChecks {
 	noDuplicateInputs: boolean;
 	/** Always true for a validation set — the 50-example floor is a training-set rule. */
 	minimumExampleCount: boolean;
+	/**
+	 * True when no example appears in both train.jsonl and valid.jsonl.
+	 *
+	 * Only meaningful for the train set, where both files are in scope: a
+	 * validation set cannot overlap itself. A duplicated example across the two
+	 * makes the validation loss measure memorization of a string the model was
+	 * just trained on, which reads as a better model and is not one.
+	 */
+	noTrainValidOverlap: boolean;
 }
 
 /** Everything `nanotune data validate` reports, as data. */
@@ -567,6 +576,39 @@ export interface ValidationOptions {
 	/** Rewrite mismatched context messages before validating. */
 	rewriteContext?: boolean;
 	isEval?: boolean;
+}
+
+/**
+ * How many examples appear in both train.jsonl and valid.jsonl.
+ *
+ * Compared by content fingerprint, the same normalization the split groups by,
+ * so a pair that differs only in case or punctuation still counts: that is
+ * exactly the pair whose validation loss tells you nothing.
+ *
+ * Uses the lenient parser rather than `loadTrainingData`, which throws on a
+ * malformed line. A validation command that dies on the very problem it exists
+ * to report cannot report anything else either.
+ */
+export function countTrainValidOverlap(): number {
+	const train = new Set(
+		parseTrainingData(false).examples.map(contentFingerprint),
+	);
+	if (train.size === 0) {
+		return 0;
+	}
+
+	const seen = new Set<string>();
+	let overlap = 0;
+	for (const example of parseTrainingData(true).examples) {
+		const fingerprint = contentFingerprint(example);
+		// Count distinct examples, not repeats within valid.jsonl.
+		if (seen.has(fingerprint)) continue;
+		seen.add(fingerprint);
+		if (train.has(fingerprint)) {
+			overlap++;
+		}
+	}
+	return overlap;
 }
 
 /**
@@ -594,6 +636,13 @@ export function collectValidation({
 	// actually left on disk rather than the state it was in on entry.
 	const examples = countExamples(isEval);
 	const result = validateTrainingData(contextMessage, isEval);
+	const overlap = isEval ? 0 : countTrainValidOverlap();
+
+	if (overlap > 0) {
+		result.warnings.push(
+			`${overlap} example${overlap === 1 ? '' : 's'} appear in both train.jsonl and valid.jsonl — validation loss will measure memorization, not generalization`,
+		);
+	}
 
 	return {
 		set: isEval ? 'eval' : 'train',
@@ -610,6 +659,7 @@ export function collectValidation({
 			// floor does not apply to it — matching the rule `validateTrainingData`
 			// already uses when deciding whether to warn.
 			minimumExampleCount: isEval || examples >= 50,
+			noTrainValidOverlap: overlap === 0,
 		},
 		fixes:
 			contextFix || dedupe
@@ -1411,13 +1461,14 @@ function emptySplitResult(): SplitResult {
 export function ensureValidationSet(
 	seed?: number,
 	stratify: StratifyMode = 'auto',
+	validationRatio = 0.1,
 ): SplitResult & {didSplit: boolean} {
 	const validCount = countExamples(true);
 	const trainCount = countExamples(false);
 
 	if (validCount === 0 && trainCount > 0) {
 		// No validation set - create one by splitting.
-		const result = splitTrainValidation(0.1, seed, stratify);
+		const result = splitTrainValidation(validationRatio, seed, stratify);
 		// A single example cannot be split, so valid.jsonl stays empty and the
 		// next call lands here again. Reporting didSplit for that no-op would
 		// repeat "Split 1 examples into 1 train / 0 validation." on every run.

@@ -4,7 +4,10 @@ import test from "ava";
 import type { TrainingExample } from "../types/index.js";
 import {
   appendToTrainingData,
+  appendTrainingExample,
+  collectValidation,
   countExamples,
+  countTrainValidOverlap,
   ensureValidationSet,
   exportToCSV,
   exportToJSONL,
@@ -28,6 +31,18 @@ test.beforeEach(() => {
   process.chdir(ORIG_CWD);
   rmSync(TEST_DIR, { recursive: true, force: true, maxRetries: 3 });
   mkdirSync(DATA_DIR, { recursive: true });
+  // collectValidation reads the project config itself and throws outside a
+  // project, so these tests need one.
+  writeFileSync(
+    join(TEST_DIR, ".nanotune", "config.json"),
+    JSON.stringify({
+      name: "split-spec",
+      baseModel: "mlx-community/test",
+      contextMessage: SYSTEM_CTX,
+      training: {},
+      export: {outputName: "out"},
+    }),
+  );
   process.chdir(TEST_DIR);
 });
 
@@ -451,6 +466,65 @@ test.serial("ensureValidationSet leaves an existing validation set alone", (t) =
   const second = ensureValidationSet(1, "on");
   t.false(second.didSplit);
   t.is(second.validCount, 6);
+});
+
+// ── data validate reports a train/validation overlap (#211 leakage) ─────
+
+test.serial("countTrainValidOverlap finds nothing in a clean split", (t) => {
+  seed(60, (i) => [i % 2 === 0 ? "even" : "odd"]);
+  splitTrainValidation(0.2, 3);
+  t.is(countTrainValidOverlap(), 0);
+});
+
+test.serial("countTrainValidOverlap spots a duplicated example", (t) => {
+  seed(10);
+  splitTrainValidation(0.2, 3);
+  const leaked = loadTrainingData(true)[0];
+  appendTrainingExample(leaked, false);
+  t.is(countTrainValidOverlap(), 1);
+});
+
+test.serial("countTrainValidOverlap catches a pair differing only in punctuation", (t) => {
+  // The validation loss for such a pair measures memorization of a string the
+  // model has already been shown, which is why the split groups by fingerprint.
+  seed(10);
+  splitTrainValidation(0.2, 3);
+  const original = loadTrainingData(true)[0];
+  appendTrainingExample(
+    {
+      ...original,
+      messages: original.messages.map(m => ({...m, content: `${m.content}!`})),
+    },
+    false,
+  );
+  t.is(countTrainValidOverlap(), 1);
+});
+
+test.serial("countTrainValidOverlap counts distinct examples, not repeats", (t) => {
+  seed(10);
+  splitTrainValidation(0.2, 3);
+  const leaked = loadTrainingData(true)[0];
+  appendTrainingExample(leaked, false);
+  appendTrainingExample(leaked, false);
+  t.is(countTrainValidOverlap(), 1);
+});
+
+test.serial("data validate reports the overlap as a warning and a failed check", (t) => {
+  seed(60, (i) => [i % 2 === 0 ? "even" : "odd"]);
+  splitTrainValidation(0.2, 3);
+  appendTrainingExample(loadTrainingData(true)[0], false);
+
+  const report = collectValidation();
+  t.false(report.checks.noTrainValidOverlap);
+  t.true(report.warnings.some(w => /both train\.jsonl and valid\.jsonl/.test(w)));
+});
+
+test.serial("data validate passes the overlap check on a clean split", (t) => {
+  seed(60, (i) => [i % 2 === 0 ? "even" : "odd"]);
+  splitTrainValidation(0.2, 3);
+
+  const report = collectValidation();
+  t.true(report.checks.noTrainValidOverlap);
 });
 
 // ── crash safety, preserved from #162 ──────────────────────────────────
