@@ -8,6 +8,7 @@ import {
   collectValidation,
   countExamples,
   countTrainValidOverlap,
+  describeValidationSetDrift,
   ensureValidationSet,
   exportToCSV,
   exportToJSONL,
@@ -15,6 +16,7 @@ import {
   importFromJSON,
   importFromJSONL,
   loadTrainingData,
+  readSplitManifest,
   splitTrainValidation,
 } from "./data.js";
 import { mulberry32, shuffleInPlace, validTarget } from "./stratified-split.js";
@@ -596,6 +598,102 @@ test.serial("the golden fixture is still balanced the way stratification promise
   t.truthy(rare, "no rare bucket reported");
   t.true((rare as {validation: number}).validation >= 2);
   t.deepEqual(result.unrepresentedCategories, []);
+});
+
+// ── the split manifest: has the validation set changed underneath us? ────
+
+test.serial("a split records what it held out", (t) => {
+  seed(60, (i) => [i % 2 === 0 ? "even" : "odd"]);
+  splitTrainValidation(0.2, 7, "on");
+
+  const manifest = readSplitManifest();
+  t.truthy(manifest);
+  t.is(manifest?.seed, 7);
+  t.is(manifest?.validationRatio, 0.2);
+  t.is(manifest?.strategy, "stratified");
+  t.is(manifest?.validCount, 12);
+  t.is(manifest?.trainCount, 48);
+});
+
+test.serial("an untouched validation set reports no drift", (t) => {
+  seed(60, (i) => [i % 2 === 0 ? "even" : "odd"]);
+  splitTrainValidation(0.2, 7, "on");
+  t.is(describeValidationSetDrift(), null);
+});
+
+test.serial("a re-split is reported as drift rather than silently compared", (t) => {
+  // The trap this exists for: train, get a number, delete valid.jsonl,
+  // re-split, train again, and compare the two as if they meant the same
+  // thing. Each run looked fine on its own.
+  seed(60, (i) => [i % 2 === 0 ? "even" : "odd"]);
+  splitTrainValidation(0.2, 7, "on");
+
+  rmSync(join(DATA_DIR, "valid.jsonl"), { force: true });
+  rmSync(join(DATA_DIR, "train.jsonl"), { force: true });
+  seed(60, (i) => [i % 2 === 0 ? "even" : "odd"]);
+  splitTrainValidation(0.2, 99, "on");
+
+  const drift = describeValidationSetDrift();
+  t.truthy(drift);
+  t.regex(drift as string, /was re-split/);
+  t.regex(drift as string, /not comparable/);
+  t.not(readSplitManifest()?.replacedValidationFingerprint, undefined);
+});
+
+test.serial("editing the validation set is reported as drift", (t) => {
+  seed(60, (i) => [i % 2 === 0 ? "even" : "odd"]);
+  splitTrainValidation(0.2, 7, "on");
+
+  appendToTrainingData(
+    {
+      contextMessage: SYSTEM_CTX,
+      userInput: "a hand-added validation example",
+      assistantOutput: "yes",
+    },
+    true,
+  );
+
+  t.regex(describeValidationSetDrift() as string, /validation set has changed/);
+});
+
+test.serial("an identical re-split is not reported as drift", (t) => {
+  // Redoing a split with the same seed and the same data reproduces the same
+  // validation set. Saying "this changed" there would train people to ignore
+  // the warning.
+  seed(60, (i) => [i % 2 === 0 ? "even" : "odd"]);
+  splitTrainValidation(0.2, 7, "on");
+
+  rmSync(join(DATA_DIR, "valid.jsonl"), { force: true });
+  rmSync(join(DATA_DIR, "train.jsonl"), { force: true });
+  seed(60, (i) => [i % 2 === 0 ? "even" : "odd"]);
+  splitTrainValidation(0.2, 7, "on");
+
+  t.is(describeValidationSetDrift(), null);
+});
+
+test.serial("no manifest means no drift claim to make", (t) => {
+  seed(20);
+  t.is(readSplitManifest(), null);
+  t.is(describeValidationSetDrift(), null);
+});
+
+test.serial("a corrupt manifest is ignored rather than failing the run", (t) => {
+  seed(20);
+  splitTrainValidation(0.2, 7, "on");
+  writeFileSync(join(DATA_DIR, ".split-manifest.json"), "{ not json");
+
+  // The warning is a nicety. Failing a training run over it would be a worse
+  // outcome than losing the warning.
+  t.is(readSplitManifest(), null);
+  t.is(describeValidationSetDrift(), null);
+});
+
+test.serial("a truncated or empty validation set makes no claim", (t) => {
+  seed(60, (i) => [i % 2 === 0 ? "even" : "odd"]);
+  splitTrainValidation(0.2, 7, "on");
+  rmSync(join(DATA_DIR, "valid.jsonl"), { force: true });
+
+  t.is(describeValidationSetDrift(), null);
 });
 
 // ── crash safety, preserved from #162 ──────────────────────────────────

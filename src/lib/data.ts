@@ -18,6 +18,7 @@ import {
 	buildLeakGroups,
 	contentFingerprint,
 	displayBucketKey,
+	fingerprintSet,
 	majorityBucket,
 	mulberry32,
 	normalizeTags,
@@ -36,6 +37,7 @@ function ensureDataDir(): void {
 
 const TRAIN_FILE = 'train.jsonl';
 const EVAL_FILE = 'valid.jsonl';
+const SPLIT_MANIFEST_FILE = '.split-manifest.json';
 
 export function getTrainDataPath(): string {
 	return join(getDataDir(), TRAIN_FILE);
@@ -1228,6 +1230,25 @@ export function splitTrainValidation(
 	saveTrainingData(validExamples, true);
 	saveTrainingData(trainExamples, false);
 
+	// Recorded only once both writes have landed, so the manifest can never
+	// describe a split that did not happen.
+	const validationFingerprint = fingerprintSet(validExamples);
+	const previous = readSplitManifest();
+	writeSplitManifest({
+		version: 1,
+		createdAt: new Date().toISOString(),
+		...(seed === undefined ? {} : {seed}),
+		validationRatio,
+		stratify,
+		strategy: result.strategy,
+		trainCount: result.trainCount,
+		validCount: result.validCount,
+		validationFingerprint,
+		...(previous && previous.validationFingerprint !== validationFingerprint
+			? {replacedValidationFingerprint: previous.validationFingerprint}
+			: {}),
+	});
+
 	return result;
 }
 
@@ -1453,6 +1474,128 @@ function emptySplitResult(): SplitResult {
 		unrepresentedCategories: [],
 		shortfall: 0,
 	};
+}
+
+/**
+ * What the last split chose, recorded so a later run can tell.
+ *
+ * The problem this exists for: a user trains, gets a validation loss, deletes
+ * valid.jsonl and re-splits, trains again, and compares the two numbers. They
+ * were measured against different held-out data, so the comparison is
+ * meaningless — and nothing on screen says so, because each run in isolation
+ * looked perfectly normal.
+ */
+export interface SplitManifest {
+	version: 1;
+	/** ISO timestamp, for saying *when* the set changed. */
+	createdAt: string;
+	seed?: number;
+	validationRatio: number;
+	stratify: StratifyMode;
+	strategy: SplitResult['strategy'];
+	trainCount: number;
+	validCount: number;
+	/** Digest of the held-out examples. Order-independent. */
+	validationFingerprint: string;
+	/**
+	 * Digest of the validation set this split replaced, when it replaced a
+	 * different one.
+	 *
+	 * Without this the second split simply overwrites the record of the first,
+	 * which erases the evidence at the exact moment it is needed: a user trains,
+	 * gets a number, re-splits, trains again, and compares the two as if they
+	 * were measured against the same data.
+	 */
+	replacedValidationFingerprint?: string;
+}
+
+function getSplitManifestPath(): string {
+	return join(getDataDir(), SPLIT_MANIFEST_FILE);
+}
+
+/**
+ * The recorded split, or `null` when there is none we can trust.
+ *
+ * Lenient on purpose: a corrupt or hand-edited manifest is not worth failing a
+ * training run over. It only ever adds a warning, and losing the warning is
+ * better than losing the run.
+ */
+export function readSplitManifest(): SplitManifest | null {
+	const path = getSplitManifestPath();
+	if (!existsSync(path)) {
+		return null;
+	}
+	try {
+		const parsed = JSON.parse(readFileSync(path, 'utf-8')) as SplitManifest;
+		if (
+			parsed?.version !== 1 ||
+			typeof parsed.validationFingerprint !== 'string'
+		) {
+			return null;
+		}
+		return parsed;
+	} catch {
+		return null;
+	}
+}
+
+function writeSplitManifest(manifest: SplitManifest): void {
+	// Best effort by design: the split itself has already succeeded and the
+	// dataset is on disk. Failing to record what we did must not undo that, and
+	// must not fail the run either.
+	try {
+		ensureDataDir();
+		writeFileAtomic(
+			getSplitManifestPath(),
+			`${JSON.stringify(manifest, null, 2)}\n`,
+		);
+	} catch {
+		// Nothing to do: the warning below simply will not appear next time.
+	}
+}
+
+/**
+ * Warn when the validation set is no longer the one the last split chose.
+ *
+ * Returns `null` when there is nothing to say — no manifest, a manifest from a
+ * different data directory, or a validation set that still matches.
+ */
+export function describeValidationSetDrift(): string | null {
+	const manifest = readSplitManifest();
+	if (!manifest) {
+		return null;
+	}
+
+	const current = parseTrainingData(true).examples;
+	if (current.length === 0) {
+		return null;
+	}
+
+	const when = new Date(manifest.createdAt);
+	const stamp = Number.isNaN(when.getTime())
+		? ''
+		: ` on ${when.toISOString().slice(0, 10)}`;
+
+	// Re-split first. The file matching this manifest proves only that nothing
+	// has touched valid.jsonl since; it says nothing about the set it replaced.
+	if (
+		manifest.replacedValidationFingerprint !== undefined &&
+		manifest.replacedValidationFingerprint !== manifest.validationFingerprint
+	) {
+		return (
+			`The validation set was re-split${stamp}. Evaluation numbers from earlier ` +
+			'runs were measured against different data and are not comparable.'
+		);
+	}
+
+	if (fingerprintSet(current) === manifest.validationFingerprint) {
+		return null;
+	}
+
+	return (
+		`The validation set has changed since the last split${stamp}. ` +
+		'Evaluation numbers from earlier runs were measured against different data and are not comparable.'
+	);
 }
 
 /**

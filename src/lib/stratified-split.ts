@@ -1,3 +1,4 @@
+import {createHash} from 'node:crypto';
 import type {TrainingExample} from '../types/index.js';
 
 /**
@@ -303,6 +304,24 @@ export function majorityBucket(values: string[]): string {
 		}
 	}
 	return best ?? UNTAGGED_BUCKET;
+}
+
+/**
+ * A stable digest of a set of examples, independent of their order.
+ *
+ * Used to tell whether the validation set is still the one a past split chose.
+ * `createHash` rather than a hand-rolled accumulator because this value gets
+ * written to disk and compared against later, and a digest that has to stay
+ * stable across Node versions is not something to improvise.
+ */
+export function fingerprintSet(
+	examples: Pick<TrainingExample, 'messages'>[],
+): string {
+	const parts = examples.map(example => contentFingerprint(example)).sort();
+	return createHash('sha256')
+		.update(parts.join('\n'))
+		.digest('hex')
+		.slice(0, 32);
 }
 
 export interface BucketAllocation {

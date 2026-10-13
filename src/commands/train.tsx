@@ -20,6 +20,7 @@ import {
 } from '../lib/config.js';
 import {
 	countExamples,
+	describeValidationSetDrift,
 	ensureValidationSet,
 	type SplitResult,
 	type StratifyMode,
@@ -118,6 +119,7 @@ export function TrainCommand({options}: Props) {
 		(SplitResult & {didSplit: boolean}) | null
 	>(null);
 	const [seedIgnored, setSeedIgnored] = useState(false);
+	const [drift, setDrift] = useState<string | null>(null);
 	// The checkpoint interval the run actually used. `--save-every` overrides
 	// config.json, so the stop/stopped views must report against this rather
 	// than re-reading config.training.saveEvery and naming the wrong iteration.
@@ -328,6 +330,11 @@ export function TrainCommand({options}: Props) {
 			if (seed !== undefined && !split.didSplit) {
 				setSeedIgnored(true);
 			}
+			// Every number this run produces is measured against the current
+			// validation set. If that set is not the one an earlier run used,
+			// the two results cannot be compared, and nothing else on screen
+			// would say so.
+			setDrift(describeValidationSetDrift());
 
 			// Download model if not cached
 			setStatus('downloading');
@@ -489,6 +496,7 @@ export function TrainCommand({options}: Props) {
 						to re-split.
 					</Text>
 				)}
+				{drift && <Text color="yellow">{drift}</Text>}
 				<Text>
 					Iterations:{' '}
 					<Text color="cyan">
