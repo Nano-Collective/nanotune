@@ -400,6 +400,42 @@ test.serial("tags round-trip through a CSV third column", (t) => {
   t.deepEqual(loadTrainingData(false)[1].tags, ["cat-1"]);
 });
 
+test.serial("a tag containing the tags separator is reported, not silently split in two", (t) => {
+  // The column is one cell joined on ";" and read back by splitting on ";", so
+  // a tag holding the separator cannot make the trip. Quoting is no help —
+  // parseCSV strips the quotes before splitTagCell runs — and splitting it
+  // anyway would invent two categories that change what the next split
+  // stratifies on. It is dropped and named instead.
+  seed(3, i => (i === 1 ? ["a;b", "cat-1"] : [`cat-${i}`]));
+  const out = join(TEST_DIR, "out.csv");
+  const result = exportToCSV(out, false);
+
+  t.deepEqual(result.errors, [
+    'Example 2: tag "a;b" contains ";", the separator between tags in this column, and was not exported',
+  ]);
+  // The example is still exported, and the tag beside the bad one survives.
+  t.is(result.exported, 3);
+  t.is(result.skipped, 0);
+  t.is(readFileSync(out, "utf8").split("\n")[2], "q1,a1,cat-1");
+
+  rmSync(join(DATA_DIR, "train.jsonl"), { force: true });
+  importFromCSV(out, SYSTEM_CTX, false);
+  t.deepEqual(loadTrainingData(false)[1].tags, ["cat-1"]);
+});
+
+test.serial("a tags cell with nothing unusual in it produces the same file it always did", (t) => {
+  // The fix is scoped to the separator. A dataset of ordinary labels must
+  // export byte for byte as before, so anything reading these CSVs elsewhere
+  // is unaffected.
+  seed(3, i => [`cat-${i}`]);
+  const out = join(TEST_DIR, "out.csv");
+  exportToCSV(out, false);
+  t.is(
+    readFileSync(out, "utf8"),
+    "input,output,tags\nq0,a0,cat-0\nq1,a1,cat-1\nq2,a2,cat-2\n",
+  );
+});
+
 test.serial("a CSV with no tags exports the same two columns it always did", (t) => {
   seed(3);
   const out = join(TEST_DIR, "out.csv");

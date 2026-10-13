@@ -48,6 +48,14 @@ input,output,tags
 "show disk usage","df -h",shell;system
 ```
 
+A tag that itself contains a `;` cannot survive this format: the column is one
+cell joined on `;` and read back by splitting on `;`, and the quotes that would
+otherwise protect the character are stripped by the CSV parser before the tags
+are split. `nanotune data export` leaves such a tag out of the column and names
+it in the summary rather than splitting it into two categories that never
+existed; the example itself is still exported. JSONL and JSON have no such
+limit — use one of those if your tags contain `;`.
+
 ### JSON
 
 Array of objects with input/output pairs or messages format:
@@ -117,7 +125,7 @@ The importer auto-detects format based on file extension and content. Multi-turn
 nanotune data export backup.jsonl
 ```
 
-Writes your training data back out in the same formats `data import` accepts (JSONL, CSV, or JSON — selected by the output file's extension). JSONL and JSON exports round-trip exactly, including multi-turn examples and per-example context messages. **CSV can only represent a single input/output pair per example**, so multi-turn examples are skipped (not truncated) during a CSV export and called out in the summary — export to JSONL or JSON instead if you need every example preserved.
+Writes your training data back out in the same formats `data import` accepts (JSONL, CSV, or JSON — selected by the output file's extension). JSONL and JSON exports round-trip exactly, including multi-turn examples and per-example context messages. **CSV can only represent a single input/output pair per example**, so multi-turn examples are skipped (not truncated) during a CSV export and called out in the summary — export to JSONL or JSON instead if you need every example preserved. A tag containing `;` is also left out of a CSV tags column and named in the summary, for the same reason; JSONL and JSON carry it.
 
 ## Viewing and Editing Data
 

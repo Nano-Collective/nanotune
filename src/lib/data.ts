@@ -1115,7 +1115,23 @@ export function exportToCSV(filePath: string, isEval = false): ExportResult {
 			// Joined on ";" rather than "," because "," is the column delimiter
 			// here, and a tag containing one would need its own quoting on the
 			// way out and its own re-splitting on the way back in.
-			cells.push(csvEscape(tags.join(';')));
+			//
+			// A tag holding the ";" it is joined on cannot make the trip either
+			// way, and quoting does not save it: parseCSV strips the quotes long
+			// before splitTagCell sees the cell, so one tag would arrive as two
+			// categories that never existed and quietly change what the next
+			// split stratifies on. Dropped and reported instead, the same way a
+			// multi-turn row is. The example itself is still exported - losing a
+			// label is recoverable, losing the prompt and reply is not.
+			const representable = tags.filter(tag => !tag.includes(';'));
+			for (const tag of tags) {
+				if (!representable.includes(tag)) {
+					errors.push(
+						`Example ${i + 1}: tag "${tag}" contains ";", the separator between tags in this column, and was not exported`,
+					);
+				}
+			}
+			cells.push(csvEscape(representable.join(';')));
 		}
 		rows.push(cells.join(','));
 		exported++;
