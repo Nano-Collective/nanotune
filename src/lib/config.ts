@@ -11,13 +11,13 @@ import {
 } from 'node:fs';
 import {basename, dirname, join} from 'node:path';
 import {z} from 'zod';
-import {isProcessAlive} from './model-cache.js';
 import {
 	type BenchmarkResult,
 	type ChatMessage,
 	type Config,
 	ConfigSchema,
 } from '../types/index.js';
+import {isProcessAlive} from './model-cache.js';
 
 const CONFIG_DIR = '.nanotune';
 const CONFIG_FILE = 'config.json';
@@ -433,13 +433,53 @@ export function writeFileAtomic(path: string, contents: string): void {
 	}
 }
 
-const GITIGNORE_CONTENTS = `# Nanotune project artifacts
-adapters/
-models/
-benchmarks/
-chats/
-judge.json*
-`;
+const GITIGNORE_ENTRIES = [
+	'adapters/',
+	'models/',
+	'benchmarks/',
+	'chats/',
+	// train.jsonl and valid.jsonl hold the user's own prompts and the
+	// assistant replies they generated. Everything above is a build artifact
+	// this tool can recreate; this is the user's data, and a repository that
+	// ignores the rest but commits the dataset is the worst of both.
+	'data/',
+	'judge.json*',
+];
+
+const GITIGNORE_HEADER = '# Nanotune project artifacts';
+
+const GITIGNORE_CONTENTS = `${GITIGNORE_HEADER}\n${GITIGNORE_ENTRIES.join('\n')}\n`;
+
+/**
+ * Bring an existing `.nanotune/.gitignore` up to date.
+ *
+ * Appends only the entries that are missing and rewrites nothing, so a user
+ * who added their own patterns keeps them. The `data/` entry is the reason this
+ * exists at all: it is new here, and a project created before it would
+ * otherwise keep committing its training data forever, because the file is
+ * only ever written when it does not exist.
+ */
+export function ensureProjectGitignore(): void {
+	const gitignorePath = join(getProjectDir(), '.gitignore');
+	if (!existsSync(gitignorePath)) {
+		writeFileAtomic(gitignorePath, GITIGNORE_CONTENTS);
+		return;
+	}
+
+	const existing = readFileSync(gitignorePath, 'utf-8');
+	const present = new Set(existing.split('\n').map(line => line.trim()));
+	const missing = GITIGNORE_ENTRIES.filter(entry => !present.has(entry));
+	if (missing.length === 0) {
+		return;
+	}
+
+	const separator = existing.endsWith('\n') ? '' : '\n';
+	const header = existing.trim().length === 0 ? `${GITIGNORE_HEADER}\n` : '';
+	writeFileAtomic(
+		gitignorePath,
+		`${existing}${separator}${header}${missing.join('\n')}\n`,
+	);
+}
 
 export function initializeProjectDirs(): void {
 	const dirs = [
@@ -456,12 +496,10 @@ export function initializeProjectDirs(): void {
 		}
 	}
 
-	// Write .gitignore inside .nanotune/ to protect API keys and keep
-	// multi-GB adapters/models out of the user's git history.
-	const gitignorePath = join(getProjectDir(), '.gitignore');
-	if (!existsSync(gitignorePath)) {
-		writeFileSync(gitignorePath, GITIGNORE_CONTENTS);
-	}
+	// Write .gitignore inside .nanotune/ to protect API keys, keep multi-GB
+	// adapters/models out of the user's git history, and keep the training
+	// data itself out of it.
+	ensureProjectGitignore();
 }
 
 /**

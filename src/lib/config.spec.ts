@@ -15,6 +15,7 @@ import { ConfigSchema, TrainingConfigSchema } from "../types/index.js";
 import {
   createDefaultConfig,
   ensureBenchmarksDir,
+  ensureProjectGitignore,
   findLatestGGUF,
   formatFileSize,
   getDirectorySize,
@@ -427,6 +428,113 @@ function teardownBenchTest() {
   process.chdir(ORIG_CWD);
   rmSync(BENCH_TEST_DIR, { recursive: true, force: true });
 }
+
+// ── ensureProjectGitignore ─────────────────────────────────────────────
+//
+// train.jsonl and valid.jsonl are the user's own prompts and the assistant
+// replies they generated. Everything else the .gitignore lists can be rebuilt
+// by re-running nanotune; this cannot.
+
+const GITIGNORE_TEST_DIR = join(ORIG_CWD, ".test-config-gitignore");
+
+function setupGitignoreTest() {
+  process.chdir(ORIG_CWD);
+  rmSync(GITIGNORE_TEST_DIR, { recursive: true, force: true });
+  mkdirSync(join(GITIGNORE_TEST_DIR, ".nanotune"), { recursive: true });
+  process.chdir(GITIGNORE_TEST_DIR);
+}
+
+function readGitignore(): string {
+  return readFileSync(join(GITIGNORE_TEST_DIR, ".nanotune", ".gitignore"), "utf-8");
+}
+
+test.serial("ensureProjectGitignore creates the file when there is none", (t) => {
+  setupGitignoreTest();
+  try {
+    ensureProjectGitignore();
+    const contents = readGitignore();
+    for (const entry of ["adapters/", "models/", "benchmarks/", "chats/", "data/", "judge.json*"]) {
+      t.true(contents.includes(entry), `missing ${entry}`);
+    }
+  } finally {
+    process.chdir(ORIG_CWD);
+    rmSync(GITIGNORE_TEST_DIR, { recursive: true, force: true });
+  }
+});
+
+test.serial("ensureProjectGitignore adds data/ to a project created before it", (t) => {
+  setupGitignoreTest();
+  try {
+    // The state every existing project is in: the file is only ever written
+    // when absent, so `data/` would never appear and the training data would
+    // stay committable forever.
+    const path = join(GITIGNORE_TEST_DIR, ".nanotune", ".gitignore");
+    writeFileSync(path, "# Nanotune project artifacts\nadapters/\nmodels/\n");
+
+    ensureProjectGitignore();
+
+    const contents = readGitignore();
+    t.true(contents.includes("data/"));
+    // Everything already there survives: the file is appended to, not rewritten.
+    t.true(contents.includes("adapters/"));
+    t.true(contents.includes("models/"));
+  } finally {
+    process.chdir(ORIG_CWD);
+    rmSync(GITIGNORE_TEST_DIR, { recursive: true, force: true });
+  }
+});
+
+test.serial("ensureProjectGitignore keeps a user's own patterns", (t) => {
+  setupGitignoreTest();
+  try {
+    const path = join(GITIGNORE_TEST_DIR, ".nanotune", ".gitignore");
+    writeFileSync(path, "adapters/\nmy-private-notes/\n*.local\n");
+
+    ensureProjectGitignore();
+
+    const contents = readGitignore();
+    t.true(contents.includes("my-private-notes/"));
+    t.true(contents.includes("*.local"));
+    t.true(contents.includes("data/"));
+  } finally {
+    process.chdir(ORIG_CWD);
+    rmSync(GITIGNORE_TEST_DIR, { recursive: true, force: true });
+  }
+});
+
+test.serial("ensureProjectGitignore adds a missing newline before appending", (t) => {
+  setupGitignoreTest();
+  try {
+    const path = join(GITIGNORE_TEST_DIR, ".nanotune", ".gitignore");
+    // No trailing newline: appending straight onto the last entry would fuse
+    // two patterns into one and silently change what is ignored.
+    writeFileSync(path, "adapters/");
+
+    ensureProjectGitignore();
+
+    const lines = readGitignore().split("\n");
+    t.true(lines.includes("adapters/"));
+    t.true(lines.includes("data/"));
+  } finally {
+    process.chdir(ORIG_CWD);
+    rmSync(GITIGNORE_TEST_DIR, { recursive: true, force: true });
+  }
+});
+
+test.serial("ensureProjectGitignore is a no-op when everything is already listed", (t) => {
+  setupGitignoreTest();
+  try {
+    ensureProjectGitignore();
+    const first = readGitignore();
+
+    ensureProjectGitignore();
+
+    t.is(readGitignore(), first);
+  } finally {
+    process.chdir(ORIG_CWD);
+    rmSync(GITIGNORE_TEST_DIR, { recursive: true, force: true });
+  }
+});
 
 test.serial("listBenchmarks returns an empty array when the benchmarks directory is missing", (t) => {
   setupBenchTest();
