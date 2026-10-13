@@ -1606,7 +1606,12 @@ test.serial(
 
 test.serial("splitTrainValidation with zero examples returns zero counts", (t) => {
   const result = splitTrainValidation(0.1, 1);
-  t.deepEqual(result, { trainCount: 0, validCount: 0 });
+  t.is(result.trainCount, 0);
+  t.is(result.validCount, 0);
+  // Nothing to stratify, nothing held out, nothing lost.
+  t.deepEqual(result.buckets, []);
+  t.deepEqual(result.unrepresentedCategories, []);
+  t.is(result.shortfall, 0);
 });
 
 test.serial(
