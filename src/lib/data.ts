@@ -13,6 +13,19 @@ import {
 	resolveContextMessage,
 	writeFileAtomic,
 } from './config.js';
+import {
+	assertValidRatio,
+	buildLeakGroups,
+	contentFingerprint,
+	displayBucketKey,
+	majorityBucket,
+	mulberry32,
+	normalizeTags,
+	type StratifyResult,
+	shuffleInPlace,
+	stratifyGroups,
+	validTarget,
+} from './stratified-split.js';
 
 function ensureDataDir(): void {
 	const dataDir = getDataDir();
@@ -107,6 +120,20 @@ export function appendTrainingExample(
 	appendFileSync(path, line);
 }
 
+/**
+ * Attach a file's `tags` to an example, dropping the key entirely when there
+ * are none.
+ *
+ * The key is set rather than merged into the messages array, so an example
+ * that never had tags keeps the exact bytes it always had: export,
+ * re-import and `git diff` all stay quiet for the datasets that predate #211.
+ */
+function withTags(example: TrainingExample, tags: unknown): TrainingExample {
+	const display = normalizeTags(tags).display;
+	if (display.length === 0) return example;
+	return {...example, tags: display};
+}
+
 export function appendToTrainingData(
 	example: {
 		/** Omitted, or empty, when the session has no system message — the
@@ -114,6 +141,9 @@ export function appendToTrainingData(
 		contextMessage?: ChatMessage | null;
 		userInput: string;
 		assistantOutput: string;
+		/** Category labels for stratified splitting (#211). Omitted entirely
+		 *  when there are none, so an untagged dataset keeps its current bytes. */
+		tags?: string[];
 	},
 	isEval: boolean,
 ): void {
@@ -127,6 +157,10 @@ export function appendToTrainingData(
 			{role: 'assistant', content: example.assistantOutput},
 		],
 	};
+	const tags = normalizeTags(example.tags).display;
+	if (tags.length > 0) {
+		trainingExample.tags = tags;
+	}
 	appendTrainingExample(trainingExample, isEval);
 }
 
@@ -719,6 +753,10 @@ export function importFromCSV(
 		firstRowLower[0] === 'input' &&
 		firstRowLower[1] === 'output';
 	const startIndex = hasHeader ? 1 : 0;
+	// A third column is optional and carries the categories from #211. It is
+	// read only when present, so every two-column CSV in the wild keeps
+	// importing exactly as it did.
+	const tagsIndex = 2;
 
 	for (let i = startIndex; i < rows.length; i++) {
 		const row = rows[i];
@@ -741,6 +779,7 @@ export function importFromCSV(
 				contextMessage,
 				userInput: input.trim(),
 				assistantOutput: output.trim(),
+				tags: splitTagCell(row[tagsIndex]),
 			},
 			isEval,
 		);
@@ -777,7 +816,10 @@ export function importFromJSONL(
 					);
 
 					if (userMsg?.content && assistantMsg?.content) {
-						appendTrainingExample({messages: data.messages}, isEval);
+						appendTrainingExample(
+							withTags({messages: data.messages}, data.tags),
+							isEval,
+						);
 						imported++;
 						continue;
 					}
@@ -795,6 +837,7 @@ export function importFromJSONL(
 						contextMessage,
 						userInput: data.input,
 						assistantOutput: data.output,
+						tags: normalizeTags(data.tags).display,
 					},
 					isEval,
 				);
@@ -840,7 +883,10 @@ export function importFromJSON(
 			);
 
 			if (userMsg?.content && assistantMsg?.content) {
-				appendTrainingExample({messages: item.messages}, isEval);
+				appendTrainingExample(
+					withTags({messages: item.messages}, item.tags),
+					isEval,
+				);
 				imported++;
 				continue;
 			}
@@ -856,6 +902,7 @@ export function importFromJSON(
 					contextMessage,
 					userInput: item.input,
 					assistantOutput: item.output,
+					tags: normalizeTags(item.tags).display,
 				},
 				isEval,
 			);
@@ -925,13 +972,35 @@ function csvEscape(value: string): string {
 }
 
 /**
+ * Read one CSV cell as a tag list.
+ *
+ * A semicolon inside a cell is the separator, not a comma: a comma is the
+ * column delimiter, so a tag containing one would already have had to be
+ * escaped by the writer, and re-splitting on it here would turn a single
+ * tag into two that never existed.
+ */
+function splitTagCell(cell: string | undefined): string[] {
+	if (!cell) return [];
+	return cell
+		.split(';')
+		.map(tag => tag.trim())
+		.filter(tag => tag.length > 0);
+}
+
+/**
  * CSV can only represent a single input/output pair per row, with no room
  * for a context message. Multi-turn examples are skipped (not truncated) so
  * that exporting then re-importing never silently drops turns.
  */
 export function exportToCSV(filePath: string, isEval = false): ExportResult {
 	const examples = loadTrainingData(isEval);
-	const rows: string[] = ['input,output'];
+	// The tags column appears only when something has tags. An untagged dataset
+	// exports to the same two columns it always has, so a round-trip through a
+	// user's spreadsheet or script keeps working untouched.
+	const hasTags = examples.some(
+		ex => normalizeTags(ex?.tags).display.length > 0,
+	);
+	const rows: string[] = [hasTags ? 'input,output,tags' : 'input,output'];
 	let exported = 0;
 	let skipped = 0;
 	const errors: string[] = [];
@@ -955,7 +1024,15 @@ export function exportToCSV(filePath: string, isEval = false): ExportResult {
 			return;
 		}
 
-		rows.push(`${csvEscape(user.content)},${csvEscape(assistant.content)}`);
+		const cells = [csvEscape(user.content), csvEscape(assistant.content)];
+		if (hasTags) {
+			const tags = normalizeTags(ex?.tags).display;
+			// Joined on ";" rather than "," because "," is the column delimiter
+			// here, and a tag containing one would need its own quoting on the
+			// way out and its own re-splitting on the way back in.
+			cells.push(csvEscape(tags.join(';')));
+		}
+		rows.push(cells.join(','));
 		exported++;
 	});
 
@@ -983,27 +1060,58 @@ export function exportData(filePath: string, isEval = false): ExportResult {
 }
 
 /**
- * Mulberry32: small, fast, 32-bit seedable PRNG. Used so train/valid splits
- * are reproducible across runs when a seed is provided.
+ * How the split decides which examples are held out.
+ *
+ * `auto` stratifies when the dataset carries categories and falls back to a
+ * random split when it does not, which is every dataset written before #211.
+ * `on` asks for stratification and reports why when there was none to do.
+ * `off` restores the old behaviour outright.
  */
-function mulberry32(seed: number): () => number {
-	let a = seed >>> 0;
-	return () => {
-		a = (a + 0x6d2b79f5) >>> 0;
-		let t = a;
-		t = Math.imul(t ^ (t >>> 15), t | 1);
-		t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-	};
+export type StratifyMode = 'auto' | 'on' | 'off';
+
+/** Per-category outcome of a stratified split. */
+export interface SplitBucket {
+	/** Normalized category name, safe to print. */
+	category: string;
+	/** Examples in this category. */
+	total: number;
+	/** How many the validation set took. */
+	validation: number;
 }
 
-/** In-place Fisher-Yates shuffle. Returns the same array for chaining. */
-function shuffleInPlace<T>(arr: T[], rng: () => number): T[] {
-	for (let i = arr.length - 1; i > 0; i--) {
-		const j = Math.floor(rng() * (i + 1));
-		[arr[i], arr[j]] = [arr[j], arr[i]];
-	}
-	return arr;
+export interface SplitResult {
+	trainCount: number;
+	validCount: number;
+	/**
+	 * `stratified` when categories drove the split, `random` when there was
+	 * nothing to stratify on, and `unstratifiable` when the categories were too
+	 * fine-grained to mean anything. Reported so `nanotune train` can say which
+	 * it did rather than implying a stratified split that never happened.
+	 */
+	strategy: 'stratified' | 'random' | 'unstratifiable';
+	/** Categories present, in split order. Empty unless stratified. */
+	buckets: SplitBucket[];
+	/**
+	 * Categories the validation set could not cover at this ratio. A rare
+	 * category missing from validation is the problem #211 was filed about, so
+	 * it gets named instead of quietly staying absent.
+	 */
+	unrepresentedCategories: string[];
+	/**
+	 * Validation examples the ratio asked for that near-duplicate grouping made
+	 * impossible to fill. Zero unless the dataset holds duplicates.
+	 */
+	shortfall: number;
+}
+
+/** Everything one pass over the dataset produces, reused by both split paths. */
+interface DatasetLayout {
+	/** Near-duplicate groups, as example indexes. */
+	groups: number[][];
+	/** The category each group is filed under, indexed by group. */
+	bucketOfGroup: string[];
+	/** Every example's own category, indexed by example. */
+	bucketOfExample: string[];
 }
 
 /**
@@ -1011,29 +1119,56 @@ function shuffleInPlace<T>(arr: T[], rng: () => number): T[] {
  * MLX requires a valid.jsonl file for training.
  * @param validationRatio - Portion of data to use for validation (default 10%)
  * @param seed - Optional seed for a reproducible split.
+ * @param stratify - Whether to stratify by the categories in `tags` (#211).
  */
 export function splitTrainValidation(
 	validationRatio = 0.1,
 	seed?: number,
-): {trainCount: number; validCount: number} {
+	stratify: StratifyMode = 'auto',
+): SplitResult {
+	// Before anything is read or written. A NaN ratio reaches `slice(0, NaN)`,
+	// which is the empty array, and writes train.jsonl empty; a ratio of 1
+	// reaches `slice(0, -1)` one line later and drops an example. Both are
+	// unrecoverable once the rename lands, so they fail here instead.
+	assertValidRatio(validationRatio);
+
 	const allExamples = loadTrainingData();
 
 	if (allExamples.length === 0) {
-		return {trainCount: 0, validCount: 0};
+		return emptySplitResult();
 	}
 
 	const rng = seed === undefined ? Math.random : mulberry32(seed);
-	const shuffled = shuffleInPlace([...allExamples], rng);
+	const layout = describeDataset(allExamples);
 
-	// Calculate split - minimum 1 validation example if we have at least 2 total
-	const validCount = Math.max(
-		allExamples.length >= 2 ? 1 : 0,
-		Math.floor(allExamples.length * validationRatio),
-	);
-	const trainCount = allExamples.length - validCount;
+	let split;
+	if (stratify === 'off') {
+		split = legacyRandomSplit(allExamples, validationRatio, rng);
+	} else {
+		const plan = stratifyGroups(
+			layout.groups,
+			layout.bucketOfGroup,
+			validationRatio,
+			rng,
+		);
+		// No usable categories. Still group-aware: near-duplicate leakage has
+		// nothing to do with stratification, and an untagged dataset is exactly
+		// where a duplicated pair is most likely to sit on both sides.
+		split = plan.fallback
+			? groupedRandomSplit(allExamples, layout, validationRatio, rng)
+			: stratifiedSplit(allExamples, layout, plan, rng);
+	}
 
-	const trainExamples = shuffled.slice(0, trainCount);
-	const validExamples = shuffled.slice(trainCount);
+	const {trainExamples, validExamples, result} = split;
+
+	// The last line of defence before a rewrite. Both writes replace a whole
+	// file, so a bug that drops or duplicates an example is not a wrong number
+	// in a report — it is a user's training data deleted, with no copy
+	// anywhere, the moment the atomic rename succeeds. Both sides are compared
+	// against the input by content fingerprint, which catches a dropped example
+	// and a duplicated one alike. Everything needed is already in memory, so
+	// this costs one pass over the data.
+	assertSplitIsAPermutation(allExamples, trainExamples, validExamples);
 
 	// Write valid.jsonl before truncating train.jsonl. Each write is atomic
 	// (writeFileAtomic), so the only interruption window left is between the
@@ -1043,30 +1178,253 @@ export function splitTrainValidation(
 	saveTrainingData(validExamples, true);
 	saveTrainingData(trainExamples, false);
 
-	return {trainCount, validCount};
+	return result;
+}
+
+/**
+ * The pre-#211 random split, unchanged, for `--stratify off`.
+ *
+ * Taking the tail of the shuffled array is what the original implementation
+ * did, so this reproduces its output exactly. It does not keep near-duplicates
+ * together — that is what `--stratify off` is for.
+ */
+function legacyRandomSplit(
+	allExamples: TrainingExample[],
+	validationRatio: number,
+	rng: () => number,
+): {
+	trainExamples: TrainingExample[];
+	validExamples: TrainingExample[];
+	result: SplitResult;
+} {
+	const shuffled = shuffleInPlace([...allExamples], rng);
+	const validCount = validTarget(allExamples.length, validationRatio);
+	const trainCount = allExamples.length - validCount;
+
+	return {
+		trainExamples: shuffled.slice(0, trainCount),
+		validExamples: shuffled.slice(trainCount),
+		result: {
+			trainCount,
+			validCount,
+			strategy: 'random',
+			buckets: [],
+			unrepresentedCategories: [],
+			shortfall: 0,
+		},
+	};
+}
+
+/**
+ * The random split, with near-duplicates held together.
+ *
+ * Walks the shuffled order from the end — the same end the legacy split took
+ * from — taking whole leak groups and skipping any group that would overshoot
+ * the budget. On a dataset with no duplicates every group is one example, so
+ * this reduces to the legacy selection byte for byte; grouping only changes the
+ * answer where there was something to group.
+ */
+function groupedRandomSplit(
+	allExamples: TrainingExample[],
+	layout: DatasetLayout,
+	validationRatio: number,
+	rng: () => number,
+): {
+	trainExamples: TrainingExample[];
+	validExamples: TrainingExample[];
+	result: SplitResult;
+} {
+	// Shuffling indexes rather than examples produces the same permutation for
+	// the same seed — both start from the identity order — so this stays
+	// reproducible while still knowing which group each example belongs to.
+	const order = shuffleInPlace(
+		allExamples.map((_, index) => index),
+		rng,
+	);
+	const {groupOfExample, groupSize} = indexGroups(allExamples.length, layout);
+
+	const wanted = validTarget(allExamples.length, validationRatio);
+	const heldOut = new Array<boolean>(allExamples.length).fill(false);
+	const takenGroups = new Set<number>();
+	let held = 0;
+
+	for (let i = order.length - 1; i >= 0 && held < wanted; i--) {
+		const index = order[i];
+		const group = groupOfExample[index];
+		if (takenGroups.has(group)) continue;
+		if (held + groupSize[group] > wanted) continue;
+		takenGroups.add(group);
+		heldOut[index] = true;
+		held += groupSize[group];
+	}
+
+	const validExamples = allExamples.filter((_, index) => heldOut[index]);
+	const trainExamples = allExamples.filter((_, index) => !heldOut[index]);
+
+	return {
+		trainExamples,
+		validExamples,
+		result: {
+			trainCount: trainExamples.length,
+			validCount: validExamples.length,
+			strategy: 'random',
+			buckets: [],
+			unrepresentedCategories: [],
+			shortfall: wanted - held,
+		},
+	};
+}
+
+/** Flatten the group list into a per-example lookup and a per-group size. */
+function indexGroups(
+	exampleCount: number,
+	layout: DatasetLayout,
+): {groupOfExample: number[]; groupSize: number[]} {
+	const groupOfExample = new Array<number>(exampleCount);
+	const groupSize = layout.groups.map(indexes => indexes.length);
+	layout.groups.forEach((indexes, group) => {
+		for (const index of indexes) groupOfExample[index] = group;
+	});
+	return {groupOfExample, groupSize};
+}
+
+/**
+ * Group the dataset once: near-duplicates that must not be separated, and the
+ * category each example and each group belongs to.
+ *
+ * Near-duplicate grouping comes first because a group is held out or kept as a
+ * unit, so it has to be settled before any category is given a budget.
+ */
+function describeDataset(allExamples: TrainingExample[]): DatasetLayout {
+	const bucketOfExample = allExamples.map(
+		example => normalizeTags(example?.tags).bucket,
+	);
+	const groups = buildLeakGroups(allExamples.map(contentFingerprint));
+	const bucketOfGroup = groups.map(indexes =>
+		majorityBucket(indexes.map(index => bucketOfExample[index])),
+	);
+	return {groups, bucketOfGroup, bucketOfExample};
+}
+
+/**
+ * The stratified split (#211): categories decide how many examples each side
+ * of the split gets, and near-duplicates travel together.
+ */
+function stratifiedSplit(
+	allExamples: TrainingExample[],
+	layout: DatasetLayout,
+	plan: StratifyResult,
+	rng: () => number,
+): {
+	trainExamples: TrainingExample[];
+	validExamples: TrainingExample[];
+	result: SplitResult;
+} {
+	const {groupOfExample} = indexGroups(allExamples.length, layout);
+
+	const heldOutIndexesByBucket = new Map<string, number[]>();
+	for (const index of plan.validIndexes) {
+		const key = layout.bucketOfGroup[groupOfExample[index]];
+		const bucket = heldOutIndexesByBucket.get(key);
+		if (bucket) bucket.push(index);
+		else heldOutIndexesByBucket.set(key, [index]);
+	}
+
+	// Which groups were held out is already decided — `stratifyGroups` used the
+	// rng for that, and shuffling the chosen set afterwards would have nothing
+	// left to decide.
+	const heldOut = new Array<boolean>(allExamples.length).fill(false);
+	for (const bucket of heldOutIndexesByBucket.values()) {
+		for (const index of bucket) {
+			heldOut[index] = true;
+		}
+	}
+
+	// Filtered in file order rather than concatenated from the shuffle, so both
+	// files keep reading in the order the user wrote them.
+	const validExamples = allExamples.filter((_, index) => heldOut[index]);
+	const trainExamples = allExamples.filter((_, index) => !heldOut[index]);
+
+	return {
+		trainExamples,
+		validExamples,
+		result: {
+			trainCount: trainExamples.length,
+			validCount: validExamples.length,
+			strategy: 'stratified',
+			buckets: plan.buckets.map(bucket => ({
+				category: displayBucketKey(bucket.key),
+				total: bucket.size,
+				validation: bucket.valid,
+			})),
+			unrepresentedCategories: plan.unrepresentedBuckets.map(displayBucketKey),
+			shortfall: plan.shortfall,
+		},
+	};
+}
+
+/**
+ * Refuse to write a split that is not a rearrangement of the input.
+ *
+ * Every write here replaces a whole file, so an off-by-one in the allocation
+ * is not a wrong number in a report — it is a user's training data deleted,
+ * with no copy anywhere, the moment the atomic rename succeeds.
+ */
+function assertSplitIsAPermutation(
+	allExamples: TrainingExample[],
+	trainExamples: TrainingExample[],
+	validExamples: TrainingExample[],
+): void {
+	const expected = allExamples.map(contentFingerprint).sort();
+	const actual = [...trainExamples, ...validExamples]
+		.map(contentFingerprint)
+		.sort();
+
+	if (expected.length === actual.length) {
+		if (expected.every((fingerprint, index) => fingerprint === actual[index])) {
+			return;
+		}
+		throw new Error(
+			'Refusing to write the split: the same example would land in both train.jsonl and valid.jsonl. Nothing was written.',
+		);
+	}
+
+	throw new Error(
+		`Refusing to write the split: ${expected.length} examples in, ${actual.length} out. Nothing was written.`,
+	);
+}
+
+function emptySplitResult(): SplitResult {
+	return {
+		trainCount: 0,
+		validCount: 0,
+		strategy: 'random',
+		buckets: [],
+		unrepresentedCategories: [],
+		shortfall: 0,
+	};
 }
 
 /**
  * Ensure validation set exists. If not, split from training data.
  */
-export function ensureValidationSet(seed?: number): {
-	trainCount: number;
-	validCount: number;
-	didSplit: boolean;
-} {
+export function ensureValidationSet(
+	seed?: number,
+	stratify: StratifyMode = 'auto',
+): SplitResult & {didSplit: boolean} {
 	const validCount = countExamples(true);
 	const trainCount = countExamples(false);
 
 	if (validCount === 0 && trainCount > 0) {
 		// No validation set - create one by splitting.
-		const result = splitTrainValidation(0.1, seed);
+		const result = splitTrainValidation(0.1, seed, stratify);
 		// A single example cannot be split, so valid.jsonl stays empty and the
 		// next call lands here again. Reporting didSplit for that no-op would
 		// repeat "Split 1 examples into 1 train / 0 validation." on every run.
 		return {...result, didSplit: result.validCount > 0};
 	}
 
-	return {trainCount, validCount, didSplit: false};
+	return {...emptySplitResult(), trainCount, validCount, didSplit: false};
 }
 
 /**

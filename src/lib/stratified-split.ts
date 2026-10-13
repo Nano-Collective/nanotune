@@ -275,6 +275,36 @@ export function buildLeakGroups(fingerprints: string[]): number[][] {
 	return [...groups.values()];
 }
 
+/**
+ * The category a group of examples belongs under.
+ *
+ * A group is held out or kept whole, so it has to land in exactly one bucket.
+ * Its members can disagree — a near-duplicate pair where one was tagged `math`
+ * and the other left untagged — so the most common category wins, with ties
+ * broken lexicographically. Lexicographic rather than insertion order because
+ * insertion order would depend on which example happened to be read first,
+ * and a split that moves when the file is resorted is not reproducible.
+ */
+export function majorityBucket(values: string[]): string {
+	if (values.length === 0) return UNTAGGED_BUCKET;
+
+	const tally = new Map<string, number>();
+	for (const value of values) {
+		tally.set(value, (tally.get(value) ?? 0) + 1);
+	}
+
+	let best: string | undefined;
+	let bestCount = 0;
+	for (const value of [...tally.keys()].sort()) {
+		const count = tally.get(value) ?? 0;
+		if (count > bestCount) {
+			best = value;
+			bestCount = count;
+		}
+	}
+	return best ?? UNTAGGED_BUCKET;
+}
+
 export interface BucketAllocation {
 	/** Normalized category key, or UNTAGGED_BUCKET. */
 	key: string;
@@ -454,6 +484,13 @@ function distributeLargestRemainder(
  * held out or is not, because holding out one of them tells you nothing about a
  * model that trained on the other two.
  *
+ * `rng` decides *which* groups inside a category are held out. It has no say in
+ * *how many* — those come from `apportionValid`, so the ratio is exact either
+ * way. Without it the choice is by first appearance, which is deterministic
+ * and fine for a test but would make every seeded split hold out the same
+ * examples: a shuffle applied afterwards to a set the plan has already chosen
+ * has nothing left to decide.
+ *
  * The caller passes the indexes explicitly rather than letting this module
  * infer them from group sizes. `buildLeakGroups` hands out ids in order of
  * first appearance, which means a group's members are scattered through the
@@ -465,6 +502,7 @@ export function stratifyGroups(
 	groups: number[][],
 	bucketOfGroup: string[],
 	ratio: number,
+	rng?: () => number,
 ): StratifyResult {
 	assertValidRatio(ratio);
 
@@ -518,8 +556,12 @@ export function stratifyGroups(
 	// Largest groups first, so the big ones claim their budget before the small
 	// ones fragment it. Groups of one — any dataset without duplicates — pack
 	// exactly, so this only costs precision where there is something to lose.
+	//
+	// No index tie-break: `Array.sort` is stable, so groups of equal size keep
+	// the order they arrived in, which is the shuffled order. Adding `|| a - b`
+	// here would silently sort the shuffle back out.
 	const orderWithinBucket = (a: number, b: number) =>
-		groups[b].length - groups[a].length || a - b;
+		groups[b].length - groups[a].length;
 
 	const heldOut: boolean[] = new Array(groupCount).fill(false);
 	const budgetByBucket = new Map<string, number>();
@@ -538,14 +580,29 @@ export function stratifyGroups(
 	for (const key of keys) {
 		let budget = budgetByBucket.get(key) ?? 0;
 		if (budget <= 0) continue;
-		for (const group of (byBucket.get(key) ?? []).sort(orderWithinBucket)) {
-			if (budget <= 0) break;
-			if (groups[group].length <= budget) {
+
+		// Shuffle first, then sort stably by size descending. The sort is what
+		// packs well — a big group claims its slot before small ones fragment
+		// the budget — while the shuffle is what makes equally-sized groups,
+		// which are interchangeable as far as packing goes, a random choice
+		// rather than always the first few in the file.
+		const bucketGroups = byBucket.get(key) ?? [];
+		const positions = rng
+			? shuffleInPlace(
+					bucketGroups.map((_, position) => position),
+					rng,
+				).map(position => bucketGroups[position])
+			: bucketGroups;
+
+		let left = budget;
+		for (const group of [...positions].sort(orderWithinBucket)) {
+			if (left <= 0) break;
+			if (groups[group].length <= left) {
 				heldOut[group] = true;
-				budget -= groups[group].length;
+				left -= groups[group].length;
 			}
 		}
-		budgetByBucket.set(key, budget);
+		budgetByBucket.set(key, left);
 	}
 
 	const realized = new Map<string, number>();
