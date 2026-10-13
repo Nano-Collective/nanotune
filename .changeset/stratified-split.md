@@ -25,6 +25,16 @@ Also fixed, and unrelated to splitting:
 - A validation ratio of `NaN` wrote `train.jsonl` empty and moved the whole
   dataset into `valid.jsonl`. A ratio of 1 or more dropped an extra example via
   `slice(0, -1)`. Both are now rejected before anything is read or written.
+- `--seed`, `--stratify` and `--validation-ratio` are all ignored once
+  `valid.jsonl` exists. Only `--seed` said so, so `--validation-ratio 0.2` on an
+  already-split project was accepted, applied to nothing, and the run went on to
+  report the old 10%. All three are now named, along with the `--stratify` and
+  `--validation-ratio` the existing set was actually split with.
+- `nanotune data export` wrote a tag containing `;` into the CSV tags column
+  unquoted, where it re-imported as two categories that never existed and quietly
+  changed what the next split stratified on. It is now left out of the column and
+  named in the summary; the example itself is still exported. JSONL and JSON
+  carry it either way.
 - The generated `.nanotune/.gitignore` did not list `data/`, so a user's
   training data — their prompts and the model's replies to them — was
   committable. Existing projects are brought up to date in place, keeping any

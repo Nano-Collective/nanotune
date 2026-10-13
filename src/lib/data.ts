@@ -1641,6 +1641,60 @@ export function ensureValidationSet(
 	return {...emptySplitResult(), trainCount, validCount, didSplit: false};
 }
 
+export interface PassedSplitFlags {
+	seed?: number;
+	stratify?: StratifyMode;
+	validationRatio?: number;
+}
+
+/**
+ * The split flags this run passed that an existing validation set makes
+ * irrelevant, said out loud. Returns `null` when none were passed.
+ *
+ * Every one of these only takes effect on the run that creates the split, so on
+ * an already-split project `--validation-ratio 0.2` is accepted, ignored, and
+ * the run goes on to report the old 10% as if the flag had worked. Warning only
+ * about `--seed` made that the surprising case rather than the general one.
+ *
+ * Where the manifest records the split that produced the current set, it also
+ * says what that split actually used — a user who passed a different value then
+ * learns what they got instead of only what they did not get.
+ */
+export function describeIgnoredSplitFlags(
+	passed: PassedSplitFlags,
+): string | null {
+	const ignored: string[] = [];
+	if (passed.seed !== undefined) ignored.push('--seed');
+	if (passed.stratify !== undefined) ignored.push('--stratify');
+	if (passed.validationRatio !== undefined) {
+		ignored.push('--validation-ratio');
+	}
+	if (ignored.length === 0) {
+		return null;
+	}
+
+	const listed =
+		ignored.length === 1
+			? ignored[0]
+			: `${ignored.slice(0, -1).join(', ')} and ${ignored[ignored.length - 1]}`;
+
+	const manifest = readSplitManifest();
+	const used = manifest ? describeSplitSettings(manifest) : '';
+
+	return (
+		`Existing validation set found - ${listed} ignored.${used} ` +
+		'Delete valid.jsonl to re-split.'
+	);
+}
+
+function describeSplitSettings(manifest: SplitManifest): string {
+	const strategy = manifest.strategy === 'stratified' ? ' (stratified)' : '';
+	return (
+		` It was split${strategy} with --stratify ${manifest.stratify} and ` +
+		`--validation-ratio ${manifest.validationRatio}.`
+	);
+}
+
 /**
  * Clamp a paginated list's page/selection to what still exists after items are
  * removed, so deleting the last row on the last page falls back to the

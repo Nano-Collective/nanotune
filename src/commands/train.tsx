@@ -21,6 +21,7 @@ import {
 } from '../lib/config.js';
 import {
 	countExamples,
+	describeIgnoredSplitFlags,
 	describeValidationSetDrift,
 	ensureValidationSet,
 	type SplitResult,
@@ -124,7 +125,7 @@ export function TrainCommand({options}: Props) {
 	const [split, setSplit] = useState<
 		(SplitResult & {didSplit: boolean}) | null
 	>(null);
-	const [seedIgnored, setSeedIgnored] = useState(false);
+	const [ignoredFlags, setIgnoredFlags] = useState<string | null>(null);
 	const [drift, setDrift] = useState<string | null>(null);
 	// The checkpoint interval the run actually used. `--save-every` overrides
 	// config.json, so the stop/stopped views must report against this rather
@@ -344,11 +345,21 @@ export function TrainCommand({options}: Props) {
 			// Ensure we have a validation set (MLX requires it).
 			const split = ensureValidationSet(seed, stratify, validationRatio);
 			setSplit(split);
-			// The split only happens when there is no validation set yet, so a
-			// seed handed to an already-split project changes nothing. Saying so
-			// beats letting the user believe they re-rolled the split.
-			if (seed !== undefined && !split.didSplit) {
-				setSeedIgnored(true);
+			// The split only happens when there is no validation set yet, so every
+			// flag that decides what gets held out -- seed, ratio, stratification
+			// -- is dropped on an already-split project. Saying which ones beats
+			// letting the user believe they re-rolled or re-sized the split.
+			if (!split.didSplit) {
+				setIgnoredFlags(
+					describeIgnoredSplitFlags({
+						seed,
+						stratify: options.stratify === undefined ? undefined : stratify,
+						validationRatio:
+							options.validationRatio === undefined
+								? undefined
+								: validationRatio,
+					}),
+				);
 			}
 			// Every number this run produces is measured against the current
 			// validation set. If that set is not the one an earlier run used,
@@ -548,12 +559,7 @@ export function TrainCommand({options}: Props) {
 						measure memorization rather than generalization.
 					</Text>
 				)}
-				{seedIgnored && (
-					<Text color="yellow">
-						Existing validation set found - --seed ignored. Delete valid.jsonl
-						to re-split.
-					</Text>
-				)}
+				{ignoredFlags && <Text color="yellow">{ignoredFlags}</Text>}
 				{drift && <Text color="yellow">{drift}</Text>}
 				<Text>
 					Iterations:{' '}

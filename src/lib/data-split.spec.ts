@@ -8,6 +8,7 @@ import {
   collectValidation,
   countExamples,
   countTrainValidOverlap,
+  describeIgnoredSplitFlags,
   describeValidationSetDrift,
   ensureValidationSet,
   exportToCSV,
@@ -17,6 +18,7 @@ import {
   importFromJSONL,
   loadTrainingData,
   readSplitManifest,
+  saveTrainingData,
   splitTrainValidation,
 } from "./data.js";
 import { mulberry32, shuffleInPlace, validTarget } from "./stratified-split.js";
@@ -552,6 +554,61 @@ test.serial("ensureValidationSet leaves an existing validation set alone", (t) =
   const second = ensureValidationSet(1, "on");
   t.false(second.didSplit);
   t.is(second.validCount, 6);
+});
+
+test.serial("a passed split flag that nothing reads is named, not swallowed", (t) => {
+  // The whole set only takes effect on the run that creates the split, so
+  // passing --validation-ratio to a project that already has valid.jsonl gets
+  // the old ratio with nothing on screen saying so.
+  seed(60);
+  splitTrainValidation(0.1, 3);
+
+  t.is(describeIgnoredSplitFlags({validationRatio: 0.2}),
+    "Existing validation set found - --validation-ratio ignored. " +
+    "It was split with --stratify auto and --validation-ratio 0.1. " +
+    "Delete valid.jsonl to re-split.");
+
+  t.is(describeIgnoredSplitFlags({stratify: "on"}),
+    "Existing validation set found - --stratify ignored. " +
+    "It was split with --stratify auto and --validation-ratio 0.1. " +
+    "Delete valid.jsonl to re-split.");
+});
+
+test.serial("every ignored flag is listed, and none are when nothing was passed", (t) => {
+  seed(60);
+  splitTrainValidation(0.1, 3, "off");
+
+  const message = describeIgnoredSplitFlags({seed: 9, stratify: "on", validationRatio: 0.2}) ?? "";
+  t.true(message.startsWith("Existing validation set found - --seed, --stratify and --validation-ratio ignored."), message);
+  t.true(message.includes("It was split with --stratify off and --validation-ratio 0.1."), message);
+
+  t.is(describeIgnoredSplitFlags({}), null);
+  // A flag left at its default value is not "passed", so it is not reported:
+  // saying --stratify was ignored when the default would have been used anyway
+  // is noise on every run.
+  t.is(describeIgnoredSplitFlags({stratify: undefined, seed: undefined, validationRatio: undefined}), null);
+});
+
+test.serial("the ignored-flag warning says so even without a manifest to compare against", (t) => {
+  // A project split before the manifest existed, or one whose valid.jsonl was
+  // hand-written. There is nothing to say it was actually split with, but the
+  // flags are still being ignored and still have to be named.
+  seed(60);
+  saveTrainingData(loadTrainingData(false), true);
+
+  t.is(
+    describeIgnoredSplitFlags({validationRatio: 0.2}),
+    "Existing validation set found - --validation-ratio ignored. Delete valid.jsonl to re-split.",
+  );
+});
+
+test.serial("a stratified split is named as such in the ignored-flag warning", (t) => {
+  seed(200, (i) => [i < 100 ? "common" : i < 190 ? "medium" : "rare"]);
+  splitTrainValidation(0.1, 3);
+  t.is(readSplitManifest()?.strategy, "stratified");
+
+  const message = describeIgnoredSplitFlags({stratify: "off"}) ?? "";
+  t.true(message.includes("It was split (stratified) with --stratify auto"), message);
 });
 
 // â”€â”€ data validate reports a train/validation overlap â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
