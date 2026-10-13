@@ -451,13 +451,10 @@ const GITIGNORE_HEADER = '# Nanotune project artifacts';
 const GITIGNORE_CONTENTS = `${GITIGNORE_HEADER}\n${GITIGNORE_ENTRIES.join('\n')}\n`;
 
 /**
- * Bring an existing `.nanotune/.gitignore` up to date.
- *
  * Appends only the entries that are missing and rewrites nothing, so a user
  * who added their own patterns keeps them. The `data/` entry is the reason this
- * exists at all: it is new here, and a project created before it would
- * otherwise keep committing its training data forever, because the file is
- * only ever written when it does not exist.
+ * exists: a project created before it would otherwise keep committing its
+ * training data forever, because the file was only ever written when absent.
  */
 export function ensureProjectGitignore(): void {
 	const gitignorePath = join(getProjectDir(), '.gitignore');

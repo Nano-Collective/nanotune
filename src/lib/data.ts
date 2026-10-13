@@ -128,7 +128,7 @@ export function appendTrainingExample(
  *
  * The key is set rather than merged into the messages array, so an example
  * that never had tags keeps the exact bytes it always had: export,
- * re-import and `git diff` all stay quiet for the datasets that predate #211.
+ * re-import and `git diff` all stay quiet for datasets that predate tags.
  */
 function withTags(example: TrainingExample, tags: unknown): TrainingExample {
 	const display = normalizeTags(tags).display;
@@ -143,8 +143,8 @@ export function appendToTrainingData(
 		contextMessage?: ChatMessage | null;
 		userInput: string;
 		assistantOutput: string;
-		/** Category labels for stratified splitting (#211). Omitted entirely
-		 *  when there are none, so an untagged dataset keeps its current bytes. */
+		/** Category labels, for stratifying the train/validation split. Omitted
+		 *  entirely when there are none, so an untagged dataset keeps its bytes. */
 		tags?: string[];
 	},
 	isEval: boolean,
@@ -581,8 +581,6 @@ export interface ValidationOptions {
 }
 
 /**
- * How many examples appear in both train.jsonl and valid.jsonl.
- *
  * Compared by content fingerprint, the same normalization the split groups by,
  * so a pair that differs only in case or punctuation still counts: that is
  * exactly the pair whose validation loss tells you nothing.
@@ -805,8 +803,7 @@ export function importFromCSV(
 		firstRowLower[0] === 'input' &&
 		firstRowLower[1] === 'output';
 	const startIndex = hasHeader ? 1 : 0;
-	// A third column is optional and carries the categories from #211. It is
-	// read only when present, so every two-column CSV in the wild keeps
+	// Read only when present, so every two-column CSV in the wild keeps
 	// importing exactly as it did.
 	const tagsIndex = 2;
 
@@ -1024,8 +1021,6 @@ function csvEscape(value: string): string {
 }
 
 /**
- * Read one CSV cell as a tag list.
- *
  * A semicolon inside a cell is the separator, not a comma: a comma is the
  * column delimiter, so a tag containing one would already have had to be
  * escaped by the writer, and re-splitting on it here would turn a single
@@ -1112,22 +1107,17 @@ export function exportData(filePath: string, isEval = false): ExportResult {
 }
 
 /**
- * How the split decides which examples are held out.
- *
  * `auto` stratifies when the dataset carries categories and falls back to a
- * random split when it does not, which is every dataset written before #211.
+ * random split when it does not, which is every dataset written before this.
  * `on` asks for stratification and reports why when there was none to do.
  * `off` restores the old behaviour outright.
  */
 export type StratifyMode = 'auto' | 'on' | 'off';
 
-/** Per-category outcome of a stratified split. */
 export interface SplitBucket {
 	/** Normalized category name, safe to print. */
 	category: string;
-	/** Examples in this category. */
 	total: number;
-	/** How many the validation set took. */
 	validation: number;
 }
 
@@ -1141,12 +1131,12 @@ export interface SplitResult {
 	 * it did rather than implying a stratified split that never happened.
 	 */
 	strategy: 'stratified' | 'random' | 'unstratifiable';
-	/** Categories present, in split order. Empty unless stratified. */
+	/** In split order. Empty unless stratified. */
 	buckets: SplitBucket[];
 	/**
-	 * Categories the validation set could not cover at this ratio. A rare
-	 * category missing from validation is the problem #211 was filed about, so
-	 * it gets named instead of quietly staying absent.
+	 * Categories the validation set could not cover at this ratio. Named rather
+	 * than quietly left out, since a rare category absent from validation is the
+	 * whole problem this exists to solve.
 	 */
 	unrepresentedCategories: string[];
 	/**
@@ -1167,11 +1157,7 @@ interface DatasetLayout {
 }
 
 /**
- * Split training data into train and validation sets.
- * MLX requires a valid.jsonl file for training.
- * @param validationRatio - Portion of data to use for validation (default 10%)
- * @param seed - Optional seed for a reproducible split.
- * @param stratify - Whether to stratify by the categories in `tags` (#211).
+ * MLX requires a valid.jsonl file for training, so one has to exist.
  */
 export function splitTrainValidation(
 	validationRatio = 0.1,
@@ -1253,8 +1239,6 @@ export function splitTrainValidation(
 }
 
 /**
- * The pre-#211 random split, unchanged, for `--stratify off`.
- *
  * Taking the tail of the shuffled array is what the original implementation
  * did, so this reproduces its output exactly. It does not keep near-duplicates
  * together — that is what `--stratify off` is for.
@@ -1287,8 +1271,6 @@ function legacyRandomSplit(
 }
 
 /**
- * The random split, with near-duplicates held together.
- *
  * Walks the shuffled order from the end — the same end the legacy split took
  * from — taking whole leak groups and skipping any group that would overshoot
  * the budget. On a dataset with no duplicates every group is one example, so
@@ -1346,7 +1328,6 @@ function groupedRandomSplit(
 	};
 }
 
-/** Flatten the group list into a per-example lookup and a per-group size. */
 function indexGroups(
 	exampleCount: number,
 	layout: DatasetLayout,
@@ -1360,9 +1341,6 @@ function indexGroups(
 }
 
 /**
- * Group the dataset once: near-duplicates that must not be separated, and the
- * category each example and each group belongs to.
- *
  * Near-duplicate grouping comes first because a group is held out or kept as a
  * unit, so it has to be settled before any category is given a budget.
  */
@@ -1377,10 +1355,6 @@ function describeDataset(allExamples: TrainingExample[]): DatasetLayout {
 	return {groups, bucketOfGroup, bucketOfExample};
 }
 
-/**
- * The stratified split (#211): categories decide how many examples each side
- * of the split gets, and near-duplicates travel together.
- */
 function stratifiedSplit(
 	allExamples: TrainingExample[],
 	layout: DatasetLayout,
@@ -1435,8 +1409,6 @@ function stratifiedSplit(
 }
 
 /**
- * Refuse to write a split that is not a rearrangement of the input.
- *
  * Every write here replaces a whole file, so an off-by-one in the allocation
  * is not a wrong number in a report — it is a user's training data deleted,
  * with no copy anywhere, the moment the atomic rename succeeds.
@@ -1477,8 +1449,6 @@ function emptySplitResult(): SplitResult {
 }
 
 /**
- * What the last split chose, recorded so a later run can tell.
- *
  * The problem this exists for: a user trains, gets a validation loss, deletes
  * valid.jsonl and re-splits, trains again, and compares the two numbers. They
  * were measured against different held-out data, so the comparison is
@@ -1514,8 +1484,6 @@ function getSplitManifestPath(): string {
 }
 
 /**
- * The recorded split, or `null` when there is none we can trust.
- *
  * Lenient on purpose: a corrupt or hand-edited manifest is not worth failing a
  * training run over. It only ever adds a warning, and losing the warning is
  * better than losing the run.
@@ -1555,10 +1523,8 @@ function writeSplitManifest(manifest: SplitManifest): void {
 }
 
 /**
- * Warn when the validation set is no longer the one the last split chose.
- *
- * Returns `null` when there is nothing to say — no manifest, a manifest from a
- * different data directory, or a validation set that still matches.
+ * Returns `null` when there is nothing to say: no manifest, or a validation
+ * set that still matches the one the split chose.
  */
 export function describeValidationSetDrift(): string | null {
 	const manifest = readSplitManifest();

@@ -9,15 +9,13 @@ import {
 } from "./stratified-split.js";
 
 /**
- * Exhaustive property tests for the split arithmetic.
- *
- * These exist because the arithmetic decides what happens to a user's training
- * data, and the only way to be sure an allocation is safe across every shape is
- * to assert the invariants over the whole space rather than over the handful of
- * cases that came to mind. Every bug this file has caught was invisible to the
- * hand-written cases: a split that ignored its seed, a comparator that undid its
- * own shuffle, a group-ownership assumption that pointed at the wrong examples,
- * and a design that returned no validation set at all.
+ * The arithmetic decides what happens to a user's training data, so the only
+ * way to be sure an allocation is safe across every shape is to assert the
+ * invariants over the whole space rather than over the handful of cases that
+ * came to mind. Every bug this work uncovered was invisible to the hand-written
+ * cases: a split that ignored its seed, a comparator that undid its own shuffle,
+ * a group-ownership assumption that pointed at the wrong examples, and a design
+ * that returned no validation set at all.
  */
 
 const RATIOS = [0, 0.01, 0.05, 0.1, 0.25, 0.5, 0.9, 0.99];

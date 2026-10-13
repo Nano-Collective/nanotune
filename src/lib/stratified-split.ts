@@ -2,38 +2,30 @@ import {createHash} from 'node:crypto';
 import type {TrainingExample} from '../types/index.js';
 
 /**
- * Stratified train/validation splitting (#211).
- *
- * Everything in this module is pure: no filesystem, no config, no clock. It
- * takes bucket sizes and returns an allocation. `splitTrainValidation` in
- * `data.ts` is the only thing that turns an allocation into files, which keeps
- * the arithmetic — where an off-by-one silently deletes a user's training data
- * — testable without a single fixture on disk.
+ * Everything here is pure: no filesystem, no config, no clock. It takes bucket
+ * sizes and returns an allocation. `splitTrainValidation` in `data.ts` is the
+ * only thing that turns an allocation into files, which keeps the arithmetic —
+ * where an off-by-one silently deletes a user's training data — testable
+ * without a single fixture on disk.
  */
 
 /**
- * Bucket key for an example with no usable tag.
- *
  * A NUL prefix makes this unforgeable. `normalizeBucketKey` strips control
  * characters, so no tag can ever start with one, and an example genuinely
  * tagged "untagged" stays in its own bucket instead of merging with every
- * unlabelled example and swamping them. `displayBucketKey` is what callers
- * show a person.
+ * unlabelled example and swamping them.
  */
 const UNTAGGED_SENTINEL = '\u0000untagged';
 
-/** Bucket key for an example with no usable tag. See `displayBucketKey`. */
 export const UNTAGGED_BUCKET = UNTAGGED_SENTINEL;
 
-/** Turn an internal bucket key into something worth printing. */
 export function displayBucketKey(key: string): string {
 	return key === UNTAGGED_SENTINEL ? 'untagged' : key;
 }
 
-/** Beyond this many tags per example the rest are ignored. */
 export const MAX_TAGS_PER_EXAMPLE = 16;
 
-/** Tags longer than this are truncated; a 10MB "category" is a mistake, not a category. */
+/** A 10MB "category" is a mistake, not a category. */
 export const MAX_TAG_LENGTH = 64;
 
 /**
@@ -45,10 +37,7 @@ export const MAX_TAG_LENGTH = 64;
  */
 export const MAX_BUCKETS_FOR_STRATIFICATION = 50;
 
-/**
- * Mulberry32: small, fast, 32-bit seedable PRNG. Used so train/valid splits
- * are reproducible across runs when a seed is provided.
- */
+/** Mulberry32: small, fast, 32-bit seedable PRNG. */
 export function mulberry32(seed: number): () => number {
 	let a = seed >>> 0;
 	return () => {
@@ -60,7 +49,7 @@ export function mulberry32(seed: number): () => number {
 	};
 }
 
-/** In-place Fisher-Yates shuffle. Returns the same array for chaining. */
+/** In-place Fisher-Yates. Returns the same array for chaining. */
 export function shuffleInPlace<T>(arr: T[], rng: () => number): T[] {
 	for (let i = arr.length - 1; i > 0; i--) {
 		const j = Math.floor(rng() * (i + 1));
@@ -70,8 +59,6 @@ export function shuffleInPlace<T>(arr: T[], rng: () => number): T[] {
 }
 
 /**
- * Throw unless `ratio` is a usable validation ratio.
- *
  * Without this, `Math.max(1, NaN)` is NaN, `slice(0, NaN)` is `[]`, and
  * train.jsonl is written empty — the dataset silently moves to valid.jsonl and
  * is gone from training. A ratio of 1 or more reaches the same place one step
@@ -99,13 +86,9 @@ export function assertValidRatio(ratio: number): number {
 }
 
 /**
- * How many examples the validation set should hold for `total` examples.
- *
- * Always at least one when there are two or more, always at most
- * `total - 1`. A ratio of 0 therefore means "the smallest validation set that
- * is still a validation set", which is what `Math.max(1, ...)` has always
- * meant here; the cap at `total - 1` is new and is what stops a ratio above 1
- * from eating training data.
+ * A ratio of 0 therefore means "the smallest validation set that is still a
+ * validation set", which is what `Math.max(1, ...)` has always meant here; the
+ * cap at `total - 1` is what stops a ratio above 1 from eating training data.
  */
 export function validTarget(total: number, ratio: number): number {
 	if (total <= 1) return 0;
@@ -113,8 +96,6 @@ export function validTarget(total: number, ratio: number): number {
 }
 
 /**
- * Reduce one raw tag to a bucket key, or `null` if it cannot be one.
- *
  * `Math` and `math` and `  math  ` are one category, not three — a dataset
  * tagged inconsistently across files otherwise stratifies against itself. The
  * match is case-insensitive and NFC-normalized so a tag typed on macOS and the
@@ -136,11 +117,7 @@ export function normalizeBucketKey(raw: unknown): string | null {
 }
 
 export interface NormalizedTags {
-	/**
-	 * The author's tags as written, minus the entries that could not be used.
-	 * Kept verbatim rather than normalized so an export round-trips back to the
-	 * file the user handed us.
-	 */
+	/** Kept verbatim rather than normalized, so an export round-trips. */
 	display: string[];
 	/**
 	 * The bucket this example is stratified under: its first usable tag's
@@ -151,7 +128,6 @@ export interface NormalizedTags {
 	 * "did we keep every example?" invariant below depends on that sum.
 	 */
 	bucket: string;
-	/** True when a tag was dropped or truncated by the limits above. */
 	adjusted: boolean;
 }
 
@@ -211,13 +187,7 @@ export function normalizeTags(tags: unknown): NormalizedTags {
 
 const NON_FINGERPRINTABLE = /[^\p{L}\p{N}]+/gu;
 
-/**
- * Collapse text to the part a person would consider the same words.
- *
- * Case, accents, punctuation and how much whitespace go; what is left is
- * letters and numbers separated by single spaces, so "What's 2 + 2?" and
- * "whats  22" fingerprint alike.
- */
+/** Letters and numbers separated by single spaces; everything else goes. */
 function normalizeForFingerprint(text: string): string {
 	return text
 		.normalize('NFC')
@@ -227,8 +197,6 @@ function normalizeForFingerprint(text: string): string {
 }
 
 /**
- * A key that ignores every difference a person would not think twice about.
- *
  * Two examples with the same fingerprint are the same example as far as
  * evaluation is concerned. If one lands in train and its twin in valid, the
  * validation loss is measuring memorization of a string the model has already
@@ -254,17 +222,11 @@ export function contentFingerprint(example: TrainingExample): string {
 }
 
 /**
- * Collect examples that must not be separated, given their fingerprints.
- *
  * Known limitation, stated rather than papered over: grouping is per-example,
  * so a conversation imported as several separate examples can still be split
  * across train and valid. Catching that needs a conversation identifier, which
  * the on-disk format does not carry. Multi-turn examples — the shape nanotune
  * writes them in — are one example, so they cannot be split this way.
- *
- * Returns one array of example indexes per group, in order of first
- * appearance. Two entries with the same fingerprint land in the same array, so
- * a near-duplicate pair cannot end up on opposite sides of the split.
  */
 export function buildLeakGroups(fingerprints: string[]): number[][] {
 	const groups = new Map<string, number[]>();
@@ -277,8 +239,6 @@ export function buildLeakGroups(fingerprints: string[]): number[][] {
 }
 
 /**
- * The category a group of examples belongs under.
- *
  * A group is held out or kept whole, so it has to land in exactly one bucket.
  * Its members can disagree — a near-duplicate pair where one was tagged `math`
  * and the other left untagged — so the most common category wins, with ties
@@ -307,9 +267,6 @@ export function majorityBucket(values: string[]): string {
 }
 
 /**
- * A stable digest of a set of examples, independent of their order.
- *
- * Used to tell whether the validation set is still the one a past split chose.
  * `createHash` rather than a hand-rolled accumulator because this value gets
  * written to disk and compared against later, and a digest that has to stay
  * stable across Node versions is not something to improvise.
@@ -327,12 +284,9 @@ export function fingerprintSet(
 export interface BucketAllocation {
 	/** Normalized category key, or UNTAGGED_BUCKET. */
 	key: string;
-	/** Examples in this bucket. */
 	size: number;
 	/**
-	 * How many of them the validation set actually takes.
-	 *
-	 * This is the realized count, not the requested one. Keeping near-duplicate
+	 * The realized count, not the requested one. Keeping near-duplicate
 	 * groups whole means a bucket whose groups are larger than its remaining
 	 * budget cannot hit the number exactly — `shortfall` below is the gap, and
 	 * reporting the realized count is what keeps `nanotune train` honest about
@@ -341,23 +295,21 @@ export interface BucketAllocation {
 	valid: number;
 }
 
-/** Why stratification was not applied, when it was not. */
 export type StratifyFallback =
 	| 'no-categories'
 	| 'too-many-categories'
 	| 'too-few-examples';
 
 export interface StratifyResult {
-	/** Indices into the input assigned to the validation set. */
 	validIndexes: number[];
-	/** Indices assigned to the training set — exactly the complement above. */
+	/** Exactly the complement above. */
 	trainIndexes: number[];
-	/** Per-bucket outcome, sorted by key so two runs are diffable. */
+	/** Sorted by key, so two runs are diffable. */
 	buckets: BucketAllocation[];
 	/**
 	 * Buckets the validation set could not cover at this ratio. Surfaced rather
 	 * than swallowed: a rare category missing from validation is the exact
-	 * problem #211 was filed about, and it is still the right outcome when the
+	 * problem this was written for, and it is still the right outcome when the
 	 * dataset is too small to cover it.
 	 */
 	unrepresentedBuckets: string[];
@@ -366,13 +318,10 @@ export interface StratifyResult {
 	 * impossible to fill. Zero for every dataset without duplicate examples.
 	 */
 	shortfall: number;
-	/** Present when no stratification was applied. */
 	fallback?: StratifyFallback;
 }
 
 /**
- * How many examples to move into validation, per bucket.
- *
  * Returns one number per entry of `sizes`, and guarantees:
  *
  *   - the sum is exactly `validTarget(sum(sizes), ratio)`, always. Summing a
@@ -400,15 +349,12 @@ export function apportionValid(sizes: number[], ratio: number): number[] {
 	const total = sizes.reduce((sum, size) => sum + size, 0);
 	if (total === 0) return sizes.map(() => 0);
 
-	// A bucket can technically give up everything; the passes below make that
-	// the last resort rather than the rule.
 	const capacity = [...sizes];
 	const target = validTarget(total, ratio);
 
 	// Pass 1 — every category earns a validation example before any category
-	// earns a second one. This is the fix for #211: floor(1 * 0.1) is 0, so a
-	// per-bucket proportional split drops a one-example category out of
-	// validation entirely, which is the whole complaint in the issue.
+	// earns a second one. floor(1 * 0.1) is 0, so a per-bucket proportional
+	// split drops a one-example category out of validation entirely.
 	const allocation = capacity.map(cap => Math.min(1, cap));
 	let assigned = allocation.reduce((sum, n) => sum + n, 0);
 
@@ -494,9 +440,6 @@ function distributeLargestRemainder(
 }
 
 /**
- * Split examples into train and validation, keeping every near-duplicate group
- * whole and keeping every category represented.
- *
  * `groups[g]` lists the example indexes that belong together, and
  * `bucketOfGroup[g]` is the category that group belongs to. Groups — not
  * examples — are the unit of allocation: a group of three paraphrases either is
@@ -515,7 +458,7 @@ function distributeLargestRemainder(
  * first appearance, which means a group's members are scattered through the
  * file, not adjacent — inferring "group g owns a contiguous run" from sizes
  * alone silently points at the wrong examples and drops near-duplicates on both
- * sides, which is the exact failure this is here to prevent.
+ * sides.
  */
 export function stratifyGroups(
 	groups: number[][],
@@ -572,16 +515,15 @@ export function stratifyGroups(
 		ratio,
 	);
 
-	// Largest groups first, so the big ones claim their budget before the small
-	// ones fragment it. Groups of one — any dataset without duplicates — pack
-	// exactly, so this only costs precision where there is something to lose.
+	// Largest groups first, so big ones claim their budget before small ones
+	// fragment it. Groups of one — any dataset without duplicates — pack exactly,
+	// so this only costs precision where there is something to lose.
 	//
-	// No index tie-break: `Array.sort` is stable, so groups of equal size keep
-	// the order they arrived in, which is the shuffled order. Adding `|| a - b`
-	// here would silently sort the shuffle back out.
+	// No index tie-break: `Array.sort` is stable, so equal-size groups keep the
+	// shuffled order they arrived in. Adding `|| a - b` here would silently sort
+	// the shuffle back out.
 	const orderWithinBucket = (a: number, b: number) =>
 		groups[b].length - groups[a].length;
-
 	const heldOut: boolean[] = new Array(groupCount).fill(false);
 	const budgetByBucket = new Map<string, number>();
 	for (const [index, key] of keys.entries()) {
@@ -600,11 +542,9 @@ export function stratifyGroups(
 		let budget = budgetByBucket.get(key) ?? 0;
 		if (budget <= 0) continue;
 
-		// Shuffle first, then sort stably by size descending. The sort is what
-		// packs well — a big group claims its slot before small ones fragment
-		// the budget — while the shuffle is what makes equally-sized groups,
-		// which are interchangeable as far as packing goes, a random choice
-		// rather than always the first few in the file.
+		// Shuffle first, then sort stably by size descending. The sort packs well;
+		// the shuffle makes equally-sized groups — interchangeable as far as
+		// packing goes — a random choice rather than the first few in the file.
 		const bucketGroups = byBucket.get(key) ?? [];
 		const positions = rng
 			? shuffleInPlace(

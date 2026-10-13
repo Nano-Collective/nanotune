@@ -489,8 +489,8 @@ test("stratifyGroups falls back when the categories are all noise", (t) => {
 });
 
 test("stratifyGroups stratifies a genuinely imbalanced dataset", (t) => {
-  // The scenario from #211: one rare example among 199 common ones, which a
-  // random 10% split drops from validation roughly nine times in ten.
+  // One rare example among 199 common ones, which a random 10% split drops
+  // from validation roughly nine times in ten.
   const result = stratifyGroups(...splitByBucket([199, 1], ["common", "rare"]), 0.1);
   t.is(result.fallback, undefined);
   t.is(result.validIndexes.length, 20);

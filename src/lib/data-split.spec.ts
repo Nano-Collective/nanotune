@@ -75,16 +75,16 @@ function categoriesOf(isEval: boolean): string[] {
   return loadTrainingData(isEval).map(ex => ex.tags?.[0] ?? "untagged");
 }
 
-/** The pre-#211 implementation, reproduced to pin the back-compat contract. */
+/** The original implementation, reproduced to pin the back-compat contract. */
 function legacyValidSelection(examples: TrainingExample[], ratio: number, seed: number): string[] {
   const shuffled = shuffleInPlace([...examples], mulberry32(seed));
   const validCount = validTarget(examples.length, ratio);
   return shuffled.slice(shuffled.length - validCount).map(ex => ex.messages[1].content);
 }
 
-// ── back-compat with the unstratified split (#211 acceptance criterion) ──
+// â”€â”€ back-compat with the unstratified split â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-test.serial("an untagged dataset splits exactly as it did before #211", (t) => {
+test.serial("an untagged dataset splits exactly as it did before stratification", (t) => {
   seed(200);
   const before = loadTrainingData(false);
   const expected = legacyValidSelection(before, 0.1, 42);
@@ -101,7 +101,7 @@ test.serial("an untagged dataset reports a random strategy, not a stratified one
   t.deepEqual(result.buckets, []);
 });
 
-test.serial("a tagged dataset splits exactly as it did before #211 when stratify is off", (t) => {
+test.serial("a tagged dataset splits exactly as before when stratify is off", (t) => {
   seed(100, (i) => [i % 2 === 0 ? "even" : "odd"]);
   const before = loadTrainingData(false);
   const expected = legacyValidSelection(before, 0.1, 7);
@@ -111,11 +111,11 @@ test.serial("a tagged dataset splits exactly as it did before #211 when stratify
   t.deepEqual(contentsOf(true).sort(), [...expected].sort());
 });
 
-// ── the issue itself ───────────────────────────────────────────────────
+// â”€â”€ the issue itself â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 test.serial("a one-example category reaches validation instead of being dropped", (t) => {
-  // The complaint in #211: a random 10% split misses a category with one
-  // example in 199 roughly nine times in ten.
+  // A random 10% split misses a category with one example in 199 roughly
+  // nine times in ten.
   seed(199);
   appendToTrainingData(
     {
@@ -176,7 +176,7 @@ test.serial("a category too small for the ratio is named, not silently dropped",
   t.is(result.unrepresentedCategories.length, result.buckets.filter(b => b.validation === 0).length);
 });
 
-// ── nothing is ever lost or duplicated ─────────────────────────────────
+// â”€â”€ nothing is ever lost or duplicated â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 test.serial("a stratified split is a permutation of the input", (t) => {
   seed(120, (i) => [i % 4 === 0 ? "w" : i % 4 === 1 ? "x" : i % 4 === 2 ? "y" : "z"]);
@@ -258,7 +258,7 @@ test.serial("a scattered duplicate group is kept whole", (t) => {
   t.is(contentsOf(false).filter(c => c === "identical").length, 0);
 });
 
-// ── the ratio guard ────────────────────────────────────────────────────
+// â”€â”€ the ratio guard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 test.serial("a NaN ratio is rejected before anything is written", (t) => {
   seed(20);
@@ -292,7 +292,7 @@ test.serial("a ratio of zero still yields the minimum validation set", (t) => {
   t.is(result.trainCount, 19);
 });
 
-// ── reproducibility ────────────────────────────────────────────────────
+// â”€â”€ reproducibility â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 test.serial("the same seed produces the same stratified split", (t) => {
   seed(80, (i) => [i % 3 === 0 ? "a" : i % 3 === 1 ? "b" : "c"]);
@@ -322,7 +322,7 @@ test.serial("different seeds produce different stratified splits", (t) => {
   t.notDeepEqual(contentsOf(true).sort(), first);
 });
 
-// ── tags survive the dataset ───────────────────────────────────────────
+// â”€â”€ tags survive the dataset â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 test.serial("tags survive an untagged dataset's bytes", (t) => {
   // Nothing about an example that never had tags may change, or every
@@ -396,7 +396,7 @@ test.serial("a hostile tags value cannot break the split", (t) => {
   t.is(countExamples(false) + countExamples(true), 4);
 });
 
-// ── category normalization ─────────────────────────────────────────────
+// â”€â”€ category normalization â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 test.serial("tags differing only in case land in one category", (t) => {
   for (let i = 0; i < 10; i++) {
@@ -447,7 +447,7 @@ test.serial("one category per example falls back instead of pretending to strati
   t.is(result.validCount, 10);
 });
 
-// ── ensureValidationSet ────────────────────────────────────────────────
+// â”€â”€ ensureValidationSet â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 test.serial("ensureValidationSet forwards the stratify mode", (t) => {
   seed(60, (i) => [i % 2 === 0 ? "even" : "odd"]);
@@ -470,7 +470,7 @@ test.serial("ensureValidationSet leaves an existing validation set alone", (t) =
   t.is(second.validCount, 6);
 });
 
-// ── data validate reports a train/validation overlap (#211 leakage) ─────
+// â”€â”€ data validate reports a train/validation overlap â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 test.serial("countTrainValidOverlap finds nothing in a clean split", (t) => {
   seed(60, (i) => [i % 2 === 0 ? "even" : "odd"]);
@@ -529,7 +529,7 @@ test.serial("data validate passes the overlap check on a clean split", (t) => {
   t.true(report.checks.noTrainValidOverlap);
 });
 
-// ── golden: the exact split a seed produces (#211) ────────────────────
+// â”€â”€ golden: the exact split a seed produces â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // Reproducibility tests prove a seed gives the same answer twice. They do not
 // prove the answer survived a refactor of the allocation, which is how every
@@ -537,7 +537,7 @@ test.serial("data validate passes the overlap check on a clean split", (t) => {
 
 /**
  * A deliberately lopsided fixture: 380 common examples and 20 rare ones. A
- * random 10% split would put 10% of the rare ones in validation — two on
+ * random 10% split would put 10% of the rare ones in validation â€” two on
  * average, and nothing at all about a tenth of the time.
  */
 const GOLDEN_TOTAL = 400;
@@ -600,7 +600,7 @@ test.serial("the golden fixture is still balanced the way stratification promise
   t.deepEqual(result.unrepresentedCategories, []);
 });
 
-// ── the split manifest: has the validation set changed underneath us? ────
+// â”€â”€ the split manifest: has the validation set changed underneath us? â”€â”€â”€â”€
 
 test.serial("a split records what it held out", (t) => {
   seed(60, (i) => [i % 2 === 0 ? "even" : "odd"]);
@@ -696,7 +696,7 @@ test.serial("a truncated or empty validation set makes no claim", (t) => {
   t.is(describeValidationSetDrift(), null);
 });
 
-// ── crash safety, preserved from #162 ──────────────────────────────────
+// â”€â”€ crash safety, preserved from #162 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 test.serial("a failed validation write leaves train.jsonl intact", (t) => {
   seed(20, (i) => [i % 2 === 0 ? "even" : "odd"]);
