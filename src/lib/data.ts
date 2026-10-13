@@ -640,7 +640,7 @@ export function collectValidation({
 
 	if (overlap > 0) {
 		result.warnings.push(
-			`${overlap} example${overlap === 1 ? '' : 's'} appear in both train.jsonl and valid.jsonl — validation loss will measure memorization, not generalization`,
+			`${overlap} example${overlap === 1 ? ' appears' : 's appear'} in both train.jsonl and valid.jsonl — validation loss will measure memorization, not generalization`,
 		);
 	}
 
