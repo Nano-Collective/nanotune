@@ -21,7 +21,8 @@ import {
   saveTrainingData,
   splitTrainValidation,
 } from "./data.js";
-import { mulberry32, shuffleInPlace, validTarget } from "./stratified-split.js";
+import { mulberry32, shuffleInPlace } from "./random.js";
+import { validTarget } from "./stratified-split.js";
 
 const ORIG_CWD = process.cwd();
 const TEST_DIR = join(ORIG_CWD, ".test-split-spec");

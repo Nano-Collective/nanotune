@@ -20,6 +20,7 @@ import {
 	tryLoadConfig,
 } from '../lib/config.js';
 import {
+	assertValidRatio,
 	countExamples,
 	describeIgnoredSplitFlags,
 	describeValidationSetDrift,
@@ -36,7 +37,6 @@ import {
 	shouldTreatAsStop,
 } from '../lib/mlx.js';
 import {assertSupportedPlatform} from '../lib/platform.js';
-import {assertValidRatio} from '../lib/stratified-split.js';
 import {startTrainingRun} from '../lib/training-runs.js';
 import {TrainingConfigSchema, type TrainingProgress} from '../types/index.js';
 

@@ -17,6 +17,7 @@ import {
 	resolveContextMessage,
 	writeFileAtomic,
 } from './config.js';
+import {mulberry32, shuffleInPlace} from './random.js';
 import {
 	assertValidRatio,
 	buildLeakGroups,
@@ -24,13 +25,18 @@ import {
 	displayBucketKey,
 	fingerprintSet,
 	majorityBucket,
-	mulberry32,
 	normalizeTags,
 	type StratifyResult,
-	shuffleInPlace,
 	stratifyGroups,
 	validTarget,
 } from './stratified-split.js';
+
+// The CLI range-checks the flag before it reaches this module, so that a typo
+// is reported against the flag the user typed rather than as a raw
+// "Validation ratio must be less than 1" several minutes into an MLX install.
+// Re-exported here rather than reached for in `stratified-split`, which the
+// command otherwise has no reason to know about.
+export {assertValidRatio};
 
 function ensureDataDir(): void {
 	const dataDir = getDataDir();
