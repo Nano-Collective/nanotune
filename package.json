@@ -24,6 +24,8 @@
 		"test:ava:coverage": "c8 ava",
 		"test:knip": "knip",
 		"test:all": "pnpm test:lint && pnpm test:format && pnpm test:types && pnpm test:knip && pnpm test:security && pnpm test:audit && pnpm test:ava",
+		"test:split": "ava src/lib/stratified-split.spec.ts src/lib/stratified-split.property.spec.ts src/lib/data-split.spec.ts src/lib/config.spec.ts",
+		"verify:split": "pnpm test:lint && pnpm test:types && pnpm test:knip && pnpm build && pnpm test:split",
 		"test:security": "semgrep scan --config auto --error",
 		"test:audit": "pnpm audit --audit-level=high",
 		"format": "biome check --write .",
