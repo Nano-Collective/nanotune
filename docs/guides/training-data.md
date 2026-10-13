@@ -39,6 +39,15 @@ input,output
 "show disk usage","df -h"
 ```
 
+An optional third column carries the categories described below. Separate
+multiple tags with `;`, not `,` — a comma is the column delimiter here.
+
+```csv
+input,output,tags
+"list all files","ls -la",shell;files
+"show disk usage","df -h",shell;system
+```
+
 ### JSON
 
 Array of objects with input/output pairs or messages format:
@@ -57,6 +66,26 @@ Array of objects with input/output pairs or messages format:
   }
 ]
 ```
+
+## Categories
+
+Any format can carry an optional `tags` array. Nanotune uses it to split
+train and validation by category, so a rare topic is not silently missing from
+the evaluation set.
+
+```jsonl
+{"messages":[{"role":"user","content":"How do I reverse a list?"},{"role":"assistant","content":"Use list[::-1]."}],"tags":["python"]}
+{"messages":[{"role":"user","content":"df -h?"},{"role":"assistant","content":"Shows disk usage."}],"tags":["shell"]}
+```
+
+The first tag is the category the example counts under, so an example lands in
+exactly one bucket. Tag names are matched case- and whitespace-insensitively:
+`Math`, `math` and `  math  ` are one category. Anything Nanotune cannot use —
+a blank string, a number where a string belongs, a tag over 64 characters — is
+dropped rather than being allowed to break a split.
+
+Without tags, the split is exactly what it always was. Datasets written before
+this feature need no changes and produce identical splits for the same seed.
 
 ## Adding Data Interactively
 
