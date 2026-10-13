@@ -1,4 +1,5 @@
 import {existsSync} from 'node:fs';
+import {basename} from 'node:path';
 import {Spinner, StatusMessage, TextInput} from '@inkjs/ui';
 import {Box, Static, Text, useApp} from 'ink';
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
@@ -205,9 +206,13 @@ export function ChatCommand({options}: Props) {
 					setStatus('error');
 					return;
 				}
-				setModelLabel(modelPath.split('/').pop() ?? modelPath);
+				const label = basename(modelPath);
+				setModelLabel(label);
 
-				const handle = await startLlamaServer(modelPath, serverOptions);
+				const handle = await startLlamaServer(modelPath, {
+					...serverOptions,
+					alias: label,
+				});
 				if (cancelled) {
 					await stopLlamaServer(handle);
 					return;

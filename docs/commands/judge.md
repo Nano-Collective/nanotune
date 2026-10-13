@@ -14,6 +14,11 @@ Set up and test an LLM provider for evaluating open-ended responses during bench
 nanotune judge configure
 ```
 
+Run this inside a Nanotune project. The configuration is written into
+`.nanotune/`, so with no project here the command stops up front — before
+asking for a provider or an API key — and tells you to run `nanotune init`
+first.
+
 Interactively set up an LLM judge. You'll be prompted to:
 
 1. **Select a provider** — Supports both cloud and local providers:

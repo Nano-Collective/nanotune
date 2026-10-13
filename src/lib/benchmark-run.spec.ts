@@ -134,6 +134,48 @@ test("validateTests rejects an empty messages array", (t) => {
   t.true(error?.message.includes("#2"));
 });
 
+test("validateTests rejects an empty acceptable answer", (t) => {
+  const error = t.throws(() =>
+    validateTests([
+      { id: 3, prompt: "list files", acceptable: ["ls -la", ""], category: "basic" },
+    ]),
+  );
+
+  t.true(error?.message.includes("#3"));
+  t.true(error?.message.includes("empty string"));
+});
+
+test("validateTests rejects a whitespace-only acceptable answer", (t) => {
+  const error = t.throws(() =>
+    validateTests([
+      { id: 4, prompt: "pwd", acceptable: ["   "], category: "nav" },
+    ]),
+  );
+
+  t.true(error?.message.includes("#4"));
+  t.true(error?.message.includes("empty string"));
+});
+
+test("validateTests reports the first bad test's id", (t) => {
+  const error = t.throws(() =>
+    validateTests([
+      { id: 5, prompt: "ok", category: "basic" },
+      { id: 6, prompt: "bad", acceptable: [""], category: "basic" },
+      { id: 7, prompt: "later", acceptable: [""], category: "basic" },
+    ]),
+  );
+
+  t.true(error?.message.includes("#6"));
+});
+
+test("validateTests accepts tests with no acceptable array", (t) => {
+  t.notThrows(() =>
+    validateTests([
+      { id: 8, prompt: "anything", category: "basic" },
+    ]),
+  );
+});
+
 // ── summarizeResults ──────────────────────────────────────────────────
 
 function result(over: Partial<BenchmarkTestResult> = {}): BenchmarkTestResult {
@@ -690,18 +732,27 @@ interface FakeLog {
   prompts: string[];
   completions: number;
   stopped: number;
+  serverOptions: unknown[];
 }
 
 function makeDeps(spec: FakeSpec = {}): { deps: BenchmarkDeps; log: FakeLog } {
-  const log: FakeLog = { seeds: [], prompts: [], completions: 0, stopped: 0 };
+  const log: FakeLog = {
+    seeds: [],
+    prompts: [],
+    completions: 0,
+    stopped: 0,
+    serverOptions: [],
+  };
   let settleExited: () => void = () => {};
   const exited = new Promise<unknown>((resolve) => {
     settleExited = () => resolve(undefined);
   });
 
   const deps = {
-    startLlamaServer: async () =>
-      ({ port: 1234, process: {}, exited }) as unknown as ServerHandle,
+    startLlamaServer: async (_modelPath: string, options: unknown) => {
+      log.serverOptions.push(options);
+      return { port: 1234, process: {}, exited } as unknown as ServerHandle;
+    },
     chatCompletion: async (
       _handle: unknown,
       messages: ChatMessage[],
@@ -788,6 +839,19 @@ test.serial("runBenchmark scores matching responses as passes", async (t) => {
     nav: { passed: 1, total: 1 },
   });
   t.deepEqual(result.failures, []);
+});
+
+test.serial("runBenchmark passes the model's basename as the server alias", async (t) => {
+  const model = writeModel();
+  writeDataset([
+    { id: 1, prompt: "list files", acceptable: ["ls"], category: "basic" },
+  ]);
+  const { deps, log } = makeDeps();
+
+  await collect({ model }, deps);
+
+  t.is(log.serverOptions.length, 1);
+  t.is((log.serverOptions[0] as { alias?: string }).alias, "test.gguf");
 });
 
 test.serial("runBenchmark records a non-matching response as a failure", async (t) => {

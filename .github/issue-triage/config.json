@@ -1,0 +1,40 @@
+{
+	"types": [
+		{
+			"name": "bug",
+			"description": "Something that exists does not work as intended"
+		},
+		{
+			"name": "enhancement",
+			"description": "A new feature, or a change to how something works"
+		},
+		{
+			"name": "question",
+			"description": "Asks how something works or whether something is possible"
+		},
+		{
+			"name": "documentation",
+			"description": "The docs are missing, wrong or unclear"
+		}
+	],
+	"areas": {
+		"area:data": "Dataset management: data add/import/list/validate/split, train.jsonl and valid.jsonl",
+		"area:train": "Fine-tuning with MLX: LoRA parameters, training runs, checkpoints, training logs",
+		"area:export": "Fusing adapters and exporting models: GGUF conversion, quantisation, llama.cpp",
+		"area:chat": "Chatting with a fine-tuned model: nanotune chat, llama-server lifecycle",
+		"area:benchmark": "Benchmarks and judges: tests.json, match modes, judge providers and API keys, reports",
+		"area:cli": "Project setup and CLI surface: init, status, clean, config.json, flags, the TUI, model downloads and the toolchain",
+		"area:docs": "Documentation",
+		"area:ci": "GitHub Actions and CI"
+	},
+	"flags": {
+		"performance": "Speed, memory use or disk use is the substance of the issue",
+		"security": "A security weakness or hardening (e.g. API key handling)",
+		"good first issue": "Small, well-specified and self-contained: a newcomer could fix it from the issue alone"
+	},
+	"aliases": {},
+	"exemptLabels": ["high-priority", "security", "no-stale"],
+	"supportUrl": "https://discord.gg/ktPDV6rekE",
+	"proposalGuidance": "A proposal is a speculative idea, a design exploration or an 'is there interest in…' post: something to discuss rather than something anyone has committed to build. Concrete, clearly scoped features — a new flag, a new subcommand, a fix to how an existing step behaves — are not proposals, however large.",
+	"scopeGuidance": "Nanotune is a simple interactive CLI for fine-tuning small language models on Apple Silicon with MLX and llama.cpp. Out of scope: training on other hardware backends (CUDA, ROCm) as built-in support, hosted or cloud training services, full pre-training of large models, and requests to bundle or endorse a specific commercial product. Integrations with experiment trackers or serving tools are in scope when they stay optional."
+}

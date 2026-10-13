@@ -157,3 +157,52 @@ test("checkPass contains is quote-sensitive", (t) => {
   t.false(checkPass(["'single'"], 'wrapped in "single" here', "contains").passed);
   t.true(checkPass(["'single'"], "wrapped in 'single' here", "contains").passed);
 });
+
+// ── empty string in acceptable (regression: issue #164) ────────────────
+// An empty string is vacuously matched by includes('')/startsWith('') and
+// must not be treated as a matchable answer under any mode.
+
+test("checkPass contains rejects an empty acceptable answer regardless of actual", (t) => {
+  const result = checkPass([""], "anything at all", "contains");
+  t.false(result.passed);
+  t.is(result.matchedAnswer, null);
+  t.is(result.matchType, null);
+});
+
+test("checkPass startsWith rejects an empty acceptable answer regardless of actual", (t) => {
+  const result = checkPass([""], "anything at all", "startsWith");
+  t.false(result.passed);
+  t.is(result.matchedAnswer, null);
+  t.is(result.matchType, null);
+});
+
+test("checkPass partial rejects an empty acceptable answer regardless of actual", (t) => {
+  const result = checkPass([""], "anything at all", "partial");
+  t.false(result.passed);
+  t.is(result.matchedAnswer, null);
+  t.is(result.matchType, null);
+});
+
+test("checkPass exact rejects an empty acceptable answer even against empty actual", (t) => {
+  t.false(checkPass([""], "", "exact").passed);
+});
+
+test("checkPass semantic rejects an empty acceptable answer even against empty actual", (t) => {
+  t.false(checkPass([""], "", "semantic").passed);
+});
+
+test("checkPass semantic rejects an empty acceptable answer against a colon-led actual", (t) => {
+  // Without the guard, '' + ':' delimiter branch would match any actual
+  // starting with ':'.
+  t.false(checkPass([""], ": foo", "semantic").passed);
+});
+
+test("checkPass skips a blank acceptable entry and still matches a later real one", (t) => {
+  const result = checkPass(["", "ls -la"], "ls -la", "contains");
+  t.true(result.passed);
+  t.is(result.matchedAnswer, "ls -la");
+});
+
+test("checkPass treats a whitespace-only acceptable answer as empty", (t) => {
+  t.false(checkPass(["   "], "anything at all", "contains").passed);
+});

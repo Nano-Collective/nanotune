@@ -1,5 +1,6 @@
 import {StatusMessage} from '@inkjs/ui';
 import {Box, Text, useApp} from 'ink';
+import {useRef} from 'react';
 import {
 	ExitHint,
 	Header,
@@ -8,7 +9,7 @@ import {
 	useKeyInput,
 } from '../../components/index.js';
 import {tryLoadConfig} from '../../lib/config.js';
-import {collectValidation} from '../../lib/data.js';
+import {collectValidation, type ValidationReport} from '../../lib/data.js';
 
 interface Props {
 	fix?: boolean;
@@ -33,11 +34,23 @@ export function DataValidateCommand({
 	const setName = isEval ? 'Validation data' : 'Training data';
 	const title = isEval ? 'Validate Validation Data' : 'Validate Training Data';
 
-	// Same report `nanotune data validate --json` prints — fixes are applied
-	// and the data re-read inside, so this reflects what is left on disk.
-	const report = config
-		? collectValidation({fix, rewriteContext, isEval})
-		: null;
+	// Everything that touches the dataset happens once per invocation, here.
+	// `--fix` and `--rewrite-context` rewrite train.jsonl, and a render body
+	// carries no promise about how many times it runs. Nothing re-renders this
+	// component today — it holds no state and sits at the root of the tree — but
+	// that is a fact about the current tree, not a guarantee. Any state, context
+	// or parent re-render added later would replay the write silently, with no
+	// user action behind it.
+	//
+	// A ref rather than an effect: the fixes have to land before the first frame
+	// reports on them, and before useAutoExit below reads result.valid to decide
+	// the exit code. An effect would run after both.
+	const reportRef = useRef<ValidationReport | null>(null);
+	if (reportRef.current === null && config) {
+		reportRef.current = collectValidation({fix, rewriteContext, isEval});
+	}
+
+	const report = reportRef.current;
 
 	// Report is fully rendered on first pass — without a keyboard there is
 	// nothing to wait for. Invalid data exits non-zero so CI can gate on it.

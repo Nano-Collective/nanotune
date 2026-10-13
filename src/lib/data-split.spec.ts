@@ -537,7 +537,7 @@ test.serial("data validate passes the overlap check on a clean split", (t) => {
 
 /**
  * A deliberately lopsided fixture: 380 common examples and 20 rare ones. A
- * random 10% split would put 10% of the rare ones in validation â€” two on
+ * random 10% split would put 10% of the rare ones in validation - two on
  * average, and nothing at all about a tenth of the time.
  */
 const GOLDEN_TOTAL = 400;

@@ -133,6 +133,30 @@ test.serial("an example with no context message still validates", (t) => {
   t.true(result.valid);
 });
 
+// ── saveTrainingData ─────────────────────────────────────
+
+test.serial("saveTrainingData replaces the file without leaving a temp behind", (t) => {
+  // The dataset write goes through writeFileAtomic now, so for the first time
+  // it can leave a temp file next to train.jsonl. writeFileAtomic's own
+  // guarantees are covered in config.spec.ts; what this pins is that the data
+  // directory the user looks at is left holding the dataset and nothing else.
+  saveTrainingData([
+    { messages: [SYSTEM_CTX, { role: "user", content: "a" }, { role: "assistant", content: "A" }] },
+  ], false);
+  saveTrainingData([
+    { messages: [SYSTEM_CTX, { role: "user", content: "b" }, { role: "assistant", content: "B" }] },
+    { messages: [SYSTEM_CTX, { role: "user", content: "c" }, { role: "assistant", content: "C" }] },
+  ], false);
+
+  const data = loadTrainingData();
+  t.is(data.length, 2);
+  t.is(data[0].messages[1].content, "b");
+  t.deepEqual(
+    readdirSync(DATA_DIR).filter((f) => f.includes(".tmp")),
+    [],
+  );
+});
+
 // ── deleteExample ─────────────────────────────────────────────────────
 
 test.serial("deleteExample removes the correct example", (t) => {
@@ -665,7 +689,8 @@ test.serial("parseTrainingData reports a bad line instead of throwing", (t) => {
 
   const { examples, errors } = parseTrainingData(false);
   t.is(examples.length, 2);
-  t.deepEqual(errors, ["Example 2: invalid JSON"]);
+  const syntaxError = t.throws(() => JSON.parse("not json at all"));
+  t.deepEqual(errors, [`Example 2: invalid JSON: ${syntaxError?.message}`]);
 });
 
 test.serial("parseTrainingData numbers bad lines by file position", (t) => {
@@ -673,7 +698,9 @@ test.serial("parseTrainingData numbers bad lines by file position", (t) => {
 
   const { examples, errors } = parseTrainingData(false);
   t.is(examples.length, 1);
-  t.deepEqual(errors, ["Example 1: invalid JSON", "Example 3: invalid JSON"]);
+  t.is(errors.length, 2);
+  t.true(errors[0]?.startsWith("Example 1: invalid JSON: "));
+  t.true(errors[1]?.startsWith("Example 3: invalid JSON: "));
 });
 
 test.serial("parseTrainingData reports nothing on clean data", (t) => {
@@ -690,7 +717,7 @@ test.serial("loadTrainingData still throws, naming the bad line", (t) => {
   // Deliberately strict: the mutating helpers load, transform and write the
   // whole file back, so skipping the line here would delete it on save.
   const err = t.throws(() => loadTrainingData(false));
-  t.is(err?.message, "Example 2: invalid JSON");
+  t.true(err?.message.startsWith("Example 2: invalid JSON: "));
 });
 
 test.serial("a malformed line survives a failed delete", (t) => {
@@ -714,7 +741,35 @@ test.serial("validateTrainingData reports a bad line as an error", (t) => {
 
   const result = validateTrainingData(SYSTEM_CTX, false);
   t.false(result.valid);
-  t.true(result.errors.includes("Example 2: invalid JSON"));
+  t.true(
+    result.errors.some(error => error.startsWith("Example 2: invalid JSON: ")),
+  );
+});
+
+const WRONG_SHAPE_LINES = [
+  "null",
+  '{"foo":1}',
+  '{"messages":[null,{"role":"assistant","content":"x"}]}',
+  '{"messages":[{"role":"user","content":5}]}',
+];
+
+test.serial("wrong-shaped lines are reported, not thrown on, by every consumer", (t) => {
+  writeConfig();
+  writeRawTrain(GOOD_LINE + "\n" + WRONG_SHAPE_LINES.join("\n") + "\n");
+
+  const { examples, errors } = parseTrainingData(false);
+  t.is(examples.length, 1);
+  t.deepEqual(errors, [2, 3, 4, 5].map((n) => `Example ${n}: invalid structure`));
+
+  const result = validateTrainingData(SYSTEM_CTX, false);
+  t.false(result.valid);
+  t.true(result.errors.includes("Example 2: invalid structure"));
+
+  const before = readFileSync(join(DATA_DIR, "train.jsonl"), "utf-8");
+  t.throws(() => dedupeExamples(false), { message: "Example 2: invalid structure" });
+  t.is(readFileSync(join(DATA_DIR, "train.jsonl"), "utf-8"), before);
+
+  t.throws(() => collectValidation({ fix: true }), { message: "Example 2: invalid structure" });
 });
 
 test.serial("validateTrainingData does not call a malformed file empty", (t) => {
@@ -722,7 +777,8 @@ test.serial("validateTrainingData does not call a malformed file empty", (t) => 
 
   const result = validateTrainingData(SYSTEM_CTX, false);
   t.false(result.valid);
-  t.deepEqual(result.errors, ["Example 1: invalid JSON"]);
+  t.is(result.errors.length, 1);
+  t.true(result.errors[0]?.startsWith("Example 1: invalid JSON: "));
 });
 
 // ── importData ────────────────────────────────────────────────────────
@@ -849,7 +905,7 @@ test.serial("exportToCSV skips examples with missing user or assistant messages"
     ],
   };
   appendTrainingExample(noUser, false);
-  
+
   // Example with no assistant message
   const noAssistant: TrainingExample = {
     messages: [
@@ -858,7 +914,7 @@ test.serial("exportToCSV skips examples with missing user or assistant messages"
     ],
   };
   appendTrainingExample(noAssistant, false);
-  
+
   // Valid example
   appendToTrainingData({ contextMessage: SYSTEM_CTX, userInput: "good", assistantOutput: "example" }, false);
 
@@ -947,6 +1003,21 @@ test.serial("appendTrainingExample writes multi-turn examples", (t) => {
   t.is(data[0].messages[3].content, "How are you?");
   t.is(data[0].messages[4].role, "assistant");
   t.is(data[0].messages[4].content, "I'm doing well, thanks!");
+});
+
+test.serial("appendTrainingExample starts a new line when the file lacks a trailing newline", (t) => {
+  appendTrainingExample({ messages: [{ role: "user", content: "first" }] }, false);
+  const path = join(DATA_DIR, "train.jsonl");
+  writeFileSync(path, readFileSync(path, "utf-8").trimEnd());
+
+  appendTrainingExample({ messages: [{ role: "user", content: "second" }] }, false);
+
+  t.is(countExamples(), 2);
+  t.deepEqual(
+    loadTrainingData().map((e) => e.messages[0].content),
+    ["first", "second"],
+  );
+  t.true(readFileSync(path, "utf-8").endsWith("\n"));
 });
 
 test.serial("updateTrainingExample replaces with multi-turn example", (t) => {
@@ -1682,9 +1753,9 @@ test.serial(
     const examples: TrainingExample[] = [
       { messages: [{ role: "user", content: "hello" }, { role: "assistant", content: "world" }] },
     ];
-    
+
     saveTrainingData(examples, false);
-    
+
     // Data was written successfully
     t.is(countExamples(false), 1);
     const loaded = loadTrainingData(false);

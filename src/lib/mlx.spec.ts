@@ -1,291 +1,135 @@
-import test from "ava";
-import { execa, type ResultPromise } from "execa";
-import type { MLXTrainingOptions } from "./mlx.js";
+import {mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import test from 'ava';
+import {execa, type ResultPromise} from 'execa';
 import {
-  abortTraining,
-  buildLoraConfigYaml,
-  buildTrainingArgs,
-  needsLoraConfig,
-  shouldTreatAsStop,
-  stopOnAbort,
-} from "./mlx.js";
+	abortTraining,
+	buildLoraConfigYaml,
+	buildTrainingArgs,
+	needsLoraConfig,
+	parseTrainingLogLine,
+	restoreAdapterFile,
+	shouldTreatAsStop,
+	stopOnAbort,
+	type MLXTrainingOptions,
+} from './mlx.js';
 
-test("MLX output parsing regex works correctly", (t) => {
-  // Test the regex pattern used to parse MLX training output
-  const pattern =
-    /Iter\s+(\d+)(?:\s*\([^)]+\))?:\s*Train loss\s+([\d.]+)(?:,\s*Val loss\s+([\d.]+))?/i;
-
-  // Test standard format
-  const line1 = "Iter 10: Train loss 1.234, Val loss 1.456";
-  const match1 = line1.match(pattern);
-  t.truthy(match1);
-  t.is(match1?.[1], "10");
-  t.is(match1?.[2], "1.234");
-  t.is(match1?.[3], "1.456");
-});
-
-test("MLX output parsing handles format without val loss", (t) => {
-  const pattern =
-    /Iter\s+(\d+)(?:\s*\([^)]+\))?:\s*Train loss\s+([\d.]+)(?:,\s*Val loss\s+([\d.]+))?/i;
-
-  const line = "Iter 50: Train loss 0.456";
-  const match = line.match(pattern);
-  t.truthy(match);
-  t.is(match?.[1], "50");
-  t.is(match?.[2], "0.456");
-  t.is(match?.[3], undefined);
-});
-
-test("MLX output parsing handles format with iteration speed", (t) => {
-  const pattern =
-    /Iter\s+(\d+)(?:\s*\([^)]+\))?:\s*Train loss\s+([\d.]+)(?:,\s*Val loss\s+([\d.]+))?/i;
-
-  const line = "Iter 100 (15.2 it/s): Train loss 0.342, Val loss 0.298";
-  const match = line.match(pattern);
-  t.truthy(match);
-  t.is(match?.[1], "100");
-  t.is(match?.[2], "0.342");
-  t.is(match?.[3], "0.298");
-});
-
-test("TrainingProgress structure is correct", (t) => {
-  const progress = {
-    iteration: 50,
-    totalIterations: 150,
-    trainLoss: 0.456,
-    valLoss: 0.423,
-  };
-
-  t.is(progress.iteration, 50);
-  t.is(progress.totalIterations, 150);
-  t.is(progress.trainLoss, 0.456);
-  t.is(progress.valLoss, 0.423);
-});
-
-function trainingOptions(
-  overrides: Partial<MLXTrainingOptions> = {},
-): MLXTrainingOptions {
-  return {
-    model: "Qwen/Qwen2.5-Coder-1.5B-Instruct",
-    dataPath: "/path/to/data",
-    adapterPath: "/path/to/adapters",
-    iterations: 150,
-    learningRate: 5e-5,
-    batchSize: 4,
-    numLayers: 16,
-    stepsPerEval: 50,
-    saveEvery: 50,
-    resume: false,
-    fineTuneType: "lora",
-    loraRank: 8,
-    loraAlpha: 20,
-    loraDropout: 0,
-    maxSeqLength: 2048,
-    gradCheckpoint: false,
-    valBatches: 25,
-    seed: 0,
-    ...overrides,
-  };
+for (const [line, expected] of [
+	['Iter 10: Train loss 1.234, Val loss 1.456', {iteration: 10, trainLoss: 1.234, valLoss: 1.456}],
+	['Iter 50: Train loss 0.456', {iteration: 50, trainLoss: 0.456}],
+	['Iter 100 (15.2 it/s): Train loss 0.342, Val loss 0.298', {iteration: 100, trainLoss: 0.342, valLoss: 0.298}],
+	['Iter 50: Val loss 0.456, Val took 1.230s', {iteration: 50, valLoss: 0.456}],
+	['Iter 50: Val loss 1e-3', {iteration: 50, valLoss: 0.001}],
+	['Iter 50: Val loss nan', null],
+	[' \u001b[38;5;244m  50\u001b[0m \u001b[1;35mval\u001b[0m \u001b[1m0.456\u001b[0m 1.23s', {iteration: 50, valLoss: 0.456}],
+	['   10 1.234 ▼ 1,234  12.3k', {iteration: 10, trainLoss: 1.234}],
+	['Iter 50: Saved adapter weights to adapters.safetensors.', null],
+] as const) {
+	test(`parseTrainingLogLine: ${line}`, t => t.deepEqual(parseTrainingLogLine(line), expected));
 }
 
-// Reads the value that follows `flag`, so a test fails loudly if a flag is
-// dropped or wired to the wrong field rather than passing on a bare includes().
-function argValue(args: string[], flag: string): string | undefined {
-  const index = args.indexOf(flag);
-  return index === -1 ? undefined : args[index + 1];
+test('restoring an evaluated snapshot atomically replaces the active adapter', t => {
+	const dir = mkdtempSync(join(tmpdir(), 'nanotune-restore-'));
+	try {
+		const src = join(dir, 'best.safetensors');
+		const dest = join(dir, 'adapters.safetensors');
+		writeFileSync(src, 'best');
+		writeFileSync(dest, 'last');
+		restoreAdapterFile(src, dest);
+		t.is(readFileSync(dest, 'utf8'), 'best');
+		t.throws(() => restoreAdapterFile(join(dir, 'missing'), dest));
+		t.is(readFileSync(dest, 'utf8'), 'best');
+		t.deepEqual(readdirSync(dir).sort(), ['adapters.safetensors', 'best.safetensors']);
+	} finally {rmSync(dir, {recursive: true, force: true});}
+});
+
+function trainingOptions(overrides: Partial<MLXTrainingOptions> = {}): MLXTrainingOptions {
+	return {
+		model: 'model', dataPath: '/data', adapterPath: '/adapters', iterations: 150,
+		learningRate: 5e-5, batchSize: 4, numLayers: 16, stepsPerEval: 50, saveEvery: 50,
+		resume: false, fineTuneType: 'lora', loraRank: 8, loraAlpha: 20, loraDropout: 0,
+		maxSeqLength: 2048, gradCheckpoint: false, valBatches: 25, seed: 0,
+		earlyStoppingPatience: 0, loadBestModelAtEnd: false, ...overrides,
+	};
 }
 
-test("buildTrainingArgs passes the hyperparameter flags through to mlx_lm", (t) => {
-  const args = buildTrainingArgs(
-    trainingOptions({
-      fineTuneType: "dora",
-      maxSeqLength: 1024,
-      valBatches: 10,
-      seed: 42,
-    }),
-  );
-
-  t.is(argValue(args, "--fine-tune-type"), "dora");
-  t.is(argValue(args, "--max-seq-length"), "1024");
-  t.is(argValue(args, "--val-batches"), "10");
-  t.is(argValue(args, "--seed"), "42");
+test('buildTrainingArgs passes hyperparameters, optional YAML, and resume path', t => {
+	const args = buildTrainingArgs(trainingOptions({fineTuneType: 'dora', maxSeqLength: 1024, valBatches: 10, seed: 42, resume: true}), '/tmp/lora.yaml');
+	const value = (flag: string) => args[args.indexOf(flag) + 1];
+	t.is(value('--fine-tune-type'), 'dora');
+	t.is(value('--max-seq-length'), '1024');
+	t.is(value('--val-batches'), '10');
+	t.is(value('--seed'), '42');
+	t.is(value('-c'), '/tmp/lora.yaml');
+	t.is(value('--resume-adapter-file'), '/adapters/adapters.safetensors');
+	t.false(buildTrainingArgs(trainingOptions()).includes('-c'));
+	t.false(buildTrainingArgs(trainingOptions()).includes('--resume-adapter-file'));
 });
 
-test("buildTrainingArgs adds --grad-checkpoint only when enabled", (t) => {
-  t.false(buildTrainingArgs(trainingOptions()).includes("--grad-checkpoint"));
-  t.true(
-    buildTrainingArgs(trainingOptions({ gradCheckpoint: true })).includes(
-      "--grad-checkpoint",
-    ),
-  );
+test('buildTrainingArgs adds --grad-checkpoint only when enabled', t => {
+	t.false(buildTrainingArgs(trainingOptions()).includes('--grad-checkpoint'));
+	t.true(buildTrainingArgs(trainingOptions({gradCheckpoint: true})).includes('--grad-checkpoint'));
 });
 
-test("buildTrainingArgs passes the lora config path when given one", (t) => {
-  const args = buildTrainingArgs(trainingOptions(), "/tmp/lora.yaml");
-  t.is(argValue(args, "-c"), "/tmp/lora.yaml");
+test('LoRA configuration is only needed for lora and dora', t => {
+	t.true(needsLoraConfig('lora'));
+	t.true(needsLoraConfig('dora'));
+	t.false(needsLoraConfig('full'));
 });
 
-test("buildTrainingArgs omits -c when no lora config was written", (t) => {
-  t.false(buildTrainingArgs(trainingOptions()).includes("-c"));
+test('LoRA YAML reflects settings without exponent notation', t => {
+	t.is(buildLoraConfigYaml(8, 20, 0), 'lora_parameters:\n  rank: 8\n  scale: 20\n  dropout: 0\n');
+	t.is(buildLoraConfigYaml(16, 32, 0.05), 'lora_parameters:\n  rank: 16\n  scale: 32\n  dropout: 0.05\n');
+	t.regex(buildLoraConfigYaml(8, 20, 1e-7), /dropout: 0\.0000001/);
+	t.false(buildLoraConfigYaml(8, 20, 1e-7).includes('e-'));
 });
-
-test("buildTrainingArgs still wires --resume-adapter-file", (t) => {
-  const args = buildTrainingArgs(trainingOptions({ resume: true }));
-  t.is(
-    argValue(args, "--resume-adapter-file"),
-    "/path/to/adapters/adapters.safetensors",
-  );
-});
-
-test("needsLoraConfig is false for full fine-tuning only", (t) => {
-  // `full` trains weights directly, so mlx_lm never reads lora_parameters.
-  t.true(needsLoraConfig("lora"));
-  t.true(needsLoraConfig("dora"));
-  t.false(needsLoraConfig("full"));
-});
-
-test("buildLoraConfigYaml produces the expected lora_parameters block", (t) => {
-  const yaml = buildLoraConfigYaml(8, 20, 0);
-  t.is(yaml, "lora_parameters:\n  rank: 8\n  scale: 20\n  dropout: 0\n");
-});
-
-test("buildLoraConfigYaml reflects overridden values", (t) => {
-  const yaml = buildLoraConfigYaml(16, 32, 0.05);
-  t.is(yaml, "lora_parameters:\n  rank: 16\n  scale: 32\n  dropout: 0.05\n");
-});
-
-test("buildLoraConfigYaml avoids exponent notation PyYAML would read as a string", (t) => {
-  // PyYAML's 1.1 float resolver rejects `1e-7`, so String() is not enough.
-  const yaml = buildLoraConfigYaml(8, 20, 1e-7);
-  t.false(yaml.includes("e-"));
-  t.regex(yaml, /dropout: 0\.0000001/);
-});
-
-// ── graceful stop (Ctrl+C) ────────────────────────────────────────────
 
 function fakeSubprocess() {
-  const signals: string[] = [];
-  const subprocess = {
-    kill(signal: string) {
-      signals.push(signal);
-      return true;
-    },
-  } as unknown as ResultPromise;
-  return { subprocess, signals };
+	const signals: string[] = [];
+	const subprocess = {kill(signal: string) {signals.push(signal); return true;}} as unknown as ResultPromise;
+	return {subprocess, signals};
 }
 
-test("abortTraining sends SIGINT so MLX can flush its checkpoint", (t) => {
-  const { subprocess, signals } = fakeSubprocess();
-  abortTraining(subprocess);
-  t.deepEqual(signals, ["SIGINT"]);
+test('abortTraining sends SIGINT', t => {
+	const {subprocess, signals} = fakeSubprocess();
+	abortTraining(subprocess);
+	t.deepEqual(signals, ['SIGINT']);
 });
 
-test("stopOnAbort does nothing until the signal aborts", (t) => {
-  const { subprocess, signals } = fakeSubprocess();
-  const controller = new AbortController();
-  stopOnAbort(subprocess, controller.signal);
-  t.deepEqual(signals, []);
-
-  controller.abort();
-  t.deepEqual(signals, ["SIGINT"]);
+test('stopOnAbort signals once and detaches safely before or after cancellation', t => {
+	const {subprocess, signals} = fakeSubprocess();
+	const controller = new AbortController();
+	const detach = stopOnAbort(subprocess, controller.signal);
+	t.deepEqual(signals, []);
+	controller.abort(); controller.abort(); detach(); detach();
+	t.deepEqual(signals, ['SIGINT']);
+	const other = new AbortController();
+	const detached = stopOnAbort(subprocess, other.signal);
+	detached(); other.abort();
+	t.deepEqual(signals, ['SIGINT']);
 });
 
-test("stopOnAbort stops a signal that is already aborted", (t) => {
-  // An already-aborted signal never fires an `abort` event, so a bare
-  // addEventListener would leave the trainer running forever.
-  const { subprocess, signals } = fakeSubprocess();
-  const controller = new AbortController();
-  controller.abort();
-  stopOnAbort(subprocess, controller.signal);
-  t.deepEqual(signals, ["SIGINT"]);
+test('stopOnAbort handles already aborted signals and absent signals', t => {
+	const {subprocess, signals} = fakeSubprocess();
+	stopOnAbort(subprocess, undefined)();
+	t.deepEqual(signals, []);
+	const controller = new AbortController(); controller.abort();
+	stopOnAbort(subprocess, controller.signal)();
+	t.deepEqual(signals, ['SIGINT']);
 });
 
-test("stopOnAbort signals only once", (t) => {
-  const { subprocess, signals } = fakeSubprocess();
-  const controller = new AbortController();
-  stopOnAbort(subprocess, controller.signal);
-  controller.abort();
-  controller.abort();
-  t.deepEqual(signals, ["SIGINT"]);
+test('stopOnAbort terminates a real running child process', async t => {
+	const child = execa(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);
+	const controller = new AbortController();
+	stopOnAbort(child, controller.signal); controller.abort();
+	t.truthy(await t.throwsAsync(child));
 });
 
-test("stopOnAbort without a signal never touches the subprocess", (t) => {
-  const { subprocess, signals } = fakeSubprocess();
-  const detach = stopOnAbort(subprocess, undefined);
-  detach();
-  t.deepEqual(signals, []);
-});
-
-test("stopOnAbort detach stops a later abort from signalling a dead process", (t) => {
-  // A caller-owned signal outlives the run: once training is over, aborting it
-  // must not SIGINT a closed subprocess whose PID may have been recycled.
-  const { subprocess, signals } = fakeSubprocess();
-  const controller = new AbortController();
-  const detach = stopOnAbort(subprocess, controller.signal);
-
-  detach();
-  controller.abort();
-
-  t.deepEqual(signals, []);
-});
-
-test("stopOnAbort detach is safe to call twice", (t) => {
-  const { subprocess, signals } = fakeSubprocess();
-  const controller = new AbortController();
-  const detach = stopOnAbort(subprocess, controller.signal);
-
-  detach();
-  detach();
-  controller.abort();
-
-  t.deepEqual(signals, []);
-});
-
-test("stopOnAbort detach after an abort leaves the stop intact", (t) => {
-  const { subprocess, signals } = fakeSubprocess();
-  const controller = new AbortController();
-  const detach = stopOnAbort(subprocess, controller.signal);
-
-  controller.abort();
-  detach();
-
-  t.deepEqual(signals, ["SIGINT"]);
-});
-
-test("stopOnAbort detach for an already-aborted signal is a no-op", (t) => {
-  const { subprocess, signals } = fakeSubprocess();
-  const controller = new AbortController();
-  controller.abort();
-
-  const detach = stopOnAbort(subprocess, controller.signal);
-  detach();
-
-  t.deepEqual(signals, ["SIGINT"]);
-});
-
-test("stopOnAbort terminates a real running child process", async (t) => {
-  const child = execa("node", ["-e", "setInterval(() => {}, 1000)"]);
-  t.truthy(child.pid);
-
-  const controller = new AbortController();
-  stopOnAbort(child, controller.signal);
-  controller.abort();
-
-  // The child would run forever, so this only settles because it was killed.
-  t.truthy(await t.throwsAsync(child));
-});
-
-test("shouldTreatAsStop returns true when signal is aborted", (t) => {
-  const controller = new AbortController();
-  controller.abort();
-  t.true(shouldTreatAsStop(controller.signal));
-});
-
-test("shouldTreatAsStop returns false when signal is not aborted", (t) => {
-  const controller = new AbortController();
-  t.false(shouldTreatAsStop(controller.signal));
-});
-
-test("shouldTreatAsStop returns false when signal is undefined", (t) => {
-  t.false(shouldTreatAsStop(undefined));
+test('shouldTreatAsStop only accepts an aborted signal', t => {
+	const controller = new AbortController();
+	t.false(shouldTreatAsStop(undefined));
+	t.false(shouldTreatAsStop(controller.signal));
+	controller.abort();
+	t.true(shouldTreatAsStop(controller.signal));
 });

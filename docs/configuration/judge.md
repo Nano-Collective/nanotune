@@ -48,6 +48,41 @@ Default values are also supported:
 
 This resolves at runtime from your shell environment, so the actual key is never stored in the config file.
 
+A value is substituted only when it is *entirely* one reference. Anything else
+is a literal and is used exactly as written, so a key pasted from a provider
+console survives even when it contains `$`:
+
+| Value | Result |
+|-------|--------|
+| `"${OPENROUTER_API_KEY}"` | the variable's value |
+| `"${OPENROUTER_API_KEY:-sk-default}"` | the variable's value, or `sk-default` if unset |
+| `"sk-ant-api03-AB$CD-EF"` | used as-is |
+| `"https://${REGION}.example.com/v1"` | used as-is — not a whole-value reference |
+
+Defaults are literal text and cannot contain a closing `}`. A variable that
+is set to an empty string still counts as set, so its empty value takes
+precedence over a default.
+
+If a referenced variable is unset and has no default, nanotune stops and names
+it rather than sending a blank credential:
+
+```
+judge.json "apiKey" is set to ${OPENROUTER_API_KEY}, but that environment
+variable is not set. Export it, or give it a default with ${VAR:-value}.
+```
+
+## Keeping the Key Out of Git
+
+`apiKey` may hold a literal secret rather than the `${ENV_VAR}` form, so
+`judge.json` is written with `0600` permissions and `.nanotune/.gitignore`
+carries a `judge.json*` entry — the glob also covers the `judge.json.tmp` an
+interrupted save can leave behind.
+
+Projects created before that entry existed keep the `.gitignore` they were
+initialised with. Saving a judge configuration back-fills any missing entries
+into the existing file, so a project made with an older Nanotune picks the
+protection up on its next `nanotune judge configure`.
+
 ## Supported Providers
 
 ### Cloud Providers

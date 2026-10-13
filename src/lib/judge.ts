@@ -15,8 +15,8 @@ import type {
 	JudgeProviderConfig,
 	JudgeResult,
 } from '../types/index.js';
-import {getProjectDir} from './config.js';
-import {substituteEnvVars} from './env-substitution.js';
+import {getProjectDir, initializeProjectDirs} from './config.js';
+import {isUnresolvedEnvRef, substituteEnvVars} from './env-substitution.js';
 
 const JUDGE_CONFIG_FILE = 'judge.json';
 
@@ -62,7 +62,22 @@ export function loadJudgeConfig(): JudgeProviderConfig {
 		);
 	}
 	const raw = JSON.parse(readFileSync(path, 'utf-8')) as JudgeProviderConfig;
-	return substituteEnvVars(raw);
+	const config = substituteEnvVars(raw);
+
+	// An unset `${VAR}` is left in place rather than blanked, so say which one is
+	// missing. Letting it through means a placeholder or empty credential reaches
+	// the provider, and the 401 that comes back reads as a bad account rather than
+	// an unexported shell variable.
+	for (const [field, value] of Object.entries(raw)) {
+		if (isUnresolvedEnvRef(value)) {
+			throw new Error(
+				`judge.json "${field}" is set to ${value}, but that environment variable ` +
+					'is not set. Export it, or give it a default with ${VAR:-value}.',
+			);
+		}
+	}
+
+	return config;
 }
 
 /**
@@ -74,8 +89,13 @@ export function loadJudgeConfig(): JudgeProviderConfig {
  * present in a file that is not already 0600 — including when replacing a 0644
  * config left by 1.5.0 or earlier — and an interrupted write cannot leave a
  * truncated judge.json for `loadJudgeConfig` to choke on.
+ *
+ * `initializeProjectDirs` runs first for its .gitignore: a 0600 file is no
+ * protection at all if git is free to commit it, and projects initialised
+ * before `judge.json*` joined that list never got the entry.
  */
 export function saveJudgeConfig(config: JudgeProviderConfig): void {
+	initializeProjectDirs();
 	const path = getJudgeConfigPath();
 	const tmp = `${path}.tmp`;
 	// Clear a temp left behind by a process that died between write and
@@ -128,7 +148,10 @@ function createJudgeProvider(config: JudgeProviderConfig) {
 	return createOpenAICompatible({
 		name: config.name,
 		baseURL: config.baseUrl,
-		apiKey: config.apiKey ?? 'dummy-key',
+		// `||` and not `??`: an apiKey of '' means no key was configured, which is
+		// what local servers want. `??` let the empty string through and sent an
+		// empty bearer token instead of the placeholder these providers expect.
+		apiKey: config.apiKey || 'dummy-key',
 	});
 }
 

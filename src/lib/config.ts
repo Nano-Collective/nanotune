@@ -437,45 +437,64 @@ const GITIGNORE_ENTRIES = [
 	'adapters/',
 	'models/',
 	'benchmarks/',
+	'runs/',
 	'chats/',
-	// train.jsonl and valid.jsonl hold the user's own prompts and the
-	// assistant replies they generated. Everything above is a build artifact
-	// this tool can recreate; this is the user's data, and a repository that
+	// train.jsonl and valid.jsonl hold the user's own prompts and the replies
+	// the model generated for them. Every entry above is a build artifact this
+	// tool can recreate; this is the user's data, and a repository that
 	// ignores the rest but commits the dataset is the worst of both.
 	'data/',
 	'judge.json*',
 ];
 
-const GITIGNORE_HEADER = '# Nanotune project artifacts';
-
-const GITIGNORE_CONTENTS = `${GITIGNORE_HEADER}\n${GITIGNORE_ENTRIES.join('\n')}\n`;
+const GITIGNORE_CONTENTS = `# Nanotune project artifacts\n${GITIGNORE_ENTRIES.join('\n')}\n`;
 
 /**
- * Appends only the entries that are missing and rewrites nothing, so a user
- * who added their own patterns keeps them. The `data/` entry is the reason this
- * exists: a project created before it would otherwise keep committing its
- * training data forever, because the file was only ever written when absent.
+ * Write .gitignore inside .nanotune/ to protect API keys and keep multi-GB
+ * adapters/models out of the user's git history, back-filling entries into a
+ * file that already exists rather than leaving it as it was found. Entries get
+ * added to this list over time and a project keeps whatever .gitignore it was
+ * initialised with: one from 1.3.x or earlier has no judge.json line at all,
+ * and one from 1.4.0-1.6.x has a bare `judge.json` that misses the
+ * judge.json.tmp an interrupted save leaves behind. Both of those files can
+ * hold a literal API key that `git add .` would commit.
  */
-export function ensureProjectGitignore(): void {
+function writeProjectGitignore(): void {
 	const gitignorePath = join(getProjectDir(), '.gitignore');
 	if (!existsSync(gitignorePath)) {
-		writeFileAtomic(gitignorePath, GITIGNORE_CONTENTS);
+		writeFileSync(gitignorePath, GITIGNORE_CONTENTS);
 		return;
 	}
 
-	const existing = readFileSync(gitignorePath, 'utf-8');
+	let existing = readFileSync(gitignorePath, 'utf-8');
 	const present = new Set(existing.split('\n').map(line => line.trim()));
-	const missing = GITIGNORE_ENTRIES.filter(entry => !present.has(entry));
-	if (missing.length === 0) {
-		return;
+	const missing = GITIGNORE_CONTENTS.split('\n')
+		.map(line => line.trim())
+		.filter(line => line && !present.has(line));
+
+	let modified = false;
+
+	if (missing.includes('judge.json*') && present.has('judge.json')) {
+		existing = existing
+			.split('\n')
+			.map(line => (line.trim() === 'judge.json' ? 'judge.json*' : line))
+			.join('\n');
+		missing.splice(missing.indexOf('judge.json*'), 1);
+		modified = true;
 	}
 
-	const separator = existing.endsWith('\n') ? '' : '\n';
-	const header = existing.trim().length === 0 ? `${GITIGNORE_HEADER}\n` : '';
-	writeFileAtomic(
-		gitignorePath,
-		`${existing}${separator}${header}${missing.join('\n')}\n`,
-	);
+	if (missing.length > 0) {
+		const separator = existing === '' || existing.endsWith('\n') ? '' : '\n';
+		existing = `${existing}${separator}${missing.join('\n')}\n`;
+		modified = true;
+	}
+
+	if (modified) {
+		// Atomic, like every other write to a project file: an interrupted
+		// back-fill must leave the previous .gitignore or the new one, never a
+		// truncated file that silently stops ignoring anything.
+		writeFileAtomic(gitignorePath, existing);
+	}
 }
 
 export function initializeProjectDirs(): void {
@@ -496,7 +515,7 @@ export function initializeProjectDirs(): void {
 	// Write .gitignore inside .nanotune/ to protect API keys, keep multi-GB
 	// adapters/models out of the user's git history, and keep the training
 	// data itself out of it.
-	ensureProjectGitignore();
+	writeProjectGitignore();
 }
 
 /**
@@ -630,6 +649,8 @@ export function createDefaultConfig(
 			gradCheckpoint: false,
 			valBatches: 25,
 			seed: 0,
+			earlyStoppingPatience: 0,
+			loadBestModelAtEnd: false,
 		},
 		export: {
 			quantization: 'q4_k_m',
