@@ -75,10 +75,24 @@ function categoriesOf(isEval: boolean): string[] {
   return loadTrainingData(isEval).map(ex => ex.tags?.[0] ?? "untagged");
 }
 
+/**
+ * The count `splitTrainValidation` computed before this PR, written out
+ * longhand rather than delegated to `validTarget`.
+ *
+ * Delegating is what makes a back-compat oracle worthless: `validTarget` caps
+ * at `total - 1` where the original did not, so an oracle built on it agrees
+ * with the implementation by construction and passes even if the split stops
+ * matching the original bytes. Reproduced here so the two only agree while
+ * they really are the same function.
+ */
+function legacyValidCount(length: number, ratio: number): number {
+  return Math.max(length >= 2 ? 1 : 0, Math.floor(length * ratio));
+}
+
 /** The original implementation, reproduced to pin the back-compat contract. */
 function legacyValidSelection(examples: TrainingExample[], ratio: number, seed: number): string[] {
   const shuffled = shuffleInPlace([...examples], mulberry32(seed));
-  const validCount = validTarget(examples.length, ratio);
+  const validCount = legacyValidCount(examples.length, ratio);
   return shuffled.slice(shuffled.length - validCount).map(ex => ex.messages[1].content);
 }
 
@@ -109,6 +123,40 @@ test.serial("a tagged dataset splits exactly as before when stratify is off", (t
   splitTrainValidation(0.1, 7, "off");
 
   t.deepEqual(contentsOf(true).sort(), [...expected].sort());
+});
+
+test("the new count is the original count across every ratio the split accepts", (t) => {
+  // The one place the two can disagree is ratio >= 1, where the original would
+  // take the whole dataset for validation and write train.jsonl empty. Below
+  // that they are the same function, and this says so over the whole reachable
+  // domain rather than at the single 0.1 the tests above happen to use - so a
+  // change to validTarget that moved any other boundary fails here too.
+  const lengths = [0, 1, 2, 3, 17, 200, 999];
+  const ratios = [0, 0.001, 0.05, 0.1, 0.105, 0.2, 1 / 3, 0.5, 0.9, 0.999];
+  for (const length of lengths) {
+    for (const ratio of ratios) {
+      t.is(
+        validTarget(length, ratio),
+        legacyValidCount(length, ratio),
+        `length ${length}, ratio ${ratio}`,
+      );
+    }
+  }
+});
+
+test("the divergence from the original count is real, and stays out of reach", (t) => {
+  // Guarding the pair together is what makes the test above mean anything: the
+  // new count caps at total - 1 on purpose, so at ratio 1 it really does differ
+  // from the original, and the ratio guard is the only thing keeping a
+  // dataset-destroying value from reaching it.
+  t.not(validTarget(200, 1), legacyValidCount(200, 1));
+
+  seed(10);
+  t.throws(() => splitTrainValidation(1, 42), { message: /less than 1/ });
+  t.throws(() => splitTrainValidation(Number.NaN, 42), { message: /finite/ });
+  // Rejected before anything is read or written, so train.jsonl is untouched.
+  t.is(countExamples(false), 10);
+  t.is(countExamples(true), 0);
 });
 
 // â”€â”€ the issue itself â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
