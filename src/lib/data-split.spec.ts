@@ -527,6 +527,77 @@ test.serial("data validate passes the overlap check on a clean split", (t) => {
   t.true(report.checks.noTrainValidOverlap);
 });
 
+// ── golden: the exact split a seed produces (#211) ────────────────────
+//
+// Reproducibility tests prove a seed gives the same answer twice. They do not
+// prove the answer survived a refactor of the allocation, which is how every
+// user's published evaluation numbers would silently shift. This pins it.
+
+/**
+ * A deliberately lopsided fixture: 380 common examples and 20 rare ones. A
+ * random 10% split would put 10% of the rare ones in validation — two on
+ * average, and nothing at all about a tenth of the time.
+ */
+const GOLDEN_TOTAL = 400;
+const GOLDEN_RARE_FROM = 380;
+
+function seedGoldenFixture(): void {
+  for (let i = 0; i < GOLDEN_TOTAL; i++) {
+    appendToTrainingData(
+      {
+        contextMessage: SYSTEM_CTX,
+        userInput: `golden-q${i}`,
+        assistantOutput: `golden-a${i}`,
+        tags: [i >= GOLDEN_RARE_FROM ? "rare" : "common"],
+      },
+      false,
+    );
+  }
+}
+
+test.serial("the seeded split matches the golden fixture", (t) => {
+  const golden = JSON.parse(
+    readFileSync(
+      join(ORIG_CWD, "src", "lib", "fixtures", "stratified-split.golden.json"),
+      "utf-8",
+    ),
+  ) as {
+    seed: number;
+    ratio: number;
+    strategy: "random" | "stratified" | "unstratifiable";
+    categories: Record<string, number[]>;
+  };
+
+  seedGoldenFixture();
+  const result = splitTrainValidation(golden.ratio, golden.seed, "on");
+
+  const heldOut = contentsOf(true).map(content =>
+    Number(content.replace("golden-q", "")),
+  );
+  const byCategory = new Map<string, number[]>();
+  for (const index of heldOut) {
+    const category = index >= GOLDEN_RARE_FROM ? "rare" : "common";
+    byCategory.set(category, [...(byCategory.get(category) ?? []), index]);
+  }
+
+  t.is(result.strategy, golden.strategy);
+  t.deepEqual(Object.fromEntries(byCategory), golden.categories);
+  t.is(heldOut.length, 40);
+});
+
+test.serial("the golden fixture is still balanced the way stratification promises", (t) => {
+  seedGoldenFixture();
+  const result = splitTrainValidation(0.1, 4242, "on");
+
+  t.is(result.strategy, "stratified");
+  t.is(result.validCount, 40);
+  // Both categories represented, and the rare one is not squeezed to nothing.
+  const rare = result.buckets.find(b => b.category === "rare");
+  t.truthy(rare, "no rare bucket reported");
+  t.true((rare as {validation: number}).validation >= 2);
+  t.deepEqual(result.unrepresentedCategories, []);
+});
+
 // ── crash safety, preserved from #162 ──────────────────────────────────
 
 test.serial("a failed validation write leaves train.jsonl intact", (t) => {
