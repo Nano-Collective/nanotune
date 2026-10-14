@@ -185,21 +185,31 @@ export function saveTrainingData(
 	examples: TrainingExample[],
 	isEval: boolean,
 ): void {
-	ensureDataDir();
-	const path = isEval ? getEvalDataPath() : getTrainDataPath();
-	const content = `${examples.map(ex => JSON.stringify(ex)).join('\n')}\n`;
-	// Temp-file-and-rename: this rewrites the user's whole dataset, so a crash,
-	// a full disk or a kill between truncate and write would otherwise leave
-	// train.jsonl short of the examples it started with.
-	writeFileAtomic(path, content);
+	withDataLock(() => {
+		ensureDataDir();
+		const path = isEval ? getEvalDataPath() : getTrainDataPath();
+		const content = `${examples.map(ex => JSON.stringify(ex)).join('\n')}\n`;
+		// Temp-file-and-rename: this rewrites the user's whole dataset, so a crash,
+		// a full disk or a kill between truncate and write would otherwise leave
+		// train.jsonl short of the examples it started with.
+		writeFileAtomic(path, content);
+	});
 }
 
+/**
+ * The read and the write have to be one step, or a process that appended,
+ * edited or deleted in between has its work overwritten by a file written from
+ * a snapshot taken before it. The callers below each wrap their own load and
+ * save; the lock here covers a direct save of its own.
+ */
 export function deleteExample(index: number, isEval: boolean): void {
-	const examples = loadTrainingData(isEval);
-	if (index >= 0 && index < examples.length) {
-		examples.splice(index, 1);
-		saveTrainingData(examples, isEval);
-	}
+	withDataLock(() => {
+		const examples = loadTrainingData(isEval);
+		if (index >= 0 && index < examples.length) {
+			examples.splice(index, 1);
+			saveTrainingData(examples, isEval);
+		}
+	});
 }
 
 export function updateTrainingExample(
@@ -207,11 +217,13 @@ export function updateTrainingExample(
 	example: TrainingExample,
 	isEval: boolean,
 ): void {
-	const examples = loadTrainingData(isEval);
-	if (index >= 0 && index < examples.length) {
-		examples[index] = example;
-		saveTrainingData(examples, isEval);
-	}
+	withDataLock(() => {
+		const examples = loadTrainingData(isEval);
+		if (index >= 0 && index < examples.length) {
+			examples[index] = example;
+			saveTrainingData(examples, isEval);
+		}
+	});
 }
 
 /**
@@ -476,28 +488,30 @@ export interface DedupeResult {
  * context message are left alone.
  */
 export function dedupeExamples(isEval: boolean): DedupeResult {
-	const examples = loadTrainingData(isEval);
-	const seen = new Set<string>();
-	const kept: TrainingExample[] = [];
-	const removedIndexes: number[] = [];
+	return withDataLock(() => {
+		const examples = loadTrainingData(isEval);
+		const seen = new Set<string>();
+		const kept: TrainingExample[] = [];
+		const removedIndexes: number[] = [];
 
-	examples.forEach((ex, i) => {
-		const key = JSON.stringify(
-			ex.messages.map(m => ({role: m.role, content: m.content})),
-		);
-		if (seen.has(key)) {
-			removedIndexes.push(i + 1);
-			return;
+		examples.forEach((ex, i) => {
+			const key = JSON.stringify(
+				ex.messages.map(m => ({role: m.role, content: m.content})),
+			);
+			if (seen.has(key)) {
+				removedIndexes.push(i + 1);
+				return;
+			}
+			seen.add(key);
+			kept.push(ex);
+		});
+
+		if (removedIndexes.length > 0) {
+			saveTrainingData(kept, isEval);
 		}
-		seen.add(key);
-		kept.push(ex);
+
+		return {removedCount: removedIndexes.length, removedIndexes};
 	});
-
-	if (removedIndexes.length > 0) {
-		saveTrainingData(kept, isEval);
-	}
-
-	return {removedCount: removedIndexes.length, removedIndexes};
 }
 
 export interface ContextFixResult {
@@ -514,34 +528,36 @@ export function fixContextMessages(
 	contextMessage: ChatMessage,
 	isEval: boolean,
 ): ContextFixResult {
-	const examples = loadTrainingData(isEval);
-	let fixedCount = 0;
+	return withDataLock(() => {
+		const examples = loadTrainingData(isEval);
+		let fixedCount = 0;
 
-	const updated = examples.map(ex => {
-		const first = ex.messages[0];
-		if (!first || first.role === 'user' || first.role === 'assistant') {
-			return ex;
+		const updated = examples.map(ex => {
+			const first = ex.messages[0];
+			if (!first || first.role === 'user' || first.role === 'assistant') {
+				return ex;
+			}
+			if (
+				first.role === contextMessage.role &&
+				first.content === contextMessage.content
+			) {
+				return ex;
+			}
+			fixedCount++;
+			return {
+				messages: [
+					{role: contextMessage.role, content: contextMessage.content},
+					...ex.messages.slice(1),
+				],
+			};
+		});
+
+		if (fixedCount > 0) {
+			saveTrainingData(updated, isEval);
 		}
-		if (
-			first.role === contextMessage.role &&
-			first.content === contextMessage.content
-		) {
-			return ex;
-		}
-		fixedCount++;
-		return {
-			messages: [
-				{role: contextMessage.role, content: contextMessage.content},
-				...ex.messages.slice(1),
-			],
-		};
+
+		return {fixedCount};
 	});
-
-	if (fixedCount > 0) {
-		saveTrainingData(updated, isEval);
-	}
-
-	return {fixedCount};
 }
 
 /** Counts of the repairs `--fix` and `--rewrite-context` actually made. */
@@ -594,43 +610,47 @@ export function collectValidation({
 	isEval = false,
 }: ValidationOptions = {}): ValidationReport {
 	const contextMessage = resolveContextMessage(loadConfig());
+	// The repairs and the report they justify are one locked step. Held
+	// separately, a process that writes in between makes
+	// `fixes.duplicatesRemoved` describe a state that is no longer on disk.
+	return withDataLock(() => {
+		// Rewrite context first: examples that only become identical after context
+		// normalization must still be caught by dedupe in this pass.
+		const contextFix = rewriteContext
+			? fixContextMessages(contextMessage, isEval)
+			: null;
+		const dedupe = fix ? dedupeExamples(isEval) : null;
 
-	// Rewrite context first: examples that only become identical after context
-	// normalization must still be caught by dedupe in this pass.
-	const contextFix = rewriteContext
-		? fixContextMessages(contextMessage, isEval)
-		: null;
-	const dedupe = fix ? dedupeExamples(isEval) : null;
+		// Count and validate after the fixes, so the report describes the data
+		// actually left on disk rather than the state it was in on entry.
+		const examples = countExamples(isEval);
+		const result = validateTrainingData(contextMessage, isEval);
 
-	// Count and validate after the fixes, so the report describes the data
-	// actually left on disk rather than the state it was in on entry.
-	const examples = countExamples(isEval);
-	const result = validateTrainingData(contextMessage, isEval);
-
-	return {
-		set: isEval ? 'eval' : 'train',
-		examples,
-		valid: result.valid,
-		errors: result.errors,
-		warnings: result.warnings,
-		checks: {
-			dataFileExists: examples > 0,
-			validJsonStructure: result.errors.length === 0,
-			contextMessageConsistency: result.inconsistentContextMessages === 0,
-			noDuplicateInputs: result.duplicateInputs === 0,
-			// A validation set is a slice of the training data, so the 50-example
-			// floor does not apply to it — matching the rule `validateTrainingData`
-			// already uses when deciding whether to warn.
-			minimumExampleCount: isEval || examples >= 50,
-		},
-		fixes:
-			contextFix || dedupe
-				? {
-						duplicatesRemoved: dedupe?.removedCount ?? 0,
-						contextMessagesRewritten: contextFix?.fixedCount ?? 0,
-					}
-				: null,
-	};
+		return {
+			set: isEval ? 'eval' : 'train',
+			examples,
+			valid: result.valid,
+			errors: result.errors,
+			warnings: result.warnings,
+			checks: {
+				dataFileExists: examples > 0,
+				validJsonStructure: result.errors.length === 0,
+				contextMessageConsistency: result.inconsistentContextMessages === 0,
+				noDuplicateInputs: result.duplicateInputs === 0,
+				// A validation set is a slice of the training data, so the 50-example
+				// floor does not apply to it — matching the rule `validateTrainingData`
+				// already uses when deciding whether to warn.
+				minimumExampleCount: isEval || examples >= 50,
+			},
+			fixes:
+				contextFix || dedupe
+					? {
+							duplicatesRemoved: dedupe?.removedCount ?? 0,
+							contextMessagesRewritten: contextFix?.fixedCount ?? 0,
+						}
+					: null,
+		};
+	});
 }
 
 export interface ImportResult {
