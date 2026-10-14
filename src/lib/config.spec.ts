@@ -502,9 +502,28 @@ test.serial("initializeProjectDirs back-fills the .gitignore: adds data/ to a pr
   }
 });
 
-test.serial("initializeProjectDirs back-fills the .gitignore: keeps a user's own patterns", (t) => {
+test.serial("initializeProjectDirs back-fills the .gitignore: adds data.lock/ to a project created before it", (t) => {
   setupGitignoreTest();
   try {
+    // The dataset lock is taken by every command that writes, and `data/` does
+    // not match it - a gitignore pattern is a whole name, not a prefix - so
+    // without this line each write leaves an untracked directory behind.
+    const path = join(GITIGNORE_TEST_DIR, ".nanotune", ".gitignore");
+    writeFileSync(path, "# Nanotune project artifacts\nadapters/\ndata/\n");
+
+    initializeProjectDirs();
+
+    const contents = readGitignore();
+    t.true(contents.includes("data.lock/"));
+    t.true(contents.includes("data/"));
+  } finally {
+    process.chdir(ORIG_CWD);
+    rmSync(GITIGNORE_TEST_DIR, { recursive: true, force: true });
+  }
+});
+
+test.serial("initializeProjectDirs back-fills the .gitignore: keeps a user's own patterns", (t) => {
+  setupGitignoreTest();  try {
     const path = join(GITIGNORE_TEST_DIR, ".nanotune", ".gitignore");
     writeFileSync(path, "adapters/\nmy-private-notes/\n*.local\n");
 
@@ -1337,6 +1356,7 @@ test.serial("initializeProjectDirs writes the full .gitignore for a new project"
       "runs/",
       "chats/",
       "data/",
+      "data.lock/",
       "judge.json*",
     ]);
   } finally {

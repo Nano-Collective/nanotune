@@ -444,6 +444,10 @@ const GITIGNORE_ENTRIES = [
 	// tool can recreate; this is the user's data, and a repository that
 	// ignores the rest but commits the dataset is the worst of both.
 	'data/',
+	// The lock taken while writing the dataset. `data/` does not match it - a
+	// gitignore pattern is a whole name - so without this line every command
+	// that writes leaves an untracked data.lock/ in the user's `git status`.
+	'data.lock/',
 	'judge.json*',
 ];
 
