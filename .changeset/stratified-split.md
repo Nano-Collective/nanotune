@@ -23,8 +23,12 @@ same seed.
 Also fixed, and unrelated to splitting:
 
 - A validation ratio of `NaN` wrote `train.jsonl` empty and moved the whole
-  dataset into `valid.jsonl`. A ratio of 1 or more dropped an extra example via
-  `slice(0, -1)`. Both are now rejected before anything is read or written.
+  dataset into `valid.jsonl`. A ratio of 1 or more did the same, via a negative
+  `trainCount` that `slice` read as an offset from the end of the array. Both
+  are now rejected before anything is read or written. No example was ever
+  dropped or duplicated by this — the two halves always partitioned the dataset
+  — but the train half went empty while the examples were still counted as
+  trained on, and the reported counts described neither outcome.
 - `--seed`, `--stratify` and `--validation-ratio` are all ignored once
   `valid.jsonl` exists. Only `--seed` said so, so `--validation-ratio 0.2` on an
   already-split project was accepted, applied to nothing, and the run went on to
