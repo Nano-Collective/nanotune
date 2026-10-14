@@ -432,6 +432,82 @@ test("waitForServerOrExit still times out when the child stays up but never answ
 	await stopLlamaServer(handle);
 });
 
+// Run polling regressions in isolated processes: a quick rejection alone does
+// not prove the retry timer/request stopped keeping Node alive.
+const llamaCppModule = new URL("./llama-cpp.ts", import.meta.url).href;
+
+async function runStartupScenario(code: string): Promise<string> {
+	const result = await execa(
+		process.execPath,
+		[
+			"--import=tsx",
+			"--input-type=module",
+			"-e",
+			`import {waitForServerOrExit} from ${JSON.stringify(llamaCppModule)};
+			${code}`,
+		],
+		{ timeout: 3000 },
+	);
+	return result.stdout;
+}
+
+test("startup polling stops during the retry delay and lets Node exit", async (t) => {
+	const output = await runStartupScenario(`
+		let calls = 0;
+		let signal;
+		globalThis.fetch = async (_url, options) => {
+			calls++;
+			signal = options?.signal;
+			return new Response(null, {status: 503});
+		};
+		const exited = new Promise(resolve => setTimeout(() => resolve(new Error('crashed')), 25));
+		try {
+			await waitForServerOrExit(1234, exited, 10000);
+		} catch (error) {
+			console.log(error.message);
+		}
+		await new Promise(resolve => setTimeout(resolve, 350));
+		console.log(JSON.stringify({calls, aborted: signal?.aborted}));
+	`);
+	t.true(output.includes("llama-server exited during startup: crashed"));
+	t.true(output.includes('{"calls":1,"aborted":true}'));
+});
+
+test("startup polling aborts an in-flight health request and lets Node exit", async (t) => {
+	const output = await runStartupScenario(`
+		let finishExit;
+		const exited = new Promise(resolve => { finishExit = resolve; });
+		let aborted = false;
+		globalThis.fetch = (_url, options) => new Promise((_resolve, reject) => {
+			const timer = setTimeout(() => reject(new Error('request timed out')), 10000);
+			options?.signal.addEventListener('abort', () => {
+				aborted = true;
+				clearTimeout(timer);
+				reject(options.signal.reason);
+			}, {once: true});
+			finishExit(new Error('crashed'));
+		});
+		try {
+			await waitForServerOrExit(1234, exited, 10000);
+		} catch (error) {
+			console.log(error.message);
+		}
+		console.log(JSON.stringify({aborted}));
+	`);
+	t.true(output.includes("llama-server exited during startup: crashed"));
+	t.true(output.includes('{"aborted":true}'));
+});
+
+test("startup polling still succeeds when the server becomes healthy", async (t) => {
+	const output = await runStartupScenario(`
+		let calls = 0;
+		globalThis.fetch = async () => new Response(null, {status: ++calls === 1 ? 503 : 200});
+		await waitForServerOrExit(1234, new Promise(() => {}), 10000);
+		console.log(JSON.stringify({calls}));
+	`);
+	t.is(output, '{"calls":2}');
+});
+
 // ── chatCompletionStream ──────────────────────────────────────────────
 
 const enc = new TextEncoder();

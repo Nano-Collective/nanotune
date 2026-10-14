@@ -3,6 +3,7 @@ import {chmod, rm} from 'node:fs/promises';
 import {createServer} from 'node:net';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
+import {setTimeout as sleep} from 'node:timers/promises';
 import {execa, type ResultPromise} from 'execa';
 import type {ChatMessage, QuantizationType} from '../types/index.js';
 import {downloadToFile, fetchJson} from './download.js';
@@ -307,16 +308,23 @@ async function findFreePort(): Promise<number> {
 	});
 }
 
-async function waitForServer(port: number, timeoutMs = 30_000): Promise<void> {
+async function waitForServer(
+	port: number,
+	timeoutMs: number,
+	signal: AbortSignal,
+): Promise<void> {
 	const start = Date.now();
 	while (Date.now() - start < timeoutMs) {
+		signal.throwIfAborted();
 		try {
-			const res = await fetch(`http://127.0.0.1:${port}/health`);
+			const res = await fetch(`http://127.0.0.1:${port}/health`, {signal});
 			if (res.ok) return;
 		} catch {
+			// Cancellation must stop polling, not become another retry.
+			signal.throwIfAborted();
 			// Server not ready yet
 		}
-		await new Promise(r => setTimeout(r, 250));
+		await sleep(250, undefined, {signal});
 	}
 	throw new Error(`llama-server failed to start within ${timeoutMs / 1000}s`);
 }
@@ -468,16 +476,23 @@ export async function waitForServerOrExit(
 	exited: Promise<unknown>,
 	timeoutMs: number,
 ): Promise<void> {
-	await Promise.race([
-		waitForServer(port, timeoutMs),
-		exited.then(value => {
-			throw new Error(
-				`llama-server exited during startup${
-					value instanceof Error ? `: ${value.message}` : ''
-				}`,
-			);
-		}),
-	]);
+	const controller = new AbortController();
+	try {
+		await Promise.race([
+			waitForServer(port, timeoutMs, controller.signal),
+			exited.then(value => {
+				throw new Error(
+					`llama-server exited during startup${
+						value instanceof Error ? `: ${value.message}` : ''
+					}`,
+				);
+			}),
+		]);
+	} finally {
+		// Promise.race does not cancel the losing operation. Release both the
+		// in-flight health request and the retry timer when startup ends.
+		controller.abort();
+	}
 }
 
 /**
