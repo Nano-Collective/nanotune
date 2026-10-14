@@ -870,7 +870,9 @@ export function importFromCSV(
 	isEval: boolean,
 	options: ImportCSVOptions = {},
 ): ImportResult {
-	return withDataLock(() => runCSVImport(filePath, contextMessage, isEval, options));
+	return withDataLock(() =>
+		runCSVImport(filePath, contextMessage, isEval, options),
+	);
 }
 
 function runCSVImport(

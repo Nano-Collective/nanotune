@@ -127,7 +127,9 @@ function acquire(timeoutMs: number): void {
 
 		if (Date.now() >= deadline) {
 			const waited =
-				timeoutMs >= 1000 ? `${Math.round(timeoutMs / 1000)}s` : `${timeoutMs}ms`;
+				timeoutMs >= 1000
+					? `${Math.round(timeoutMs / 1000)}s`
+					: `${timeoutMs}ms`;
 			throw new Error(
 				`Gave up after ${waited} waiting for ${describeHolder(path)} to ` +
 					`finish writing. Nothing was written. If that process is gone, ` +
@@ -139,7 +141,11 @@ function acquire(timeoutMs: number): void {
 }
 
 function claimAsCurrentProcess(path: string): void {
-	const owner: LockOwner = {pid: process.pid, host: hostname(), since: Date.now()};
+	const owner: LockOwner = {
+		pid: process.pid,
+		host: hostname(),
+		since: Date.now(),
+	};
 	try {
 		writeFileSync(join(path, OWNER_FILE), JSON.stringify(owner));
 	} catch (err) {
@@ -186,7 +192,9 @@ function describeHolder(path: string): string {
 	if (!owner) return `an unidentified nanotune holding ${path}`;
 	const held = Math.max(0, Math.round((Date.now() - owner.since) / 1000));
 	const who =
-		owner.host === hostname() ? `pid ${owner.pid}` : `${owner.host} pid ${owner.pid}`;
+		owner.host === hostname()
+			? `pid ${owner.pid}`
+			: `${owner.host} pid ${owner.pid}`;
 	return `${who}, holding for ${held}s`;
 }
 
