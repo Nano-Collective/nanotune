@@ -29,8 +29,17 @@ import {
 	installLlamaCpp,
 } from '../lib/llama-cpp.js';
 import {fuseAdapters} from '../lib/mlx.js';
+import {writeModelCard} from '../lib/model-card.js';
 import {assertSupportedPlatform} from '../lib/platform.js';
 import type {QuantizationType} from '../types/index.js';
+
+const exportDependencies = {
+	assertSupportedPlatform,
+	checkLlamaCppInstalled,
+	installLlamaCpp,
+	fuseAdapters,
+	exportModel,
+};
 
 interface Props {
 	options: {
@@ -38,6 +47,7 @@ interface Props {
 		output?: string;
 		skipFuse?: boolean;
 	};
+	dependencies?: typeof exportDependencies;
 }
 
 type Status =
@@ -53,13 +63,20 @@ interface Step {
 	status: 'pending' | 'running' | 'done' | 'error';
 }
 
-export function ExportCommand({options}: Props) {
+export function ExportCommand({
+	options,
+	dependencies = exportDependencies,
+}: Props) {
 	const {exit} = useApp();
 	const [status, setStatus] = useState<Status>('checking');
 	const [error, setError] = useState<string | null>(null);
 	const [progress, setProgress] = useState(0);
 	const [currentStep, setCurrentStep] = useState('');
 	const [outputPath, setOutputPath] = useState<string | null>(null);
+	const [modelCard, setModelCard] = useState<{
+		path: string;
+		created: boolean;
+	} | null>(null);
 	const [fileSize, setFileSize] = useState<string | null>(null);
 	const [fusedCacheInfo, setFusedCacheInfo] = useState<string | null>(null);
 	const [steps, setSteps] = useState<Step[]>([
@@ -86,7 +103,7 @@ export function ExportCommand({options}: Props) {
 		try {
 			// Fail fast on unsupported hardware rather than after a multi-minute
 			// adapter fuse, when the llama.cpp download finds no matching asset.
-			assertSupportedPlatform();
+			dependencies.assertSupportedPlatform();
 
 			// Check project exists
 			if (!configExists()) {
@@ -123,10 +140,10 @@ export function ExportCommand({options}: Props) {
 
 			// Check llama.cpp
 			setStatus('checking');
-			const hasLlamaCpp = await checkLlamaCppInstalled();
+			const hasLlamaCpp = await dependencies.checkLlamaCppInstalled();
 			if (!hasLlamaCpp) {
 				setStatus('installing');
-				for await (const msg of installLlamaCpp()) {
+				for await (const msg of dependencies.installLlamaCpp()) {
 					setCurrentStep(msg);
 				}
 			}
@@ -145,7 +162,11 @@ export function ExportCommand({options}: Props) {
 				setCurrentStep('Fusing adapters with base model...');
 				setProgress(10);
 
-				await fuseAdapters(config.baseModel, adaptersDir, fusedModelPath);
+				await dependencies.fuseAdapters(
+					config.baseModel,
+					adaptersDir,
+					fusedModelPath,
+				);
 
 				updateStep(0, 'done');
 				setProgress(33);
@@ -158,7 +179,7 @@ export function ExportCommand({options}: Props) {
 			setStatus('converting');
 			updateStep(1, 'running');
 
-			for await (const update of exportModel(
+			for await (const update of dependencies.exportModel(
 				fusedModelPath,
 				finalOutputPath,
 				quantization,
@@ -179,6 +200,8 @@ export function ExportCommand({options}: Props) {
 				}
 			}
 
+			setModelCard(writeModelCard(config, finalOutputPath, quantization));
+
 			// Get file size
 			if (existsSync(finalOutputPath)) {
 				const stats = statSync(finalOutputPath);
@@ -197,7 +220,13 @@ export function ExportCommand({options}: Props) {
 			setError(err instanceof Error ? err.message : 'Export failed');
 			setStatus('error');
 		}
-	}, [options.quantization, options.output, options.skipFuse, updateStep]);
+	}, [
+		options.quantization,
+		options.output,
+		options.skipFuse,
+		updateStep,
+		dependencies,
+	]);
 
 	useEffect(() => {
 		run();
@@ -280,6 +309,12 @@ export function ExportCommand({options}: Props) {
 					<Text>
 						Output: <Text color="cyan">{outputPath}</Text>
 					</Text>
+					{modelCard && (
+						<Text>
+							Model card: <Text color="cyan">{modelCard.path}</Text>
+							{!modelCard.created && ' (existing README preserved)'}
+						</Text>
+					)}
 					{fileSize && (
 						<Text>
 							Size: <Text color="cyan">{fileSize}</Text>
