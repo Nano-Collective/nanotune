@@ -1,8 +1,8 @@
-import {existsSync, readFileSync, statSync, writeFileSync} from 'node:fs';
+import {existsSync, readFileSync, statSync} from 'node:fs';
 import {basename, dirname, join, resolve} from 'node:path';
 import {z} from 'zod';
 import type {Config, QuantizationType} from '../types/index.js';
-import {listBenchmarks} from './config.js';
+import {listBenchmarks, writeFileAtomic} from './config.js';
 import {countExamples} from './data.js';
 
 const SavedBenchmarkSchema = z.object({
@@ -12,7 +12,7 @@ const SavedBenchmarkSchema = z.object({
 	warning: z.string().optional(),
 	summary: z
 		.object({
-			total: z.int().positive(),
+			total: z.int().nonnegative(),
 			passed: z.int().nonnegative(),
 			failed: z.int().nonnegative(),
 			passRate: z.number().min(0).max(1),
@@ -20,7 +20,9 @@ const SavedBenchmarkSchema = z.object({
 		.refine(
 			value =>
 				value.passed + value.failed === value.total &&
-				Math.abs(value.passRate - value.passed / value.total) < 1e-6,
+				(value.total === 0
+					? value.passRate === 0
+					: Math.abs(value.passRate - value.passed / value.total) < 1e-6),
 		),
 });
 
@@ -140,9 +142,19 @@ export function renderModelCard({
 			'Latest saved benchmark for this artifact path. It may predate this export and does not establish the performance of newly exported weights.',
 			'',
 			`- Benchmark date: ${markdown(benchmark.timestamp)}`,
-			`- Passed: ${benchmark.summary.passed}/${benchmark.summary.total}`,
-			`- Pass rate: ${(benchmark.summary.passRate * 100).toFixed(1)}%`,
 		);
+		if (benchmark.summary.total === 0) {
+			lines.push(
+				'- Tests run: 0',
+				'',
+				'No tests were run; a pass rate is not available.',
+			);
+		} else {
+			lines.push(
+				`- Passed: ${benchmark.summary.passed}/${benchmark.summary.total}`,
+				`- Pass rate: ${(benchmark.summary.passRate * 100).toFixed(1)}%`,
+			);
+		}
 		if (benchmark.warning) {
 			lines.push(
 				'',
@@ -187,7 +199,7 @@ export function writeModelCard(
 		benchmark: latestMatchingBenchmark(outputPath),
 	});
 	try {
-		writeFileSync(path, card, {flag: 'wx'});
+		writeFileAtomic(path, card, {overwrite: false});
 	} catch (error) {
 		if (
 			(error as NodeJS.ErrnoException).code === 'EEXIST' &&

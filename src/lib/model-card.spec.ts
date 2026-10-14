@@ -1,7 +1,8 @@
-import {mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
+import {existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'ava';
+import {execa} from 'execa';
 import type {Config} from '../types/index.js';
 import {createDefaultConfig} from './config.js';
 import {renderModelCard, writeModelCard} from './model-card.js';
@@ -159,11 +160,74 @@ test.serial('writeModelCard uses the newest matching evaluation date', t => {
 test.serial('writeModelCard does not claim evaluation for unrelated or invalid runs', t => {
 	saveBenchmark('other', benchmark({model: '/other.gguf'}));
 	saveBenchmark('base', benchmark({isBase: true}));
-	saveBenchmark('empty', benchmark({summary: {total: 0, passed: 0, failed: 0, passRate: 0}}));
 	saveBenchmark('invalid-date', benchmark({timestamp: 'yesterday'}));
 	saveBenchmark('invalid', {model: output});
 	const result = writeModelCard(config, output, 'q4_k_m');
 	t.true(readFileSync(result.path, 'utf-8').includes('No saved benchmark results'));
+});
+
+test.serial('writeModelCard reports a saved zero-test benchmark without a misleading pass rate', t => {
+	saveBenchmark('empty', benchmark({summary: {total: 0, passed: 0, failed: 0, passRate: 0}}));
+	const result = writeModelCard(config, output, 'q4_k_m');
+	const card = readFileSync(result.path, 'utf-8');
+	t.true(card.includes('Benchmark date: 2026-10-15T12:00:00.000Z'));
+	t.true(card.includes('Tests run: 0'));
+	t.true(card.includes('No tests were run; a pass rate is not available.'));
+	t.false(card.includes('Pass rate: 0.0%'));
+	t.false(card.includes('No saved benchmark results'));
+});
+
+const modelCardModule = new URL('./model-card.ts', import.meta.url).href;
+
+async function runCardWriter(code: string) {
+	return execa(process.execPath, ['--import=tsx', '--input-type=module', '-e', `
+		import fs from 'node:fs';
+		import {syncBuiltinESMExports} from 'node:module';
+		import {writeModelCard} from ${JSON.stringify(modelCardModule)};
+		process.chdir(${JSON.stringify(project)});
+		const config = ${JSON.stringify(config)};
+		const output = ${JSON.stringify(output)};
+		const cardPath = ${JSON.stringify(join(models, 'README.md'))};
+		${code}
+	`], {cwd: originalCwd, reject: false});
+}
+
+test.serial('writeModelCard leaves no partial README after a crash and recovers the orphaned temp', async t => {
+	const crashed = await runCardWriter(`
+		const write = fs.writeFileSync;
+		fs.writeFileSync = (path, ...args) => {
+			if (String(path) === cardPath + '.tmp-' + process.pid) {
+				write(path, '---\\nbase_model:');
+				process.exit(42);
+			}
+			return write(path, ...args);
+		};
+		syncBuiltinESMExports();
+		writeModelCard(config, output, 'q4_k_m');
+	`);
+	t.is(crashed.exitCode, 42, crashed.stderr);
+	t.false(existsSync(join(models, 'README.md')));
+	t.true(readdirSync(models).some(name => name.startsWith('README.md.tmp-')));
+	const result = writeModelCard(config, output, 'q4_k_m');
+	t.true(result.created);
+	t.true(readFileSync(result.path, 'utf-8').includes('## Evaluation'));
+	t.false(readdirSync(models).some(name => name.startsWith('README.md.tmp-')));
+});
+
+test.serial('writeModelCard preserves a README created concurrently before atomic publication', async t => {
+	const result = await runCardWriter(`
+		const link = fs.linkSync;
+		fs.linkSync = (source, destination) => {
+			fs.writeFileSync(destination, 'Concurrent user documentation\\n');
+			return link(source, destination);
+		};
+		syncBuiltinESMExports();
+		console.log(JSON.stringify(writeModelCard(config, output, 'q4_k_m')));
+	`);
+	t.is(result.exitCode, 0, result.stderr);
+	t.false(JSON.parse(result.stdout).created);
+	t.is(readFileSync(join(models, 'README.md'), 'utf-8'), 'Concurrent user documentation\n');
+	t.false(readdirSync(models).some(name => name.startsWith('README.md.tmp-')));
 });
 
 test.serial('writeModelCard labels partial benchmark results', t => {

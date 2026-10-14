@@ -1,6 +1,7 @@
 import {
 	type Dirent,
 	existsSync,
+	linkSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
@@ -421,13 +422,23 @@ export function sweepStaleAtomicWrites(dir: string): void {
  * where the rename never happened. A process killed mid-write (SIGKILL,
  * crash) skips that cleanup; a sweep of dead-pid leftovers for this target is
  * done up front so the next run heals the last one.
+ * With overwrite disabled, publish via a hard link instead: this atomically
+ * refuses an existing destination, preserving files created by another writer.
  */
-export function writeFileAtomic(path: string, contents: string): void {
+export function writeFileAtomic(
+	path: string,
+	contents: string,
+	options: {overwrite?: boolean} = {},
+): void {
 	removeStaleTemps(dirname(path), `${basename(path)}.tmp-`);
 	const tmp = `${path}.tmp-${process.pid}`;
 	try {
 		writeFileSync(tmp, contents);
-		renameSync(tmp, path);
+		if (options.overwrite === false) {
+			linkSync(tmp, path);
+		} else {
+			renameSync(tmp, path);
+		}
 	} finally {
 		rmSync(tmp, {force: true});
 	}
