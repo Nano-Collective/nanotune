@@ -11,6 +11,9 @@ const OWNER_FILE = 'owner.json';
 const DEFAULT_TIMEOUT_MS = 300_000;
 const POLL_MS = 50;
 
+/** Errors from creating a directory that mean "try again", not "you cannot". */
+const TRANSIENT_MKDIR = new Set(['EPERM', 'EACCES', 'EBUSY']);
+
 // A busy-wait would burn a core inside the very window this lock exists to
 // protect. Node allows Atomics.wait on the main thread, unlike a browser.
 const SLEEPER = new Int32Array(new SharedArrayBuffer(4));
@@ -97,7 +100,21 @@ function acquire(timeoutMs: number): void {
 			claimAsCurrentProcess(path);
 			return;
 		} catch (err) {
-			if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+			const code = (err as NodeJS.ErrnoException).code;
+			if (code !== 'EEXIST') {
+				// Windows refuses to create a directory another process removed a
+				// moment ago, or one a real-time scanner has open, and says EPERM
+				// or EACCES where POSIX would simply have created it. This lock is
+				// created and removed constantly under contention, so that is an
+				// expected part of acquiring it rather than a failure to report.
+				// Bounded by the same deadline as the wait, so a genuinely
+				// unwritable directory still surfaces instead of spinning.
+				if (!TRANSIENT_MKDIR.has(code ?? '') || Date.now() >= deadline) {
+					throw err;
+				}
+				Atomics.wait(SLEEPER, 0, 0, POLL_MS);
+				continue;
+			}
 		}
 
 		if (abandoned(path)) {
