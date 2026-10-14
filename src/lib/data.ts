@@ -846,11 +846,38 @@ export interface ImportCSVOptions {
 	headerless?: boolean;
 }
 
+/**
+ * `isEval` is required — never defaulted — on every helper that writes into the
+ * dataset: a caller that forgets it silently appends to, or overwrites, the
+ * wrong file. Read-only helpers keep the `isEval = false` default, where a
+ * missing flag shows the wrong set but destroys nothing.
+ *
+ * The importers take the lock for their whole run rather than per appended row.
+ * Held per row, a split starting halfway through an import would put the rows
+ * imported before it in valid.jsonl and the rows after it in train.jsonl - an
+ * import silently turning into part of the validation set. The cost is that a
+ * `/keep` or a `data list` waits for a long import to finish, which is reported
+ * by the wait ending rather than by anything on screen: every caller here is an
+ * Ink command that owns the terminal, so there is nowhere to draw a message.
+ *
+ * An import is still not transactional. A bad row, a full disk or a Ctrl+C
+ * leaves the rows already written in place, which is what the imported/skipped
+ * counts describe and what a user re-running the file expects.
+ */
 export function importFromCSV(
 	filePath: string,
 	contextMessage: ChatMessage,
 	isEval: boolean,
 	options: ImportCSVOptions = {},
+): ImportResult {
+	return withDataLock(() => runCSVImport(filePath, contextMessage, isEval, options));
+}
+
+function runCSVImport(
+	filePath: string,
+	contextMessage: ChatMessage,
+	isEval: boolean,
+	options: ImportCSVOptions,
 ): ImportResult {
 	const errors: string[] = [];
 	let imported = 0;
@@ -912,6 +939,14 @@ export function importFromCSV(
 }
 
 export function importFromJSONL(
+	filePath: string,
+	contextMessage: ChatMessage,
+	isEval: boolean,
+): ImportResult {
+	return withDataLock(() => runJSONLImport(filePath, contextMessage, isEval));
+}
+
+function runJSONLImport(
 	filePath: string,
 	contextMessage: ChatMessage,
 	isEval: boolean,
@@ -979,6 +1014,14 @@ export function importFromJSONL(
 }
 
 export function importFromJSON(
+	filePath: string,
+	contextMessage: ChatMessage,
+	isEval: boolean,
+): ImportResult {
+	return withDataLock(() => runJSONImport(filePath, contextMessage, isEval));
+}
+
+function runJSONImport(
 	filePath: string,
 	contextMessage: ChatMessage,
 	isEval: boolean,
