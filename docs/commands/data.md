@@ -1,12 +1,33 @@
 ---
 title: "nanotune data"
-description: "Add, edit, import, export, list, and validate training data"
+description: "Add, edit, import, export, list, validate, and repair training data"
 sidebar_order: 2
 ---
 
 # nanotune data
 
 Manage your training data. This command group includes subcommands for adding, editing, importing, exporting, listing, and validating examples.
+
+## nanotune data repair
+
+```bash
+nanotune data repair
+nanotune data repair --eval
+nanotune data repair --json
+```
+
+Recover interrupted appends and quarantine malformed JSONL rows. The command runs on Linux and macOS without a model or an interactive terminal.
+
+Before changing a malformed dataset, repair saves a byte-for-byte backup and a quarantine report under `.nanotune/data/quarantine/`. Each quarantined row records its original line number, text, reason, and exact bytes as Base64. Valid rows, duplicate examples, and blank lines are retained. Backup and quarantine paths are shown in the result. If either cannot be written, the dataset is left unchanged.
+
+| Flag | Description |
+|------|-------------|
+| `-e, --eval` | Repair `valid.jsonl` instead of `train.jsonl` |
+| `--json` | Print the repair report as JSON for scripts and CI |
+
+Appends from `data add`, imports, and chat `/keep` first flush a write-ahead journal, then append and flush the dataset before removing the journal. Reads, subsequent appends, and repair recover a pending operation under the shared dataset lock. Recovery finishes missing or partial bytes and does not repeat an already completed append. This adds filesystem writes to each append in exchange for recovery after an interrupted process.
+
+A malformed trailing row without a journal blocks new appends until you run repair. An invalid journal or unexpected changes after a journaled append cause recovery to stop and preserve both files for inspection. Repair never guesses how to reconcile such conflicts. Full-file dataset rewrites continue to use atomic temporary-file publication.
 
 ## nanotune data add
 

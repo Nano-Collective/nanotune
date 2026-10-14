@@ -421,12 +421,17 @@ export function sweepStaleAtomicWrites(dir: string): void {
  * where the rename never happened. A process killed mid-write (SIGKILL,
  * crash) skips that cleanup; a sweep of dead-pid leftovers for this target is
  * done up front so the next run heals the last one.
+ * Set flush for recovery metadata that must reach disk before publication.
  */
-export function writeFileAtomic(path: string, contents: string): void {
+export function writeFileAtomic(
+	path: string,
+	contents: string | Uint8Array,
+	options: {flush?: boolean} = {},
+): void {
 	removeStaleTemps(dirname(path), `${basename(path)}.tmp-`);
 	const tmp = `${path}.tmp-${process.pid}`;
 	try {
-		writeFileSync(tmp, contents);
+		writeFileSync(tmp, contents, {flush: options.flush ?? false});
 		renameSync(tmp, path);
 	} finally {
 		rmSync(tmp, {force: true});
@@ -440,6 +445,9 @@ benchmarks/
 runs/
 chats/
 judge.json*
+data.lock/
+data/*.append-journal.json
+data/quarantine/
 `;
 
 /**
@@ -452,7 +460,8 @@ judge.json*
  * judge.json.tmp an interrupted save leaves behind. Both of those files can
  * hold a literal API key that `git add .` would commit.
  */
-function writeProjectGitignore(): void {
+export function ensureProjectGitignore(): void {
+	mkdirSync(getProjectDir(), {recursive: true});
 	const gitignorePath = join(getProjectDir(), '.gitignore');
 	if (!existsSync(gitignorePath)) {
 		writeFileSync(gitignorePath, GITIGNORE_CONTENTS);
@@ -502,7 +511,7 @@ export function initializeProjectDirs(): void {
 		}
 	}
 
-	writeProjectGitignore();
+	ensureProjectGitignore();
 }
 
 /**
