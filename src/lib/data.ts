@@ -17,6 +17,7 @@ import {
 	resolveContextMessage,
 	writeFileAtomic,
 } from './config.js';
+import {withDataLock} from './data-lock.js';
 import {mulberry32, shuffleInPlace} from './random.js';
 import {
 	assertValidRatio,
@@ -150,25 +151,32 @@ export function appendTrainingExample(
 ): void {
 	ensureDataDir();
 	const path = isEval ? getEvalDataPath() : getTrainDataPath();
-	// A hand-edited file may end without a newline; appending straight onto it
-	// would glue this example to the previous line and corrupt both.
-	let prefix = '';
-	if (existsSync(path)) {
-		const {size} = statSync(path);
-		if (size > 0) {
-			const last = Buffer.alloc(1);
-			const fd = openSync(path, 'r');
-			try {
-				readSync(fd, last, 0, 1, size - 1);
-			} finally {
-				closeSync(fd);
-			}
-			if (last[0] !== 0x0a) {
-				prefix = '\n';
+	// O_APPEND is atomic against other appenders, so two /keeps cannot lose each
+	// other's example. It does nothing against a whole-file rewrite: an append
+	// landing between a split's read and its rename goes to the inode the rename
+	// replaces. Both sides have to take the lock for either to be worth taking.
+	withDataLock(() => {
+		// A hand-edited file may end without a newline; appending straight onto it
+		// would glue this example to the previous line and corrupt both. Under the
+		// lock because this check and the append that depends on it are one step.
+		let prefix = '';
+		if (existsSync(path)) {
+			const {size} = statSync(path);
+			if (size > 0) {
+				const last = Buffer.alloc(1);
+				const fd = openSync(path, 'r');
+				try {
+					readSync(fd, last, 0, 1, size - 1);
+				} finally {
+					closeSync(fd);
+				}
+				if (last[0] !== 0x0a) {
+					prefix = '\n';
+				}
 			}
 		}
-	}
-	appendFileSync(path, `${prefix}${JSON.stringify(example)}\n`);
+		appendFileSync(path, `${prefix}${JSON.stringify(example)}\n`);
+	});
 }
 
 /**
@@ -1224,6 +1232,18 @@ export function splitTrainValidation(
 	seed?: number,
 	stratify: StratifyMode = 'auto',
 ): SplitResult {
+	// A split reads the whole dataset and writes both halves back. An append
+	// that lands while it runs goes to the file the rename then replaces, and
+	// that example is gone with no error anywhere. The lock covers the read,
+	// both writes and the manifest, which describes them.
+	return withDataLock(() => runSplit(validationRatio, seed, stratify));
+}
+
+function runSplit(
+	validationRatio: number,
+	seed: number | undefined,
+	stratify: StratifyMode,
+): SplitResult {
 	// Before anything is read or written. A NaN ratio reaches `slice(0, NaN)`,
 	// which is the empty array, and writes train.jsonl empty; a ratio of 1
 	// reaches `slice(0, -1)` one line later and drops an example. Both are
@@ -1632,19 +1652,24 @@ export function ensureValidationSet(
 	stratify: StratifyMode = 'auto',
 	validationRatio = 0.1,
 ): SplitResult & {didSplit: boolean} {
-	const validCount = countExamples(true);
-	const trainCount = countExamples(false);
+	// The count and the split have to be one decision. Read separately, two
+	// `nanotune train` runs on a fresh project both see no validation set, both
+	// split, and the second quietly discards the first's.
+	return withDataLock(() => {
+		const validCount = countExamples(true);
+		const trainCount = countExamples(false);
 
-	if (validCount === 0 && trainCount > 0) {
-		// No validation set - create one by splitting.
-		const result = splitTrainValidation(validationRatio, seed, stratify);
-		// A single example cannot be split, so valid.jsonl stays empty and the
-		// next call lands here again. Reporting didSplit for that no-op would
-		// repeat "Split 1 examples into 1 train / 0 validation." on every run.
-		return {...result, didSplit: result.validCount > 0};
-	}
+		if (validCount === 0 && trainCount > 0) {
+			// No validation set - create one by splitting.
+			const result = splitTrainValidation(validationRatio, seed, stratify);
+			// A single example cannot be split, so valid.jsonl stays empty and the
+			// next call lands here again. Reporting didSplit for that no-op would
+			// repeat "Split 1 examples into 1 train / 0 validation." on every run.
+			return {...result, didSplit: result.validCount > 0};
+		}
 
-	return {...emptySplitResult(), trainCount, validCount, didSplit: false};
+		return {...emptySplitResult(), trainCount, validCount, didSplit: false};
+	});
 }
 
 export interface PassedSplitFlags {
