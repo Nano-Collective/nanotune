@@ -164,7 +164,7 @@ test.serial("takes over a lock whose reclaimer crashed during the handoff", (t) 
   t.false(existsSync(getDataLockPath()));
 });
 
-test.serial("does not steal a lock while a live process reclaims it", (t) => {
+test.serial("does not steal a lock while the current process reclaims it", (t) => {
   const {pid} = spawnSync(process.execPath, ["-e", "0"]);
   mkdirSync(getDataLockPath(), {recursive: true});
   const marker = `reclaim-${process.pid}-${Buffer.from(hostname()).toString('hex')}.json`;
@@ -199,4 +199,30 @@ test.serial("a stale observation cannot delete a live owner acquired before the 
     }
   `], {cwd: ORIG_CWD, timeout: 10000});
   t.deepEqual(JSON.parse(result.stdout), {waited: true, preserved: true});
+});
+
+
+test.serial("does not steal a lock while a live sibling process reclaims it", async t => {
+  const {pid} = spawnSync(process.execPath, ["-e", "0"]);
+  mkdirSync(getDataLockPath(), {recursive: true});
+  const holder = execa(process.execPath, ["--input-type=module", "-e", `
+    import {writeFileSync} from 'node:fs';
+    import {hostname} from 'node:os';
+    const marker = ${JSON.stringify(getDataLockPath())} + '/reclaim-' + process.pid + '-' + Buffer.from(hostname()).toString('hex') + '.json';
+    writeFileSync(marker, JSON.stringify({pid: ${pid}, host: hostname(), since: Date.now()}));
+    console.log(marker);
+    process.stdin.resume();
+  `], {stdin: 'pipe', reject: false});
+  try {
+    const deadline = Date.now() + 10000;
+    const marker = join(getDataLockPath(), `reclaim-${holder.pid}-${Buffer.from(hostname()).toString('hex')}.json`);
+    while (!existsSync(marker) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+    t.true(existsSync(marker), 'sibling published its reclaim marker');
+    t.throws(() => withDataLock(() => "stolen", {timeoutMs: 150}), {message: /Gave up/});
+    t.true(existsSync(marker));
+    t.is(JSON.parse(readFileSync(marker, 'utf-8')).pid, pid);
+  } finally {
+    holder.kill();
+    await holder;
+  }
 });

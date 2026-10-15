@@ -317,3 +317,102 @@ test.serial('journal content must be a complete example even when its checksum m
 	t.is(readFileSync(path, 'utf-8'), line(first));
 	t.true(existsSync(`${path}.append-journal.json`));
 });
+
+for (const fragment of ['{"messages":', '{"messages":[{"role":"user","content":"' + 'x'.repeat(9000)]) {
+	test.serial(`append rejects a lone truncated fragment (${fragment.length} bytes) without modifying it`, t => {
+		writeFileSync(path, fragment);
+		t.throws(() => appendTrainingExample(first, false), {message: /Malformed trailing row/});
+		t.is(readFileSync(path, 'utf-8'), fragment);
+		t.false(existsSync(`${path}.append-journal.json`));
+	});
+}
+
+for (const invalid of ['{broken', JSON.stringify({version: 99}), JSON.stringify({version: 1, originalSize: 0, tail: '', content: line(first), checksum: 'wrong'})]) {
+	test.serial(`repair quarantines an invalid journal (${invalid}) and preserves both originals`, t => {
+		const original = line(first) + '{"messages":';
+		writeFileSync(path, original);
+		const journal = `${path}.append-journal.json`;
+		writeFileSync(journal, invalid);
+		t.throws(() => countExamples(), {message: /Run nanotune data repair/});
+		const report = repairTrainingData();
+		t.false(report.journalRecovered);
+		t.is(readFileSync(report.journalQuarantinePath!, 'utf-8'), invalid);
+		t.is(readFileSync(report.backupPath!, 'utf-8'), original);
+		t.is(report.quarantined, 1);
+		t.false(existsSync(journal));
+		t.deepEqual(loadTrainingData(), [first]);
+		appendTrainingExample(second, false);
+		t.deepEqual(loadTrainingData(), [first, second]);
+		t.is(repairTrainingData().journalQuarantinePath, null);
+	});
+}
+
+test.serial('repair quarantines an invalid journal even when the dataset is absent', t => {
+	writeFileSync(`${path}.append-journal.json`, '{');
+	const report = repairTrainingData();
+	t.is(report.examples, 0);
+	t.is(report.backupPath, null);
+	t.is(readFileSync(report.journalQuarantinePath!, 'utf-8'), '{');
+	t.false(existsSync(path));
+	t.false(existsSync(`${path}.append-journal.json`));
+});
+
+test.serial('a failed invalid-journal quarantine preserves the dataset and journal', async t => {
+	const original = line(first) + '{';
+	writeFileSync(path, original);
+	writeFileSync(`${path}.append-journal.json`, '{broken');
+	const failed = await execa(process.execPath, ['--import=tsx', '--input-type=module', '-e', `
+		import fs from 'node:fs';
+		import {syncBuiltinESMExports} from 'node:module';
+		import {repairTrainingData} from ${JSON.stringify(dataModule)};
+		process.chdir(${JSON.stringify(project)});
+		const write = fs.writeFileSync;
+		fs.writeFileSync = (file, ...options) => {
+			if (String(file).includes('/quarantine/') && String(file).includes('.append-journal.json.tmp-')) throw new Error('quarantine write failed');
+			return write(file, ...options);
+		};
+		syncBuiltinESMExports();
+		repairTrainingData();
+	`], {cwd: originalCwd, reject: false, timeout: 10000});
+	t.not(failed.exitCode, 0);
+	t.true(failed.stderr.includes('quarantine write failed'));
+	t.is(readFileSync(path, 'utf-8'), original);
+	t.is(readFileSync(`${path}.append-journal.json`, 'utf-8'), '{broken');
+	const backups = readdirSync(join(dataDir, 'quarantine'));
+	t.is(backups.length, 1);
+	t.is(readFileSync(join(dataDir, 'quarantine', backups[0]), 'utf-8'), original);
+});
+
+test.serial('repair does not quarantine a valid journal whose dataset has conflicting changes', async t => {
+	writeFileSync(path, line(first));
+	t.is((await crashAppend('before')).exitCode, 42);
+	const journal = readFileSync(`${path}.append-journal.json`);
+	writeFileSync(path, 'conflicting edit');
+	t.throws(() => repairTrainingData(), {message: /changed after the append was journaled/});
+	t.deepEqual(readFileSync(`${path}.append-journal.json`), journal);
+	t.is(readFileSync(path, 'utf-8'), 'conflicting edit');
+	t.false(existsSync(join(dataDir, 'quarantine')));
+});
+
+test.serial('appending backfills recovery artifacts into an existing project gitignore once', t => {
+	const ignorePath = join(project, '.nanotune', '.gitignore');
+	writeFileSync(ignorePath, 'custom-entry/\n');
+	appendTrainingExample(first, false);
+	const updated = readFileSync(ignorePath, 'utf-8');
+	for (const entry of ['custom-entry/', 'data.lock/', 'data/*.append-journal.json', 'data/quarantine/']) t.true(updated.includes(entry));
+	appendTrainingExample(second, false);
+	t.is(readFileSync(ignorePath, 'utf-8'), updated);
+});
+
+test.serial('repair of an invalid journal leaves a valid dataset byte-for-byte unchanged', t => {
+	const original = line(first).trimEnd();
+	writeFileSync(path, original);
+	writeFileSync(`${path}.append-journal.json`, '{');
+	const report = repairTrainingData();
+	t.is(report.quarantined, 0);
+	t.is(report.quarantinePath, null);
+	t.is(report.examples, 1);
+	t.is(readFileSync(path, 'utf-8'), original);
+	t.is(readFileSync(report.backupPath!, 'utf-8'), original);
+	t.is(readFileSync(report.journalQuarantinePath!, 'utf-8'), '{');
+});

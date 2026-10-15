@@ -70,12 +70,14 @@ test.serial('data repair --json reports a project error on stderr without partia
 test.serial('the Ink repair screen reports backup paths and does not repeat repair on rerender', async t => {
 	process.stdin.isTTY = true;
 	writeFileSync(join(dataDir, 'train.jsonl'), example + '{');
+	writeFileSync(join(dataDir, 'train.jsonl.append-journal.json'), '{corrupt');
 	const instance = render(<DataRepairCommand />);
 	try {
 		await new Promise(resolve => setTimeout(resolve, 100));
 		const output = instance.frames.join('\n').replace(/\s+/g, ' ');
 		t.true(output.includes('Quarantined 1 malformed row.'));
 		t.true(output.includes('Original backup:'));
+		t.true(output.includes('Invalid journal quarantined:'));
 		t.true(output.includes('Quarantine:'));
 		const before = readdirSync(join(dataDir, 'quarantine'));
 		writeFileSync(join(dataDir, 'train.jsonl'), example + 'new damage');
@@ -100,4 +102,19 @@ test.serial('the Ink repair screen presents errors without mutating the dataset'
 	} finally {
 		instance.unmount();
 	}
+});
+
+test.serial('data repair --eval --json quarantines a corrupt journal and reports exact backups', async t => {
+	const path = join(dataDir, 'valid.jsonl');
+	writeFileSync(join(dataDir, 'train.jsonl'), example);
+	writeFileSync(path, example + '{');
+	writeFileSync(`${path}.append-journal.json`, '{broken journal');
+	const result = await runCli(['--eval', '--json']);
+	t.is(result.exitCode, 0, result.stderr);
+	const report = JSON.parse(result.stdout);
+	t.is(readFileSync(report.journalQuarantinePath, 'utf-8'), '{broken journal');
+	t.is(readFileSync(report.backupPath, 'utf-8'), example + '{');
+	t.is(readFileSync(path, 'utf-8'), example);
+	t.is(readFileSync(join(dataDir, 'train.jsonl'), 'utf-8'), example);
+	t.false(existsSync(`${path}.append-journal.json`));
 });

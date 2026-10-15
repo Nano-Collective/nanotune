@@ -41,6 +41,11 @@ export function DataRepairCommand({isEval = false}: {isEval?: boolean}) {
 					{report.journalRecovered && (
 						<Text>Recovered an interrupted append.</Text>
 					)}
+					{report.journalQuarantinePath && (
+						<Text>
+							Invalid journal quarantined: {report.journalQuarantinePath}
+						</Text>
+					)}
 					{report.backupPath && (
 						<Text>Original backup: {report.backupPath}</Text>
 					)}

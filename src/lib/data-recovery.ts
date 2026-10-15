@@ -67,26 +67,31 @@ function durableWrite(path: string, content: string | Uint8Array): void {
 	syncDirectory(dirname(path));
 }
 
+class InvalidAppendJournalError extends Error {
+	constructor(path: string) {
+		super(
+			`Invalid append journal ${journalPath(path)}; dataset and journal were preserved. Run nanotune data repair${basename(path) === 'valid.jsonl' ? ' --eval' : ''} to back up both files and quarantine the invalid journal.`,
+		);
+	}
+}
+
 /** Caller holds the shared data lock, including throughout journal removal. */
 function recover(path: string): boolean {
 	const journal = journalPath(path);
 	if (!existsSync(journal)) return false;
+	const serialized = readFileSync(journal, 'utf-8');
 	let raw: unknown;
 	try {
-		raw = JSON.parse(readFileSync(journal, 'utf-8'));
+		raw = JSON.parse(serialized);
 	} catch {
-		throw new Error(
-			`Invalid append journal ${journal}; dataset and journal were preserved.`,
-		);
+		throw new InvalidAppendJournalError(path);
 	}
 	const parsed = JournalSchema.safeParse(raw);
 	if (
 		!parsed.success ||
 		checksum(parsed.data.content) !== parsed.data.checksum
 	) {
-		throw new Error(
-			`Invalid append journal ${journal}; dataset and journal were preserved.`,
-		);
+		throw new InvalidAppendJournalError(path);
 	}
 	const intent = parsed.data;
 	const current = existsSync(path) ? readFileSync(path) : Buffer.alloc(0);
@@ -216,12 +221,20 @@ export interface DataRepairReport {
 	backupPath: string | null;
 	quarantinePath: string | null;
 	journalRecovered: boolean;
+	journalQuarantinePath: string | null;
 }
 
 /** Preserve every original byte before quarantining malformed rows. */
 export function repairDataset(path: string): DataRepairReport {
 	return withDataLock(() => {
-		const journalRecovered = recover(path);
+		let journalRecovered = false;
+		let invalidJournal = false;
+		try {
+			journalRecovered = recover(path);
+		} catch (error) {
+			if (!(error instanceof InvalidAppendJournalError)) throw error;
+			invalidJournal = true;
+		}
 		const report: DataRepairReport = {
 			file: path,
 			examples: 0,
@@ -229,7 +242,29 @@ export function repairDataset(path: string): DataRepairReport {
 			backupPath: null,
 			quarantinePath: null,
 			journalRecovered,
+			journalQuarantinePath: null,
 		};
+		if (invalidJournal) {
+			const quarantineDir = join(dirname(path), 'quarantine');
+			mkdirSync(quarantineDir, {recursive: true});
+			syncDirectory(dirname(path));
+			const name = `${basename(path, '.jsonl')}-${randomUUID()}`;
+			if (existsSync(path)) {
+				report.backupPath = join(quarantineDir, `${name}.backup.jsonl`);
+				durableWrite(report.backupPath, readFileSync(path));
+			}
+			report.journalQuarantinePath = join(
+				quarantineDir,
+				`${name}.append-journal.json`,
+			);
+			durableWrite(
+				report.journalQuarantinePath,
+				readFileSync(journalPath(path)),
+			);
+			// Both originals have durable backups before the journal is removed.
+			rmSync(journalPath(path));
+			syncDirectory(dirname(path));
+		}
 		if (!existsSync(path)) return report;
 		const original = readFileSync(path);
 		const kept: Buffer[] = [];
@@ -274,9 +309,9 @@ export function repairDataset(path: string): DataRepairReport {
 		mkdirSync(quarantineDir, {recursive: true});
 		syncDirectory(dirname(path));
 		const name = `${basename(path, '.jsonl')}-${randomUUID()}`;
-		report.backupPath = join(quarantineDir, `${name}.backup.jsonl`);
+		report.backupPath ??= join(quarantineDir, `${name}.backup.jsonl`);
 		report.quarantinePath = join(quarantineDir, `${name}.quarantine.jsonl`);
-		durableWrite(report.backupPath, original);
+		if (!invalidJournal) durableWrite(report.backupPath, original);
 		durableWrite(
 			report.quarantinePath,
 			`${rejected.map(row => JSON.stringify(row)).join('\n')}\n`,

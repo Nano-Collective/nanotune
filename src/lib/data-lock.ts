@@ -217,6 +217,7 @@ function reclaim(path: string): boolean {
 	if (
 		!state ||
 		state.owner.host !== hostname() ||
+		state.owner.pid === process.pid ||
 		isProcessAlive(state.owner.pid)
 	) {
 		return false;
