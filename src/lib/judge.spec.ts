@@ -478,14 +478,29 @@ test.serial(
 				{cwd: dir},
 			),
 		);
-		const settled = Promise.allSettled(children);
+		const finished = new Set<number>();
+		const settled = Promise.allSettled(children.map((child, index) =>
+			child.finally(() => finished.add(index)),
+		));
 		try {
 			const deadline = Date.now() + 10000;
 			while (
 				!configs.every((_, index) => existsSync(join(dir, `ready-${index}`)))
 			) {
-				if (Date.now() > deadline)
-					throw new Error('Writers did not reach publication');
+				const missing = configs.flatMap((_, index) =>
+					existsSync(join(dir, `ready-${index}`)) ? [] : [index],
+				);
+				const exited = missing.find(index => finished.has(index));
+				if (exited !== undefined) {
+					throw new Error(
+						`Writer ${exited + 1} exited before the renameSync hook published ready-${exited}. Check subprocess startup and fs interception.`,
+					);
+				}
+				if (Date.now() > deadline) {
+					throw new Error(
+						`Timed out waiting for the renameSync hook: missing ${missing.map(index => `ready-${index}`).join(', ')}.`,
+					);
+				}
 				await new Promise(resolve => setTimeout(resolve, 10));
 			}
 			const ready = configs.map(
