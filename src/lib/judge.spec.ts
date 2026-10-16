@@ -2,6 +2,7 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	rmSync,
 	statSync,
@@ -11,7 +12,9 @@ import {createServer, type Server} from 'node:http';
 import type {AddressInfo, Socket} from 'node:net';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {fileURLToPath} from 'node:url';
 import test from 'ava';
+import {execa} from 'execa';
 import {
 	buildJudgePrompt,
 	callJudge,
@@ -304,23 +307,27 @@ test.serial('saveJudgeConfig - leaves no temp file behind', t => {
 			model: 'test-model',
 		});
 
-		t.false(existsSync(`${getJudgeConfigPath()}.tmp`));
+		t.deepEqual(
+			readdirSync(join(dir, '.nanotune')).filter(name =>
+				name.startsWith('judge.json'),
+			),
+			['judge.json'],
+		);
 	} finally {
 		process.chdir(originalCwd);
 		rmSync(dir, {recursive: true, force: true});
 	}
 });
 
-test.serial('saveJudgeConfig - recovers from a stale temp file', t => {
+test.serial('saveJudgeConfig - leaves an existing legacy temp untouched', t => {
 	const originalCwd = process.cwd();
 	const dir = mkdtempSync(join(tmpdir(), 'nanotune-judge-'));
 	try {
 		process.chdir(dir);
 		mkdirSync(join(dir, '.nanotune'), {recursive: true});
 
-		// A process killed between write and rename leaves this behind. The
-		// exclusive create would fail with EEXIST forever if it were not
-		// cleared first.
+		// An old version may leave this behind. A new save must neither reuse
+		// nor remove it: it could also belong to an active older writer.
 		const path = join(dir, '.nanotune', 'judge.json');
 		writeFileSync(`${path}.tmp`, '{"stale":true}', {mode: 0o600});
 
@@ -333,11 +340,200 @@ test.serial('saveJudgeConfig - recovers from a stale temp file', t => {
 		);
 		t.is(statSync(path).mode & 0o777, 0o600);
 		t.is(JSON.parse(readFileSync(path, 'utf-8')).name, 'Test');
+		t.is(readFileSync(`${path}.tmp`, 'utf-8'), '{"stale":true}');
 	} finally {
 		process.chdir(originalCwd);
 		rmSync(dir, {recursive: true, force: true});
 	}
 });
+
+test.serial(
+	'saveJudgeConfig - a serialization failure preserves the previous config',
+	t => {
+		const originalCwd = process.cwd();
+		const dir = mkdtempSync(join(tmpdir(), 'nanotune-judge-'));
+		try {
+			process.chdir(dir);
+			saveJudgeConfig({
+				name: 'Original',
+				baseUrl: 'https://original.invalid/v1',
+				apiKey: 'original-secret',
+				model: 'original-model',
+			});
+			const path = getJudgeConfigPath();
+			const previous = readFileSync(path, 'utf-8');
+			t.throws(
+				() =>
+					saveJudgeConfig({
+						name: 'Replacement',
+						baseUrl: 'https://replacement.invalid/v1',
+						get model(): string {
+							throw new Error('Cannot serialize config');
+						},
+					}),
+				{message: 'Cannot serialize config'},
+			);
+			t.is(readFileSync(path, 'utf-8'), previous);
+			t.is(statSync(path).mode & 0o777, 0o600);
+			t.deepEqual(
+				readdirSync(join(dir, '.nanotune')).filter(name =>
+					name.startsWith('judge.json'),
+				),
+				['judge.json'],
+			);
+		} finally {
+			process.chdir(originalCwd);
+			rmSync(dir, {recursive: true, force: true});
+		}
+	},
+);
+
+test.serial(
+	'saveJudgeConfig - cleans up its temp when publication fails',
+	t => {
+		const originalCwd = process.cwd();
+		const dir = mkdtempSync(join(tmpdir(), 'nanotune-judge-'));
+		try {
+			process.chdir(dir);
+			// Renaming a regular file over a directory must fail.
+			mkdirSync(getJudgeConfigPath(), {recursive: true});
+			t.throws(() =>
+				saveJudgeConfig({
+					name: 'Test',
+					baseUrl: 'https://example.invalid/v1',
+					model: 'test-model',
+				}),
+			);
+			t.deepEqual(
+				readdirSync(join(dir, '.nanotune')).filter(name =>
+					name.startsWith('judge.json'),
+				),
+				['judge.json'],
+			);
+			t.true(statSync(getJudgeConfigPath()).isDirectory());
+		} finally {
+			process.chdir(originalCwd);
+			rmSync(dir, {recursive: true, force: true});
+		}
+	},
+);
+
+test.serial(
+	'saveJudgeConfig - concurrent processes publish complete private configs',
+	async t => {
+		const dir = mkdtempSync(join(tmpdir(), 'nanotune-judge-concurrent-'));
+		const release = join(dir, 'release');
+		const path = join(dir, '.nanotune', 'judge.json');
+		const previous = JSON.stringify({
+			name: 'Original',
+			baseUrl: 'https://original.invalid/v1',
+			apiKey: 'original-secret',
+			model: 'original-model',
+		});
+		mkdirSync(join(dir, '.nanotune'));
+		writeFileSync(path, previous, {mode: 0o600});
+		const judgeModule = new URL('./judge.ts', import.meta.url).href;
+		const tsxLoader = fileURLToPath(import.meta.resolve('tsx'));
+		const configs = ['first', 'second'].map(name => ({
+			name,
+			baseUrl: `https://${name}.invalid/v1`,
+			apiKey: `secret-${name}`,
+			model: `${name}-model`,
+		}));
+		// Pause both real writers after writing, immediately before the atomic
+		// rename. The old shared temp is overwritten here, then one rename fails.
+		const children = configs.map((config, index) =>
+			execa(
+				process.execPath,
+				[
+					'--import',
+					tsxLoader,
+					'--input-type=module',
+					'-e',
+					`
+			import fs from 'node:fs';
+			import {syncBuiltinESMExports} from 'node:module';
+			const rename = fs.renameSync;
+			fs.renameSync = (source, target) => {
+				if (target.endsWith('judge.json')) {
+					fs.writeFileSync(${JSON.stringify(join(dir, `ready-${index}.tmp`))}, JSON.stringify({
+						source,
+						mode: fs.statSync(source).mode & 0o777,
+						config: JSON.parse(fs.readFileSync(source, 'utf8')),
+					}));
+					rename(${JSON.stringify(join(dir, `ready-${index}.tmp`))}, ${JSON.stringify(join(dir, `ready-${index}`))});
+					const deadline = Date.now() + 10000;
+					while (!fs.existsSync(${JSON.stringify(release)})) {
+						if (Date.now() > deadline) throw new Error('Timed out awaiting release');
+						Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+					}
+				}
+				return rename(source, target);
+			};
+			syncBuiltinESMExports();
+			const {saveJudgeConfig} = await import(${JSON.stringify(judgeModule)});
+			saveJudgeConfig(${JSON.stringify(config)});
+		`,
+				],
+				{cwd: dir},
+			),
+		);
+		const settled = Promise.allSettled(children);
+		try {
+			const deadline = Date.now() + 10000;
+			while (
+				!configs.every((_, index) => existsSync(join(dir, `ready-${index}`)))
+			) {
+				if (Date.now() > deadline)
+					throw new Error('Writers did not reach publication');
+				await new Promise(resolve => setTimeout(resolve, 10));
+			}
+			const ready = configs.map(
+				(_, index) =>
+					JSON.parse(readFileSync(join(dir, `ready-${index}`), 'utf8')) as {
+						source: string;
+						mode: number;
+						config: (typeof configs)[number];
+					},
+			);
+			// Pending saves must not change what readers see before publication.
+			t.is(readFileSync(path, 'utf8'), previous);
+			writeFileSync(release, '');
+			const results = await settled;
+			t.deepEqual(
+				results.map(result => result.status),
+				['fulfilled', 'fulfilled'],
+			);
+			t.not(ready[0].source, ready[1].source);
+			t.deepEqual(
+				ready.map(record => record.config),
+				configs,
+			);
+			t.deepEqual(
+				ready.map(record => record.mode),
+				[0o600, 0o600],
+			);
+			const finalConfig = JSON.parse(readFileSync(path, 'utf8'));
+			t.true(
+				configs.some(
+					config => JSON.stringify(config) === JSON.stringify(finalConfig),
+				),
+			);
+			t.is(statSync(path).mode & 0o777, 0o600);
+			t.deepEqual(
+				readdirSync(join(dir, '.nanotune')).filter(name =>
+					name.startsWith('judge.json'),
+				),
+				['judge.json'],
+			);
+		} finally {
+			writeFileSync(release, '');
+			for (const child of children) child.kill('SIGKILL');
+			await settled;
+			rmSync(dir, {recursive: true, force: true});
+		}
+	},
+);
 
 // loadJudgeConfig
 
