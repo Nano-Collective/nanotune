@@ -449,8 +449,9 @@ judge.json*
  * added to this list over time and a project keeps whatever .gitignore it was
  * initialised with: one from 1.3.x or earlier has no judge.json line at all,
  * and one from 1.4.0-1.6.x has a bare `judge.json` that misses the
- * judge.json.tmp an interrupted save leaves behind. Both of those files can
- * hold a literal API key that `git add .` would commit.
+ * temporary files an interrupted save leaves behind (`judge.json.tmp` in
+ * older versions, `judge.json.tmp-<UUID>` now). These files can hold a literal
+ * API key that `git add .` would commit.
  */
 function writeProjectGitignore(): void {
 	const gitignorePath = join(getProjectDir(), '.gitignore');
