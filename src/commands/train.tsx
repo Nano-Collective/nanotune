@@ -19,7 +19,15 @@ import {
 	loadConfig,
 	tryLoadConfig,
 } from '../lib/config.js';
-import {countExamples, ensureValidationSet} from '../lib/data.js';
+import {
+	assertValidRatio,
+	countExamples,
+	describeIgnoredSplitFlags,
+	describeValidationSetDrift,
+	ensureValidationSet,
+	type SplitResult,
+	type StratifyMode,
+} from '../lib/data.js';
 import {
 	checkMLXInstalled,
 	ensureModelDownloaded,
@@ -88,6 +96,8 @@ interface Props {
 		resume?: boolean;
 		dryRun?: boolean;
 		seed?: string;
+		validationRatio?: string;
+		stratify?: string;
 	};
 }
 
@@ -112,12 +122,11 @@ export function TrainCommand({options}: Props) {
 	const [downloadPercent, setDownloadPercent] = useState<number | null>(null);
 	const [downloadDetail, setDownloadDetail] = useState<string | null>(null);
 	const [elapsed, setElapsed] = useState<string | null>(null);
-	const [split, setSplit] = useState<{
-		trainCount: number;
-		validCount: number;
-		didSplit: boolean;
-	} | null>(null);
-	const [seedIgnored, setSeedIgnored] = useState(false);
+	const [split, setSplit] = useState<
+		(SplitResult & {didSplit: boolean}) | null
+	>(null);
+	const [ignoredFlags, setIgnoredFlags] = useState<string | null>(null);
+	const [drift, setDrift] = useState<string | null>(null);
 	// The checkpoint interval the run actually used. `--save-every` overrides
 	// config.json, so the stop/stopped views must report against this rather
 	// than re-reading config.training.saveEvery and naming the wrong iteration.
@@ -194,6 +203,40 @@ export function TrainCommand({options}: Props) {
 					return;
 				}
 				seed = parsed;
+			}
+
+			// Same reasoning for --validation-ratio and --stratify: both decide
+			// what gets held out, so both are parsed here, before any work
+			// happens, rather than surfacing as a filesystem error or, worse, a
+			// split nobody asked for.
+			let validationRatio = 0.1;
+			if (options.validationRatio !== undefined) {
+				const raw = options.validationRatio.trim();
+				const parsed = raw === '' ? Number.NaN : Number(raw);
+				try {
+					validationRatio = assertValidRatio(parsed);
+				} catch (error) {
+					setError(
+						`Invalid --validation-ratio "${options.validationRatio}": ${
+							error instanceof Error ? error.message : String(error)
+						}`,
+					);
+					setStatus('error');
+					return;
+				}
+			}
+
+			let stratify: StratifyMode = 'auto';
+			if (options.stratify !== undefined) {
+				const mode = options.stratify.trim().toLowerCase();
+				if (mode !== 'auto' && mode !== 'on' && mode !== 'off') {
+					setError(
+						`Invalid --stratify "${options.stratify}": expected auto, on, or off.`,
+					);
+					setStatus('error');
+					return;
+				}
+				stratify = mode;
 			}
 
 			// Fail fast on unsupported hardware. Without this the run dies much
@@ -300,14 +343,30 @@ export function TrainCommand({options}: Props) {
 			}
 
 			// Ensure we have a validation set (MLX requires it).
-			const split = ensureValidationSet(seed);
+			const split = ensureValidationSet(seed, stratify, validationRatio);
 			setSplit(split);
-			// The split only happens when there is no validation set yet, so a
-			// seed handed to an already-split project changes nothing. Saying so
-			// beats letting the user believe they re-rolled the split.
-			if (seed !== undefined && !split.didSplit) {
-				setSeedIgnored(true);
+			// The split only happens when there is no validation set yet, so every
+			// flag that decides what gets held out -- seed, ratio, stratification
+			// -- is dropped on an already-split project. Saying which ones beats
+			// letting the user believe they re-rolled or re-sized the split.
+			if (!split.didSplit) {
+				setIgnoredFlags(
+					describeIgnoredSplitFlags({
+						seed,
+						stratify: options.stratify === undefined ? undefined : stratify,
+						validationRatio:
+							options.validationRatio === undefined
+								? undefined
+								: validationRatio,
+					}),
+				);
 			}
+			// Every number this run produces is measured against the current
+			// validation set. If that set is not the one an earlier run used,
+			// the two results cannot be compared, and nothing else on screen
+			// would say so.
+			setDrift(describeValidationSetDrift());
+
 			const adapterFile = join(getAdaptersDir(), 'adapters.safetensors');
 			runHistoryRef.current = startTrainingRun({
 				baseModel: config.baseModel,
@@ -435,6 +494,8 @@ export function TrainCommand({options}: Props) {
 		options.resume,
 		options.dryRun,
 		options.seed,
+		options.validationRatio,
+		options.stratify,
 	]);
 
 	useEffect(() => {
@@ -474,15 +535,32 @@ export function TrainCommand({options}: Props) {
 				{split?.didSplit && (
 					<Text color="yellow">
 						Split {split.trainCount + split.validCount} examples into{' '}
-						{split.trainCount} train / {split.validCount} validation.
+						{split.trainCount} train / {split.validCount} validation
+						{split.strategy === 'stratified'
+							? ` (stratified across ${split.buckets.length} categories)`
+							: ''}
+						.
 					</Text>
 				)}
-				{seedIgnored && (
+				{split?.didSplit && split.unrepresentedCategories.length > 0 && (
 					<Text color="yellow">
-						Existing validation set found - --seed ignored. Delete valid.jsonl
-						to re-split.
+						{split.unrepresentedCategories.length} categor
+						{split.unrepresentedCategories.length === 1 ? 'y has' : 'ies have'}{' '}
+						no validation example — the validation set is too small to cover{' '}
+						{split.unrepresentedCategories.length === 1 ? 'it' : 'them'}. Lower
+						--validation-ratio or add more examples.
 					</Text>
 				)}
+				{split?.didSplit && split.shortfall > 0 && (
+					<Text color="yellow">
+						{split.shortfall} validation example
+						{split.shortfall === 1 ? '' : 's'} could not be held out: they are
+						duplicates of examples in train, and a copy on both sides would
+						measure memorization rather than generalization.
+					</Text>
+				)}
+				{ignoredFlags && <Text color="yellow">{ignoredFlags}</Text>}
+				{drift && <Text color="yellow">{drift}</Text>}
 				<Text>
 					Iterations:{' '}
 					<Text color="cyan">

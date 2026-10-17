@@ -82,6 +82,17 @@ export interface DownloadProgress {
 
 export interface TrainingExample {
 	messages: ChatMessage[];
+	/**
+	 * Author-assigned category labels, used to stratify the train/validation
+	 * split so a rare category is not silently absent from the validation set.
+	 * Optional and free-form: no tags, an empty array and an unknown tag are
+	 * all valid, and none of them block training.
+	 *
+	 * The first entry is the primary category and the only one used for
+	 * stratification, so an example counts toward exactly one bucket rather
+	 * than skewing several at once.
+	 */
+	tags?: string[];
 }
 
 export type MatchMode =

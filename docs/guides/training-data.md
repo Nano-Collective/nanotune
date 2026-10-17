@@ -39,6 +39,23 @@ input,output
 "show disk usage","df -h"
 ```
 
+An optional third column carries the categories described below. Separate
+multiple tags with `;`, not `,` — a comma is the column delimiter here.
+
+```csv
+input,output,tags
+"list all files","ls -la",shell;files
+"show disk usage","df -h",shell;system
+```
+
+A tag that itself contains a `;` cannot survive this format: the column is one
+cell joined on `;` and read back by splitting on `;`, and the quotes that would
+otherwise protect the character are stripped by the CSV parser before the tags
+are split. `nanotune data export` leaves such a tag out of the column and names
+it in the summary rather than splitting it into two categories that never
+existed; the example itself is still exported. JSONL and JSON have no such
+limit — use one of those if your tags contain `;`.
+
 ### JSON
 
 Array of objects with input/output pairs or messages format:
@@ -57,6 +74,26 @@ Array of objects with input/output pairs or messages format:
   }
 ]
 ```
+
+## Categories
+
+Any format can carry an optional `tags` array. Nanotune uses it to split
+train and validation by category, so a rare topic is not silently missing from
+the evaluation set.
+
+```jsonl
+{"messages":[{"role":"user","content":"How do I reverse a list?"},{"role":"assistant","content":"Use list[::-1]."}],"tags":["python"]}
+{"messages":[{"role":"user","content":"df -h?"},{"role":"assistant","content":"Shows disk usage."}],"tags":["shell"]}
+```
+
+The first tag is the category the example counts under, so an example lands in
+exactly one bucket. Tag names are matched case- and whitespace-insensitively:
+`Math`, `math` and `  math  ` are one category. Anything Nanotune cannot use —
+a blank string, a number where a string belongs, a tag over 64 characters — is
+dropped rather than being allowed to break a split.
+
+Without tags, the split is exactly what it always was. Datasets written before
+this feature need no changes and produce identical splits for the same seed.
 
 ## Adding Data Interactively
 
@@ -88,7 +125,7 @@ The importer auto-detects format based on file extension and content. Multi-turn
 nanotune data export backup.jsonl
 ```
 
-Writes your training data back out in the same formats `data import` accepts (JSONL, CSV, or JSON — selected by the output file's extension). JSONL and JSON exports round-trip exactly, including multi-turn examples and per-example context messages. **CSV can only represent a single input/output pair per example**, so multi-turn examples are skipped (not truncated) during a CSV export and called out in the summary — export to JSONL or JSON instead if you need every example preserved.
+Writes your training data back out in the same formats `data import` accepts (JSONL, CSV, or JSON — selected by the output file's extension). JSONL and JSON exports round-trip exactly, including multi-turn examples and per-example context messages. **CSV can only represent a single input/output pair per example**, so multi-turn examples are skipped (not truncated) during a CSV export and called out in the summary — export to JSONL or JSON instead if you need every example preserved. A tag containing `;` is also left out of a CSV tags column and named in the summary, for the same reason; JSONL and JSON carry it.
 
 ## Viewing and Editing Data
 

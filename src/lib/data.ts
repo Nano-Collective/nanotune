@@ -17,6 +17,27 @@ import {
 	resolveContextMessage,
 	writeFileAtomic,
 } from './config.js';
+import {withDataLock} from './data-lock.js';
+import {mulberry32, shuffleInPlace} from './random.js';
+import {
+	assertValidRatio,
+	buildLeakGroups,
+	contentFingerprint,
+	displayBucketKey,
+	fingerprintSet,
+	majorityBucket,
+	normalizeTags,
+	type StratifyResult,
+	stratifyGroups,
+	validTarget,
+} from './stratified-split.js';
+
+// The CLI range-checks the flag before it reaches this module, so that a typo
+// is reported against the flag the user typed rather than as a raw
+// "Validation ratio must be less than 1" several minutes into an MLX install.
+// Re-exported here rather than reached for in `stratified-split`, which the
+// command otherwise has no reason to know about.
+export {assertValidRatio};
 
 function ensureDataDir(): void {
 	const dataDir = getDataDir();
@@ -27,6 +48,7 @@ function ensureDataDir(): void {
 
 const TRAIN_FILE = 'train.jsonl';
 const EVAL_FILE = 'valid.jsonl';
+const SPLIT_MANIFEST_FILE = '.split-manifest.json';
 
 export function getTrainDataPath(): string {
 	return join(getDataDir(), TRAIN_FILE);
@@ -129,25 +151,46 @@ export function appendTrainingExample(
 ): void {
 	ensureDataDir();
 	const path = isEval ? getEvalDataPath() : getTrainDataPath();
-	// A hand-edited file may end without a newline; appending straight onto it
-	// would glue this example to the previous line and corrupt both.
-	let prefix = '';
-	if (existsSync(path)) {
-		const {size} = statSync(path);
-		if (size > 0) {
-			const last = Buffer.alloc(1);
-			const fd = openSync(path, 'r');
-			try {
-				readSync(fd, last, 0, 1, size - 1);
-			} finally {
-				closeSync(fd);
-			}
-			if (last[0] !== 0x0a) {
-				prefix = '\n';
+	// O_APPEND is atomic against other appenders, so two /keeps cannot lose each
+	// other's example. It does nothing against a whole-file rewrite: an append
+	// landing between a split's read and its rename goes to the inode the rename
+	// replaces. Both sides have to take the lock for either to be worth taking.
+	withDataLock(() => {
+		// A hand-edited file may end without a newline; appending straight onto it
+		// would glue this example to the previous line and corrupt both. Under the
+		// lock because this check and the append that depends on it are one step.
+		let prefix = '';
+		if (existsSync(path)) {
+			const {size} = statSync(path);
+			if (size > 0) {
+				const last = Buffer.alloc(1);
+				const fd = openSync(path, 'r');
+				try {
+					readSync(fd, last, 0, 1, size - 1);
+				} finally {
+					closeSync(fd);
+				}
+				if (last[0] !== 0x0a) {
+					prefix = '\n';
+				}
 			}
 		}
-	}
-	appendFileSync(path, `${prefix}${JSON.stringify(example)}\n`);
+		appendFileSync(path, `${prefix}${JSON.stringify(example)}\n`);
+	});
+}
+
+/**
+ * Attach a file's `tags` to an example, dropping the key entirely when there
+ * are none.
+ *
+ * The key is set rather than merged into the messages array, so an example
+ * that never had tags keeps the exact bytes it always had: export,
+ * re-import and `git diff` all stay quiet for datasets that predate tags.
+ */
+function withTags(example: TrainingExample, tags: unknown): TrainingExample {
+	const display = normalizeTags(tags).display;
+	if (display.length === 0) return example;
+	return {...example, tags: display};
 }
 
 export function appendToTrainingData(
@@ -157,6 +200,9 @@ export function appendToTrainingData(
 		contextMessage?: ChatMessage | null;
 		userInput: string;
 		assistantOutput: string;
+		/** Category labels, for stratifying the train/validation split. Omitted
+		 *  entirely when there are none, so an untagged dataset keeps its bytes. */
+		tags?: string[];
 	},
 	isEval: boolean,
 ): void {
@@ -170,6 +216,10 @@ export function appendToTrainingData(
 			{role: 'assistant', content: example.assistantOutput},
 		],
 	};
+	const tags = normalizeTags(example.tags).display;
+	if (tags.length > 0) {
+		trainingExample.tags = tags;
+	}
 	appendTrainingExample(trainingExample, isEval);
 }
 
@@ -177,21 +227,31 @@ export function saveTrainingData(
 	examples: TrainingExample[],
 	isEval: boolean,
 ): void {
-	ensureDataDir();
-	const path = isEval ? getEvalDataPath() : getTrainDataPath();
-	const content = `${examples.map(ex => JSON.stringify(ex)).join('\n')}\n`;
-	// Temp-file-and-rename: this rewrites the user's whole dataset, so a crash,
-	// a full disk or a kill between truncate and write would otherwise leave
-	// train.jsonl short of the examples it started with.
-	writeFileAtomic(path, content);
+	withDataLock(() => {
+		ensureDataDir();
+		const path = isEval ? getEvalDataPath() : getTrainDataPath();
+		const content = `${examples.map(ex => JSON.stringify(ex)).join('\n')}\n`;
+		// Temp-file-and-rename: this rewrites the user's whole dataset, so a crash,
+		// a full disk or a kill between truncate and write would otherwise leave
+		// train.jsonl short of the examples it started with.
+		writeFileAtomic(path, content);
+	});
 }
 
+/**
+ * The read and the write have to be one step, or a process that appended,
+ * edited or deleted in between has its work overwritten by a file written from
+ * a snapshot taken before it. The callers below each wrap their own load and
+ * save; the lock here covers a direct save of its own.
+ */
 export function deleteExample(index: number, isEval: boolean): void {
-	const examples = loadTrainingData(isEval);
-	if (index >= 0 && index < examples.length) {
-		examples.splice(index, 1);
-		saveTrainingData(examples, isEval);
-	}
+	withDataLock(() => {
+		const examples = loadTrainingData(isEval);
+		if (index >= 0 && index < examples.length) {
+			examples.splice(index, 1);
+			saveTrainingData(examples, isEval);
+		}
+	});
 }
 
 export function updateTrainingExample(
@@ -199,11 +259,13 @@ export function updateTrainingExample(
 	example: TrainingExample,
 	isEval: boolean,
 ): void {
-	const examples = loadTrainingData(isEval);
-	if (index >= 0 && index < examples.length) {
-		examples[index] = example;
-		saveTrainingData(examples, isEval);
-	}
+	withDataLock(() => {
+		const examples = loadTrainingData(isEval);
+		if (index >= 0 && index < examples.length) {
+			examples[index] = example;
+			saveTrainingData(examples, isEval);
+		}
+	});
 }
 
 /**
@@ -468,28 +530,30 @@ export interface DedupeResult {
  * context message are left alone.
  */
 export function dedupeExamples(isEval: boolean): DedupeResult {
-	const examples = loadTrainingData(isEval);
-	const seen = new Set<string>();
-	const kept: TrainingExample[] = [];
-	const removedIndexes: number[] = [];
+	return withDataLock(() => {
+		const examples = loadTrainingData(isEval);
+		const seen = new Set<string>();
+		const kept: TrainingExample[] = [];
+		const removedIndexes: number[] = [];
 
-	examples.forEach((ex, i) => {
-		const key = JSON.stringify(
-			ex.messages.map(m => ({role: m.role, content: m.content})),
-		);
-		if (seen.has(key)) {
-			removedIndexes.push(i + 1);
-			return;
+		examples.forEach((ex, i) => {
+			const key = JSON.stringify(
+				ex.messages.map(m => ({role: m.role, content: m.content})),
+			);
+			if (seen.has(key)) {
+				removedIndexes.push(i + 1);
+				return;
+			}
+			seen.add(key);
+			kept.push(ex);
+		});
+
+		if (removedIndexes.length > 0) {
+			saveTrainingData(kept, isEval);
 		}
-		seen.add(key);
-		kept.push(ex);
+
+		return {removedCount: removedIndexes.length, removedIndexes};
 	});
-
-	if (removedIndexes.length > 0) {
-		saveTrainingData(kept, isEval);
-	}
-
-	return {removedCount: removedIndexes.length, removedIndexes};
 }
 
 export interface ContextFixResult {
@@ -506,34 +570,36 @@ export function fixContextMessages(
 	contextMessage: ChatMessage,
 	isEval: boolean,
 ): ContextFixResult {
-	const examples = loadTrainingData(isEval);
-	let fixedCount = 0;
+	return withDataLock(() => {
+		const examples = loadTrainingData(isEval);
+		let fixedCount = 0;
 
-	const updated = examples.map(ex => {
-		const first = ex.messages[0];
-		if (!first || first.role === 'user' || first.role === 'assistant') {
-			return ex;
+		const updated = examples.map(ex => {
+			const first = ex.messages[0];
+			if (!first || first.role === 'user' || first.role === 'assistant') {
+				return ex;
+			}
+			if (
+				first.role === contextMessage.role &&
+				first.content === contextMessage.content
+			) {
+				return ex;
+			}
+			fixedCount++;
+			return {
+				messages: [
+					{role: contextMessage.role, content: contextMessage.content},
+					...ex.messages.slice(1),
+				],
+			};
+		});
+
+		if (fixedCount > 0) {
+			saveTrainingData(updated, isEval);
 		}
-		if (
-			first.role === contextMessage.role &&
-			first.content === contextMessage.content
-		) {
-			return ex;
-		}
-		fixedCount++;
-		return {
-			messages: [
-				{role: contextMessage.role, content: contextMessage.content},
-				...ex.messages.slice(1),
-			],
-		};
+
+		return {fixedCount};
 	});
-
-	if (fixedCount > 0) {
-		saveTrainingData(updated, isEval);
-	}
-
-	return {fixedCount};
 }
 
 /** Counts of the repairs `--fix` and `--rewrite-context` actually made. */
@@ -551,6 +617,15 @@ export interface ValidationChecks {
 	noDuplicateInputs: boolean;
 	/** Always true for a validation set — the 50-example floor is a training-set rule. */
 	minimumExampleCount: boolean;
+	/**
+	 * True when no example appears in both train.jsonl and valid.jsonl.
+	 *
+	 * Only meaningful for the train set, where both files are in scope: a
+	 * validation set cannot overlap itself. A duplicated example across the two
+	 * makes the validation loss measure memorization of a string the model was
+	 * just trained on, which reads as a better model and is not one.
+	 */
+	noTrainValidOverlap: boolean;
 }
 
 /** Everything `nanotune data validate` reports, as data. */
@@ -574,8 +649,43 @@ export interface ValidationOptions {
 }
 
 /**
+ * Compared by content fingerprint, the same normalization the split groups by,
+ * so a pair that differs only in case or punctuation still counts: that is
+ * exactly the pair whose validation loss tells you nothing.
+ *
+ * Uses the lenient parser rather than `loadTrainingData`, which throws on a
+ * malformed line. A validation command that dies on the very problem it exists
+ * to report cannot report anything else either.
+ */
+export function countTrainValidOverlap(): number {
+	const train = new Set(
+		parseTrainingData(false).examples.map(contentFingerprint),
+	);
+	if (train.size === 0) {
+		return 0;
+	}
+
+	const seen = new Set<string>();
+	let overlap = 0;
+	for (const example of parseTrainingData(true).examples) {
+		const fingerprint = contentFingerprint(example);
+		// Count distinct examples, not repeats within valid.jsonl.
+		if (seen.has(fingerprint)) continue;
+		seen.add(fingerprint);
+		if (train.has(fingerprint)) {
+			overlap++;
+		}
+	}
+	return overlap;
+}
+
+/**
  * Apply any requested fixes, then validate, and report both. Shared by the Ink
  * view and `--json` so the two cannot report different verdicts.
+ *
+ * The repairs and the report they justify are one locked step. Held separately,
+ * a process that writes in between makes `fixes.duplicatesRemoved` describe a
+ * state that is no longer the one on disk.
  *
  * Reads the project config itself, so it throws the same "Not a Nanotune
  * project" error `loadConfig` does when run outside a project.
@@ -586,43 +696,52 @@ export function collectValidation({
 	isEval = false,
 }: ValidationOptions = {}): ValidationReport {
 	const contextMessage = resolveContextMessage(loadConfig());
+	return withDataLock(() => {
+		// Rewrite context first: examples that only become identical after context
+		// normalization must still be caught by dedupe in this pass.
+		const contextFix = rewriteContext
+			? fixContextMessages(contextMessage, isEval)
+			: null;
+		const dedupe = fix ? dedupeExamples(isEval) : null;
 
-	// Rewrite context first: examples that only become identical after context
-	// normalization must still be caught by dedupe in this pass.
-	const contextFix = rewriteContext
-		? fixContextMessages(contextMessage, isEval)
-		: null;
-	const dedupe = fix ? dedupeExamples(isEval) : null;
+		// Count and validate after the fixes, so the report describes the data
+		// actually left on disk rather than the state it was in on entry.
+		const examples = countExamples(isEval);
+		const result = validateTrainingData(contextMessage, isEval);
+		const overlap = isEval ? 0 : countTrainValidOverlap();
 
-	// Count and validate after the fixes, so the report describes the data
-	// actually left on disk rather than the state it was in on entry.
-	const examples = countExamples(isEval);
-	const result = validateTrainingData(contextMessage, isEval);
+		if (overlap > 0) {
+			result.warnings.push(
+				`${overlap} example${overlap === 1 ? ' appears' : 's appear'} in both train.jsonl and valid.jsonl — validation loss will measure memorization, not generalization`,
+			);
+		}
 
-	return {
-		set: isEval ? 'eval' : 'train',
-		examples,
-		valid: result.valid,
-		errors: result.errors,
-		warnings: result.warnings,
-		checks: {
-			dataFileExists: examples > 0,
-			validJsonStructure: result.errors.length === 0,
-			contextMessageConsistency: result.inconsistentContextMessages === 0,
-			noDuplicateInputs: result.duplicateInputs === 0,
-			// A validation set is a slice of the training data, so the 50-example
-			// floor does not apply to it — matching the rule `validateTrainingData`
-			// already uses when deciding whether to warn.
-			minimumExampleCount: isEval || examples >= 50,
-		},
-		fixes:
-			contextFix || dedupe
-				? {
-						duplicatesRemoved: dedupe?.removedCount ?? 0,
-						contextMessagesRewritten: contextFix?.fixedCount ?? 0,
-					}
-				: null,
-	};
+		return {
+			set: isEval ? 'eval' : 'train',
+			examples,
+			valid: result.valid,
+			errors: result.errors,
+			warnings: result.warnings,
+			checks: {
+				dataFileExists: examples > 0,
+				validJsonStructure: result.errors.length === 0,
+				contextMessageConsistency: result.inconsistentContextMessages === 0,
+				noDuplicateInputs: result.duplicateInputs === 0,
+				// A validation set is a slice of the training data, so the 50-example
+				// floor does not apply to it — matching the rule `validateTrainingData`
+				// already uses when deciding whether to warn.
+				minimumExampleCount: isEval || examples >= 50,
+				noTrainValidOverlap: overlap === 0,
+			},
+			fixes:
+				contextFix || dedupe
+					? {
+							duplicatesRemoved: dedupe?.removedCount ?? 0,
+							contextMessagesRewritten: contextFix?.fixedCount ?? 0,
+						}
+					: null,
+		};
+	});
 }
 
 export interface ImportResult {
@@ -727,11 +846,40 @@ export interface ImportCSVOptions {
 	headerless?: boolean;
 }
 
+/**
+ * `isEval` is required — never defaulted — on every helper that writes into the
+ * dataset: a caller that forgets it silently appends to, or overwrites, the
+ * wrong file. Read-only helpers keep the `isEval = false` default, where a
+ * missing flag shows the wrong set but destroys nothing.
+ *
+ * The importers take the lock for their whole run rather than per appended row.
+ * Held per row, a split starting halfway through an import would put the rows
+ * imported before it in valid.jsonl and the rows after it in train.jsonl - an
+ * import silently turning into part of the validation set. The cost is that a
+ * `/keep` or a `data list` waits for a long import to finish, which is reported
+ * by the wait ending rather than by anything on screen: every caller here is an
+ * Ink command that owns the terminal, so there is nowhere to draw a message.
+ *
+ * An import is still not transactional. A bad row, a full disk or a Ctrl+C
+ * leaves the rows already written in place, which is what the imported/skipped
+ * counts describe and what a user re-running the file expects.
+ */
 export function importFromCSV(
 	filePath: string,
 	contextMessage: ChatMessage,
 	isEval: boolean,
 	options: ImportCSVOptions = {},
+): ImportResult {
+	return withDataLock(() =>
+		runCSVImport(filePath, contextMessage, isEval, options),
+	);
+}
+
+function runCSVImport(
+	filePath: string,
+	contextMessage: ChatMessage,
+	isEval: boolean,
+	options: ImportCSVOptions,
 ): ImportResult {
 	const errors: string[] = [];
 	let imported = 0;
@@ -757,6 +905,9 @@ export function importFromCSV(
 		firstRowLower[0] === 'input' &&
 		firstRowLower[1] === 'output';
 	const startIndex = hasHeader ? 1 : 0;
+	// Read only when present, so every two-column CSV in the wild keeps
+	// importing exactly as it did.
+	const tagsIndex = 2;
 
 	for (let i = startIndex; i < rows.length; i++) {
 		const row = rows[i];
@@ -779,6 +930,7 @@ export function importFromCSV(
 				contextMessage,
 				userInput: input.trim(),
 				assistantOutput: output.trim(),
+				tags: splitTagCell(row[tagsIndex]),
 			},
 			isEval,
 		);
@@ -789,6 +941,14 @@ export function importFromCSV(
 }
 
 export function importFromJSONL(
+	filePath: string,
+	contextMessage: ChatMessage,
+	isEval: boolean,
+): ImportResult {
+	return withDataLock(() => runJSONLImport(filePath, contextMessage, isEval));
+}
+
+function runJSONLImport(
 	filePath: string,
 	contextMessage: ChatMessage,
 	isEval: boolean,
@@ -815,7 +975,10 @@ export function importFromJSONL(
 					);
 
 					if (userMsg?.content && assistantMsg?.content) {
-						appendTrainingExample({messages: data.messages}, isEval);
+						appendTrainingExample(
+							withTags({messages: data.messages}, data.tags),
+							isEval,
+						);
 						imported++;
 						continue;
 					}
@@ -833,6 +996,7 @@ export function importFromJSONL(
 						contextMessage,
 						userInput: data.input,
 						assistantOutput: data.output,
+						tags: normalizeTags(data.tags).display,
 					},
 					isEval,
 				);
@@ -852,6 +1016,14 @@ export function importFromJSONL(
 }
 
 export function importFromJSON(
+	filePath: string,
+	contextMessage: ChatMessage,
+	isEval: boolean,
+): ImportResult {
+	return withDataLock(() => runJSONImport(filePath, contextMessage, isEval));
+}
+
+function runJSONImport(
 	filePath: string,
 	contextMessage: ChatMessage,
 	isEval: boolean,
@@ -878,7 +1050,10 @@ export function importFromJSON(
 			);
 
 			if (userMsg?.content && assistantMsg?.content) {
-				appendTrainingExample({messages: item.messages}, isEval);
+				appendTrainingExample(
+					withTags({messages: item.messages}, item.tags),
+					isEval,
+				);
 				imported++;
 				continue;
 			}
@@ -894,6 +1069,7 @@ export function importFromJSON(
 					contextMessage,
 					userInput: item.input,
 					assistantOutput: item.output,
+					tags: normalizeTags(item.tags).display,
 				},
 				isEval,
 			);
@@ -963,13 +1139,33 @@ function csvEscape(value: string): string {
 }
 
 /**
+ * A semicolon inside a cell is the separator, not a comma: a comma is the
+ * column delimiter, so a tag containing one would already have had to be
+ * escaped by the writer, and re-splitting on it here would turn a single
+ * tag into two that never existed.
+ */
+function splitTagCell(cell: string | undefined): string[] {
+	if (!cell) return [];
+	return cell
+		.split(';')
+		.map(tag => tag.trim())
+		.filter(tag => tag.length > 0);
+}
+
+/**
  * CSV can only represent a single input/output pair per row, with no room
  * for a context message. Multi-turn examples are skipped (not truncated) so
  * that exporting then re-importing never silently drops turns.
  */
 export function exportToCSV(filePath: string, isEval = false): ExportResult {
 	const examples = loadTrainingData(isEval);
-	const rows: string[] = ['input,output'];
+	// The tags column appears only when something has tags. An untagged dataset
+	// exports to the same two columns it always has, so a round-trip through a
+	// user's spreadsheet or script keeps working untouched.
+	const hasTags = examples.some(
+		ex => normalizeTags(ex?.tags).display.length > 0,
+	);
+	const rows: string[] = [hasTags ? 'input,output,tags' : 'input,output'];
 	let exported = 0;
 	let skipped = 0;
 	const errors: string[] = [];
@@ -993,7 +1189,31 @@ export function exportToCSV(filePath: string, isEval = false): ExportResult {
 			return;
 		}
 
-		rows.push(`${csvEscape(user.content)},${csvEscape(assistant.content)}`);
+		const cells = [csvEscape(user.content), csvEscape(assistant.content)];
+		if (hasTags) {
+			const tags = normalizeTags(ex?.tags).display;
+			// Joined on ";" rather than "," because "," is the column delimiter
+			// here, and a tag containing one would need its own quoting on the
+			// way out and its own re-splitting on the way back in.
+			//
+			// A tag holding the ";" it is joined on cannot make the trip either
+			// way, and quoting does not save it: parseCSV strips the quotes long
+			// before splitTagCell sees the cell, so one tag would arrive as two
+			// categories that never existed and quietly change what the next
+			// split stratifies on. Dropped and reported instead, the same way a
+			// multi-turn row is. The example itself is still exported - losing a
+			// label is recoverable, losing the prompt and reply is not.
+			const representable = tags.filter(tag => !tag.includes(';'));
+			for (const tag of tags) {
+				if (!representable.includes(tag)) {
+					errors.push(
+						`Example ${i + 1}: tag "${tag}" contains ";", the separator between tags in this column, and was not exported`,
+					);
+				}
+			}
+			cells.push(csvEscape(representable.join(';')));
+		}
+		rows.push(cells.join(','));
 		exported++;
 	});
 
@@ -1021,57 +1241,118 @@ export function exportData(filePath: string, isEval = false): ExportResult {
 }
 
 /**
- * Mulberry32: small, fast, 32-bit seedable PRNG. Used so train/valid splits
- * are reproducible across runs when a seed is provided.
+ * `auto` stratifies when the dataset carries categories and falls back to a
+ * random split when it does not, which is every dataset written before this.
+ * `on` asks for stratification and reports why when there was none to do.
+ * `off` restores the old behaviour outright.
  */
-function mulberry32(seed: number): () => number {
-	let a = seed >>> 0;
-	return () => {
-		a = (a + 0x6d2b79f5) >>> 0;
-		let t = a;
-		t = Math.imul(t ^ (t >>> 15), t | 1);
-		t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-	};
+export type StratifyMode = 'auto' | 'on' | 'off';
+
+export interface SplitBucket {
+	/** Normalized category name, safe to print. */
+	category: string;
+	total: number;
+	validation: number;
 }
 
-/** In-place Fisher-Yates shuffle. Returns the same array for chaining. */
-function shuffleInPlace<T>(arr: T[], rng: () => number): T[] {
-	for (let i = arr.length - 1; i > 0; i--) {
-		const j = Math.floor(rng() * (i + 1));
-		[arr[i], arr[j]] = [arr[j], arr[i]];
-	}
-	return arr;
+export interface SplitResult {
+	trainCount: number;
+	validCount: number;
+	/**
+	 * `stratified` when categories drove the split, `random` when there was
+	 * nothing to stratify on, and `unstratifiable` when the categories were too
+	 * fine-grained to mean anything. Reported so `nanotune train` can say which
+	 * it did rather than implying a stratified split that never happened.
+	 */
+	strategy: 'stratified' | 'random' | 'unstratifiable';
+	/** In split order. Empty unless stratified. */
+	buckets: SplitBucket[];
+	/**
+	 * Categories the validation set could not cover at this ratio. Named rather
+	 * than quietly left out, since a rare category absent from validation is the
+	 * whole problem this exists to solve.
+	 */
+	unrepresentedCategories: string[];
+	/**
+	 * Validation examples the ratio asked for that near-duplicate grouping made
+	 * impossible to fill. Zero unless the dataset holds duplicates.
+	 */
+	shortfall: number;
+}
+
+/** Everything one pass over the dataset produces, reused by both split paths. */
+interface DatasetLayout {
+	/** Near-duplicate groups, as example indexes. */
+	groups: number[][];
+	/** The category each group is filed under, indexed by group. */
+	bucketOfGroup: string[];
+	/** Every example's own category, indexed by example. */
+	bucketOfExample: string[];
 }
 
 /**
- * Split training data into train and validation sets.
- * MLX requires a valid.jsonl file for training.
- * @param validationRatio - Portion of data to use for validation (default 10%)
- * @param seed - Optional seed for a reproducible split.
+ * MLX requires a valid.jsonl file for training, so one has to exist.
  */
 export function splitTrainValidation(
 	validationRatio = 0.1,
 	seed?: number,
-): {trainCount: number; validCount: number} {
+	stratify: StratifyMode = 'auto',
+): SplitResult {
+	// A split reads the whole dataset and writes both halves back. An append
+	// that lands while it runs goes to the file the rename then replaces, and
+	// that example is gone with no error anywhere. The lock covers the read,
+	// both writes and the manifest, which describes them.
+	return withDataLock(() => runSplit(validationRatio, seed, stratify));
+}
+
+function runSplit(
+	validationRatio: number,
+	seed: number | undefined,
+	stratify: StratifyMode,
+): SplitResult {
+	// Before anything is read or written. A NaN ratio reaches `slice(0, NaN)`,
+	// which is the empty array, and writes train.jsonl empty; a ratio of 1
+	// reaches `slice(0, -1)` one line later and drops an example. Both are
+	// unrecoverable once the rename lands, so they fail here instead.
+	assertValidRatio(validationRatio);
+
 	const allExamples = loadTrainingData();
 
 	if (allExamples.length === 0) {
-		return {trainCount: 0, validCount: 0};
+		return emptySplitResult();
 	}
 
 	const rng = seed === undefined ? Math.random : mulberry32(seed);
-	const shuffled = shuffleInPlace([...allExamples], rng);
+	const layout = describeDataset(allExamples);
 
-	// Calculate split - minimum 1 validation example if we have at least 2 total
-	const validCount = Math.max(
-		allExamples.length >= 2 ? 1 : 0,
-		Math.floor(allExamples.length * validationRatio),
-	);
-	const trainCount = allExamples.length - validCount;
+	let split;
+	if (stratify === 'off') {
+		split = legacyRandomSplit(allExamples, validationRatio, rng);
+	} else {
+		const plan = stratifyGroups(
+			layout.groups,
+			layout.bucketOfGroup,
+			validationRatio,
+			rng,
+		);
+		// No usable categories. Still group-aware: near-duplicate leakage has
+		// nothing to do with stratification, and an untagged dataset is exactly
+		// where a duplicated pair is most likely to sit on both sides.
+		split = plan.fallback
+			? groupedRandomSplit(allExamples, layout, validationRatio, rng)
+			: stratifiedSplit(allExamples, layout, plan, rng);
+	}
 
-	const trainExamples = shuffled.slice(0, trainCount);
-	const validExamples = shuffled.slice(trainCount);
+	const {trainExamples, validExamples, result} = split;
+
+	// The last line of defence before a rewrite. Both writes replace a whole
+	// file, so a bug that drops or duplicates an example is not a wrong number
+	// in a report — it is a user's training data deleted, with no copy
+	// anywhere, the moment the atomic rename succeeds. Both sides are compared
+	// against the input by content fingerprint, which catches a dropped example
+	// and a duplicated one alike. Everything needed is already in memory, so
+	// this costs one pass over the data.
+	assertSplitIsAPermutation(allExamples, trainExamples, validExamples);
 
 	// Write valid.jsonl before truncating train.jsonl. Each write is atomic
 	// (writeFileAtomic), so the only interruption window left is between the
@@ -1081,30 +1362,434 @@ export function splitTrainValidation(
 	saveTrainingData(validExamples, true);
 	saveTrainingData(trainExamples, false);
 
-	return {trainCount, validCount};
+	// Recorded only once both writes have landed, so the manifest can never
+	// describe a split that did not happen.
+	const validationFingerprint = fingerprintSet(validExamples);
+	const previous = readSplitManifest();
+	writeSplitManifest({
+		version: 1,
+		createdAt: new Date().toISOString(),
+		...(seed === undefined ? {} : {seed}),
+		validationRatio,
+		stratify,
+		strategy: result.strategy,
+		trainCount: result.trainCount,
+		validCount: result.validCount,
+		validationFingerprint,
+		...(previous && previous.validationFingerprint !== validationFingerprint
+			? {replacedValidationFingerprint: previous.validationFingerprint}
+			: {}),
+	});
+
+	return result;
+}
+
+/**
+ * Taking the tail of the shuffled array is what the original implementation
+ * did, so this reproduces its output exactly. It does not keep near-duplicates
+ * together — that is what `--stratify off` is for.
+ */
+function legacyRandomSplit(
+	allExamples: TrainingExample[],
+	validationRatio: number,
+	rng: () => number,
+): {
+	trainExamples: TrainingExample[];
+	validExamples: TrainingExample[];
+	result: SplitResult;
+} {
+	const shuffled = shuffleInPlace([...allExamples], rng);
+	const validCount = validTarget(allExamples.length, validationRatio);
+	const trainCount = allExamples.length - validCount;
+
+	return {
+		trainExamples: shuffled.slice(0, trainCount),
+		validExamples: shuffled.slice(trainCount),
+		result: {
+			trainCount,
+			validCount,
+			strategy: 'random',
+			buckets: [],
+			unrepresentedCategories: [],
+			shortfall: 0,
+		},
+	};
+}
+
+/**
+ * Walks the shuffled order from the end — the same end the legacy split took
+ * from — taking whole leak groups and skipping any group that would overshoot
+ * the budget. On a dataset with no duplicates every group is one example, so
+ * this reduces to the legacy selection byte for byte; grouping only changes the
+ * answer where there was something to group.
+ */
+function groupedRandomSplit(
+	allExamples: TrainingExample[],
+	layout: DatasetLayout,
+	validationRatio: number,
+	rng: () => number,
+): {
+	trainExamples: TrainingExample[];
+	validExamples: TrainingExample[];
+	result: SplitResult;
+} {
+	// Shuffling indexes rather than examples produces the same permutation for
+	// the same seed — both start from the identity order — so this stays
+	// reproducible while still knowing which group each example belongs to.
+	const order = shuffleInPlace(
+		allExamples.map((_, index) => index),
+		rng,
+	);
+	const {groupOfExample, groupSize} = indexGroups(allExamples.length, layout);
+
+	const wanted = validTarget(allExamples.length, validationRatio);
+	const heldOut = new Array<boolean>(allExamples.length).fill(false);
+	const takenGroups = new Set<number>();
+	let held = 0;
+
+	for (let i = order.length - 1; i >= 0 && held < wanted; i--) {
+		const index = order[i];
+		const group = groupOfExample[index];
+		if (takenGroups.has(group)) continue;
+		if (held + groupSize[group] > wanted) continue;
+		takenGroups.add(group);
+		heldOut[index] = true;
+		held += groupSize[group];
+	}
+
+	const validExamples = allExamples.filter((_, index) => heldOut[index]);
+	const trainExamples = allExamples.filter((_, index) => !heldOut[index]);
+
+	return {
+		trainExamples,
+		validExamples,
+		result: {
+			trainCount: trainExamples.length,
+			validCount: validExamples.length,
+			strategy: 'random',
+			buckets: [],
+			unrepresentedCategories: [],
+			shortfall: wanted - held,
+		},
+	};
+}
+
+function indexGroups(
+	exampleCount: number,
+	layout: DatasetLayout,
+): {groupOfExample: number[]; groupSize: number[]} {
+	const groupOfExample = new Array<number>(exampleCount);
+	const groupSize = layout.groups.map(indexes => indexes.length);
+	layout.groups.forEach((indexes, group) => {
+		for (const index of indexes) groupOfExample[index] = group;
+	});
+	return {groupOfExample, groupSize};
+}
+
+/**
+ * Near-duplicate grouping comes first because a group is held out or kept as a
+ * unit, so it has to be settled before any category is given a budget.
+ */
+function describeDataset(allExamples: TrainingExample[]): DatasetLayout {
+	const bucketOfExample = allExamples.map(
+		example => normalizeTags(example?.tags).bucket,
+	);
+	const groups = buildLeakGroups(allExamples.map(contentFingerprint));
+	const bucketOfGroup = groups.map(indexes =>
+		majorityBucket(indexes.map(index => bucketOfExample[index])),
+	);
+	return {groups, bucketOfGroup, bucketOfExample};
+}
+
+function stratifiedSplit(
+	allExamples: TrainingExample[],
+	layout: DatasetLayout,
+	plan: StratifyResult,
+	rng: () => number,
+): {
+	trainExamples: TrainingExample[];
+	validExamples: TrainingExample[];
+	result: SplitResult;
+} {
+	const {groupOfExample} = indexGroups(allExamples.length, layout);
+
+	const heldOutIndexesByBucket = new Map<string, number[]>();
+	for (const index of plan.validIndexes) {
+		const key = layout.bucketOfGroup[groupOfExample[index]];
+		const bucket = heldOutIndexesByBucket.get(key);
+		if (bucket) bucket.push(index);
+		else heldOutIndexesByBucket.set(key, [index]);
+	}
+
+	// Which groups were held out is already decided — `stratifyGroups` used the
+	// rng for that, and shuffling the chosen set afterwards would have nothing
+	// left to decide.
+	const heldOut = new Array<boolean>(allExamples.length).fill(false);
+	for (const bucket of heldOutIndexesByBucket.values()) {
+		for (const index of bucket) {
+			heldOut[index] = true;
+		}
+	}
+
+	// Filtered in file order rather than concatenated from the shuffle, so both
+	// files keep reading in the order the user wrote them.
+	const validExamples = allExamples.filter((_, index) => heldOut[index]);
+	const trainExamples = allExamples.filter((_, index) => !heldOut[index]);
+
+	return {
+		trainExamples,
+		validExamples,
+		result: {
+			trainCount: trainExamples.length,
+			validCount: validExamples.length,
+			strategy: 'stratified',
+			buckets: plan.buckets.map(bucket => ({
+				category: displayBucketKey(bucket.key),
+				total: bucket.size,
+				validation: bucket.valid,
+			})),
+			unrepresentedCategories: plan.unrepresentedBuckets.map(displayBucketKey),
+			shortfall: plan.shortfall,
+		},
+	};
+}
+
+/**
+ * Every write here replaces a whole file, so an off-by-one in the allocation
+ * is not a wrong number in a report — it is a user's training data deleted,
+ * with no copy anywhere, the moment the atomic rename succeeds.
+ */
+function assertSplitIsAPermutation(
+	allExamples: TrainingExample[],
+	trainExamples: TrainingExample[],
+	validExamples: TrainingExample[],
+): void {
+	const expected = allExamples.map(contentFingerprint).sort();
+	const actual = [...trainExamples, ...validExamples]
+		.map(contentFingerprint)
+		.sort();
+
+	if (expected.length === actual.length) {
+		if (expected.every((fingerprint, index) => fingerprint === actual[index])) {
+			return;
+		}
+		throw new Error(
+			'Refusing to write the split: the same example would land in both train.jsonl and valid.jsonl. Nothing was written.',
+		);
+	}
+
+	throw new Error(
+		`Refusing to write the split: ${expected.length} examples in, ${actual.length} out. Nothing was written.`,
+	);
+}
+
+function emptySplitResult(): SplitResult {
+	return {
+		trainCount: 0,
+		validCount: 0,
+		strategy: 'random',
+		buckets: [],
+		unrepresentedCategories: [],
+		shortfall: 0,
+	};
+}
+
+/**
+ * The problem this exists for: a user trains, gets a validation loss, deletes
+ * valid.jsonl and re-splits, trains again, and compares the two numbers. They
+ * were measured against different held-out data, so the comparison is
+ * meaningless — and nothing on screen says so, because each run in isolation
+ * looked perfectly normal.
+ */
+export interface SplitManifest {
+	version: 1;
+	/** ISO timestamp, for saying *when* the set changed. */
+	createdAt: string;
+	seed?: number;
+	validationRatio: number;
+	stratify: StratifyMode;
+	strategy: SplitResult['strategy'];
+	trainCount: number;
+	validCount: number;
+	/** Digest of the held-out examples. Order-independent. */
+	validationFingerprint: string;
+	/**
+	 * Digest of the validation set this split replaced, when it replaced a
+	 * different one.
+	 *
+	 * Without this the second split simply overwrites the record of the first,
+	 * which erases the evidence at the exact moment it is needed: a user trains,
+	 * gets a number, re-splits, trains again, and compares the two as if they
+	 * were measured against the same data.
+	 */
+	replacedValidationFingerprint?: string;
+}
+
+function getSplitManifestPath(): string {
+	return join(getDataDir(), SPLIT_MANIFEST_FILE);
+}
+
+/**
+ * Lenient on purpose: a corrupt or hand-edited manifest is not worth failing a
+ * training run over. It only ever adds a warning, and losing the warning is
+ * better than losing the run.
+ */
+export function readSplitManifest(): SplitManifest | null {
+	const path = getSplitManifestPath();
+	if (!existsSync(path)) {
+		return null;
+	}
+	try {
+		const parsed = JSON.parse(readFileSync(path, 'utf-8')) as SplitManifest;
+		if (
+			parsed?.version !== 1 ||
+			typeof parsed.validationFingerprint !== 'string'
+		) {
+			return null;
+		}
+		return parsed;
+	} catch {
+		return null;
+	}
+}
+
+function writeSplitManifest(manifest: SplitManifest): void {
+	// Best effort by design: the split itself has already succeeded and the
+	// dataset is on disk. Failing to record what we did must not undo that, and
+	// must not fail the run either.
+	try {
+		ensureDataDir();
+		writeFileAtomic(
+			getSplitManifestPath(),
+			`${JSON.stringify(manifest, null, 2)}\n`,
+		);
+	} catch {
+		// Nothing to do: the warning below simply will not appear next time.
+	}
+}
+
+/**
+ * Returns `null` when there is nothing to say: no manifest, or a validation
+ * set that still matches the one the split chose.
+ */
+export function describeValidationSetDrift(): string | null {
+	const manifest = readSplitManifest();
+	if (!manifest) {
+		return null;
+	}
+
+	const current = parseTrainingData(true).examples;
+	if (current.length === 0) {
+		return null;
+	}
+
+	const when = new Date(manifest.createdAt);
+	const stamp = Number.isNaN(when.getTime())
+		? ''
+		: ` on ${when.toISOString().slice(0, 10)}`;
+
+	// Re-split first. The file matching this manifest proves only that nothing
+	// has touched valid.jsonl since; it says nothing about the set it replaced.
+	if (
+		manifest.replacedValidationFingerprint !== undefined &&
+		manifest.replacedValidationFingerprint !== manifest.validationFingerprint
+	) {
+		return (
+			`The validation set was re-split${stamp}. Evaluation numbers from earlier ` +
+			'runs were measured against different data and are not comparable.'
+		);
+	}
+
+	if (fingerprintSet(current) === manifest.validationFingerprint) {
+		return null;
+	}
+
+	return (
+		`The validation set has changed since the last split${stamp}. ` +
+		'Evaluation numbers from earlier runs were measured against different data and are not comparable.'
+	);
 }
 
 /**
  * Ensure validation set exists. If not, split from training data.
  */
-export function ensureValidationSet(seed?: number): {
-	trainCount: number;
-	validCount: number;
-	didSplit: boolean;
-} {
-	const validCount = countExamples(true);
-	const trainCount = countExamples(false);
+export function ensureValidationSet(
+	seed?: number,
+	stratify: StratifyMode = 'auto',
+	validationRatio = 0.1,
+): SplitResult & {didSplit: boolean} {
+	// The count and the split have to be one decision. Read separately, two
+	// `nanotune train` runs on a fresh project both see no validation set, both
+	// split, and the second quietly discards the first's.
+	return withDataLock(() => {
+		const validCount = countExamples(true);
+		const trainCount = countExamples(false);
 
-	if (validCount === 0 && trainCount > 0) {
-		// No validation set - create one by splitting.
-		const result = splitTrainValidation(0.1, seed);
-		// A single example cannot be split, so valid.jsonl stays empty and the
-		// next call lands here again. Reporting didSplit for that no-op would
-		// repeat "Split 1 examples into 1 train / 0 validation." on every run.
-		return {...result, didSplit: result.validCount > 0};
+		if (validCount === 0 && trainCount > 0) {
+			// No validation set - create one by splitting.
+			const result = splitTrainValidation(validationRatio, seed, stratify);
+			// A single example cannot be split, so valid.jsonl stays empty and the
+			// next call lands here again. Reporting didSplit for that no-op would
+			// repeat "Split 1 examples into 1 train / 0 validation." on every run.
+			return {...result, didSplit: result.validCount > 0};
+		}
+
+		return {...emptySplitResult(), trainCount, validCount, didSplit: false};
+	});
+}
+
+export interface PassedSplitFlags {
+	seed?: number;
+	stratify?: StratifyMode;
+	validationRatio?: number;
+}
+
+/**
+ * The split flags this run passed that an existing validation set makes
+ * irrelevant, said out loud. Returns `null` when none were passed.
+ *
+ * Every one of these only takes effect on the run that creates the split, so on
+ * an already-split project `--validation-ratio 0.2` is accepted, ignored, and
+ * the run goes on to report the old 10% as if the flag had worked. Warning only
+ * about `--seed` made that the surprising case rather than the general one.
+ *
+ * Where the manifest records the split that produced the current set, it also
+ * says what that split actually used — a user who passed a different value then
+ * learns what they got instead of only what they did not get.
+ */
+export function describeIgnoredSplitFlags(
+	passed: PassedSplitFlags,
+): string | null {
+	const ignored: string[] = [];
+	if (passed.seed !== undefined) ignored.push('--seed');
+	if (passed.stratify !== undefined) ignored.push('--stratify');
+	if (passed.validationRatio !== undefined) {
+		ignored.push('--validation-ratio');
+	}
+	if (ignored.length === 0) {
+		return null;
 	}
 
-	return {trainCount, validCount, didSplit: false};
+	const listed =
+		ignored.length === 1
+			? ignored[0]
+			: `${ignored.slice(0, -1).join(', ')} and ${ignored[ignored.length - 1]}`;
+
+	const manifest = readSplitManifest();
+	const used = manifest ? describeSplitSettings(manifest) : '';
+
+	return (
+		`Existing validation set found - ${listed} ignored.${used} ` +
+		'Delete valid.jsonl to re-split.'
+	);
+}
+
+function describeSplitSettings(manifest: SplitManifest): string {
+	const strategy = manifest.strategy === 'stratified' ? ' (stratified)' : '';
+	return (
+		` It was split${strategy} with --stratify ${manifest.stratify} and ` +
+		`--validation-ratio ${manifest.validationRatio}.`
+	);
 }
 
 /**

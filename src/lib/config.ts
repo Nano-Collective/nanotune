@@ -433,14 +433,25 @@ export function writeFileAtomic(path: string, contents: string): void {
 	}
 }
 
-const GITIGNORE_CONTENTS = `# Nanotune project artifacts
-adapters/
-models/
-benchmarks/
-runs/
-chats/
-judge.json*
-`;
+const GITIGNORE_ENTRIES = [
+	'adapters/',
+	'models/',
+	'benchmarks/',
+	'runs/',
+	'chats/',
+	// train.jsonl and valid.jsonl hold the user's own prompts and the replies
+	// the model generated for them. Every entry above is a build artifact this
+	// tool can recreate; this is the user's data, and a repository that
+	// ignores the rest but commits the dataset is the worst of both.
+	'data/',
+	// The lock taken while writing the dataset. `data/` does not match it - a
+	// gitignore pattern is a whole name - so without this line every command
+	// that writes leaves an untracked data.lock/ in the user's `git status`.
+	'data.lock/',
+	'judge.json*',
+];
+
+const GITIGNORE_CONTENTS = `# Nanotune project artifacts\n${GITIGNORE_ENTRIES.join('\n')}\n`;
 
 /**
  * Write .gitignore inside .nanotune/ to protect API keys and keep multi-GB
@@ -483,7 +494,10 @@ function writeProjectGitignore(): void {
 	}
 
 	if (modified) {
-		writeFileSync(gitignorePath, existing);
+		// Atomic, like every other write to a project file: an interrupted
+		// back-fill must leave the previous .gitignore or the new one, never a
+		// truncated file that silently stops ignoring anything.
+		writeFileAtomic(gitignorePath, existing);
 	}
 }
 
@@ -502,6 +516,9 @@ export function initializeProjectDirs(): void {
 		}
 	}
 
+	// Write .gitignore inside .nanotune/ to protect API keys, keep multi-GB
+	// adapters/models out of the user's git history, and keep the training
+	// data itself out of it.
 	writeProjectGitignore();
 }
 

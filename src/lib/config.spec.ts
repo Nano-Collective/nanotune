@@ -333,7 +333,7 @@ test("resolveContextMessage falls back to systemPrompt", (t) => {
   t.is(result.content, "System prompt");
 });
 
-// ── findLatestGGUF ────────────────────────────────────────────────────
+// â”€â”€ findLatestGGUF â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const ORIG_CWD = process.cwd();
 const GGUF_TEST_DIR = join(ORIG_CWD, ".test-config-spec");
@@ -431,7 +431,7 @@ test.serial("findLatestGGUF ignores non-.gguf siblings", (t) => {
   }
 });
 
-// ── listBenchmarks / resolveBenchmarkPath ────────────────────────────
+// â”€â”€ listBenchmarks / resolveBenchmarkPath â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const BENCH_TEST_DIR = join(ORIG_CWD, ".test-config-benchmarks");
 const BENCH_DIR = join(BENCH_TEST_DIR, ".nanotune", "benchmarks");
@@ -446,6 +446,132 @@ function teardownBenchTest() {
   process.chdir(ORIG_CWD);
   rmSync(BENCH_TEST_DIR, { recursive: true, force: true });
 }
+
+// -- .gitignore back-fill --
+//
+// train.jsonl and valid.jsonl are the user's own prompts and the assistant
+// replies they generated. Everything else the .gitignore lists can be rebuilt
+// by re-running nanotune; this cannot.
+
+const GITIGNORE_TEST_DIR = join(ORIG_CWD, ".test-config-gitignore");
+
+function setupGitignoreTest() {
+  process.chdir(ORIG_CWD);
+  rmSync(GITIGNORE_TEST_DIR, { recursive: true, force: true });
+  mkdirSync(join(GITIGNORE_TEST_DIR, ".nanotune"), { recursive: true });
+  process.chdir(GITIGNORE_TEST_DIR);
+}
+
+function readGitignore(): string {
+  return readFileSync(join(GITIGNORE_TEST_DIR, ".nanotune", ".gitignore"), "utf-8");
+}
+
+test.serial("initializeProjectDirs back-fills the .gitignore: creates the file when there is none", (t) => {
+  setupGitignoreTest();
+  try {
+    initializeProjectDirs();
+    const contents = readGitignore();
+    for (const entry of ["adapters/", "models/", "benchmarks/", "chats/", "data/", "judge.json*"]) {
+      t.true(contents.includes(entry), `missing ${entry}`);
+    }
+  } finally {
+    process.chdir(ORIG_CWD);
+    rmSync(GITIGNORE_TEST_DIR, { recursive: true, force: true });
+  }
+});
+
+test.serial("initializeProjectDirs back-fills the .gitignore: adds data/ to a project created before it", (t) => {
+  setupGitignoreTest();
+  try {
+    // The state every existing project is in: the file is only ever written
+    // when absent, so `data/` would never appear and the training data would
+    // stay committable forever.
+    const path = join(GITIGNORE_TEST_DIR, ".nanotune", ".gitignore");
+    writeFileSync(path, "# Nanotune project artifacts\nadapters/\nmodels/\n");
+
+    initializeProjectDirs();
+
+    const contents = readGitignore();
+    t.true(contents.includes("data/"));
+    // Everything already there survives: the file is appended to, not rewritten.
+    t.true(contents.includes("adapters/"));
+    t.true(contents.includes("models/"));
+  } finally {
+    process.chdir(ORIG_CWD);
+    rmSync(GITIGNORE_TEST_DIR, { recursive: true, force: true });
+  }
+});
+
+test.serial("initializeProjectDirs back-fills the .gitignore: adds data.lock/ to a project created before it", (t) => {
+  setupGitignoreTest();
+  try {
+    // The dataset lock is taken by every command that writes, and `data/` does
+    // not match it - a gitignore pattern is a whole name, not a prefix - so
+    // without this line each write leaves an untracked directory behind.
+    const path = join(GITIGNORE_TEST_DIR, ".nanotune", ".gitignore");
+    writeFileSync(path, "# Nanotune project artifacts\nadapters/\ndata/\n");
+
+    initializeProjectDirs();
+
+    const contents = readGitignore();
+    t.true(contents.includes("data.lock/"));
+    t.true(contents.includes("data/"));
+  } finally {
+    process.chdir(ORIG_CWD);
+    rmSync(GITIGNORE_TEST_DIR, { recursive: true, force: true });
+  }
+});
+
+test.serial("initializeProjectDirs back-fills the .gitignore: keeps a user's own patterns", (t) => {
+  setupGitignoreTest();  try {
+    const path = join(GITIGNORE_TEST_DIR, ".nanotune", ".gitignore");
+    writeFileSync(path, "adapters/\nmy-private-notes/\n*.local\n");
+
+    initializeProjectDirs();
+
+    const contents = readGitignore();
+    t.true(contents.includes("my-private-notes/"));
+    t.true(contents.includes("*.local"));
+    t.true(contents.includes("data/"));
+  } finally {
+    process.chdir(ORIG_CWD);
+    rmSync(GITIGNORE_TEST_DIR, { recursive: true, force: true });
+  }
+});
+
+test.serial("initializeProjectDirs back-fills the .gitignore: adds a missing newline before appending", (t) => {
+  setupGitignoreTest();
+  try {
+    const path = join(GITIGNORE_TEST_DIR, ".nanotune", ".gitignore");
+    // No trailing newline: appending straight onto the last entry would fuse
+    // two patterns into one and silently change what is ignored.
+    writeFileSync(path, "adapters/");
+
+    initializeProjectDirs();
+
+    const lines = readGitignore().split("\n");
+    t.true(lines.includes("adapters/"));
+    t.true(lines.includes("data/"));
+  } finally {
+    process.chdir(ORIG_CWD);
+    rmSync(GITIGNORE_TEST_DIR, { recursive: true, force: true });
+  }
+});
+
+test.serial("initializeProjectDirs back-fills the .gitignore: is a no-op when everything is already listed", (t) => {
+  setupGitignoreTest();
+  try {
+    initializeProjectDirs();
+    const first = readGitignore();
+
+    initializeProjectDirs();
+
+    t.is(readGitignore(), first);
+  } finally {
+    process.chdir(ORIG_CWD);
+    rmSync(GITIGNORE_TEST_DIR, { recursive: true, force: true });
+  }
+});
 
 test.serial("listBenchmarks returns an empty array when the benchmarks directory is missing", (t) => {
   setupBenchTest();
@@ -548,7 +674,7 @@ test.serial("resolveBenchmarkPath throws with the list of available runs when no
 });
 
 
-// ── findUnknownConfigKeys ─────────────────────────────────────────────
+// â”€â”€ findUnknownConfigKeys â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const KNOWN_KEYS_CONFIG = {
   name: "test-project",
@@ -699,7 +825,7 @@ test("findUnknownConfigKeys reports a __proto__ key parsed out of JSON", (t) => 
   ]);
 });
 
-// ── loadConfig warnings ───────────────────────────────────────────────
+// â”€â”€ loadConfig warnings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const WARN_TEST_DIR = join(ORIG_CWD, ".test-config-warnings");
 
@@ -738,7 +864,7 @@ test.serial("loadConfig prints each unknown key once across loads", (t) => {
   }
 });
 
-// ── formatFileSize ──────────────────────────────────────────────────
+// â”€â”€ formatFileSize â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 test("formatFileSize formats bytes below 1 KB", (t) => {
   t.is(formatFileSize(0), "0 B");
@@ -760,7 +886,7 @@ test("formatFileSize formats gigabytes with two decimal places", (t) => {
   t.is(formatFileSize(1.5 * 1024 * 1024 * 1024), "1.50 GB");
 });
 
-// ── getDirectorySize / hasUsableFusedModel ──────────────────────────
+// â”€â”€ getDirectorySize / hasUsableFusedModel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const SIZE_TEST_DIR = join(ORIG_CWD, ".test-config-dirsize");
 
@@ -930,7 +1056,7 @@ test.serial(
   },
 );
 
-// ── skipFuseValidationError ─────────────────────────────────────────
+// â”€â”€ skipFuseValidationError â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 test("skipFuseValidationError is null when --skip-fuse is not set", (t) => {
   t.is(skipFuseValidationError(false, false), null);
@@ -949,7 +1075,7 @@ test("skipFuseValidationError reports a clear error when --skip-fuse is set but 
 });
 
 
-// ── malformed config.json ─────────────────────────────────────────────
+// â”€â”€ malformed config.json â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const BAD_CONFIG_DIR = join(ORIG_CWD, ".test-config-malformed");
 
@@ -1009,7 +1135,7 @@ test.serial("tryLoadConfig returns the config when it is valid", (t) => {
   });
 });
 
-// ── ensureBenchmarksDir ───────────────────────────────────────────────
+// â”€â”€ ensureBenchmarksDir â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // setupBenchTest leaves a project with no benchmarks directory — exactly the
 // state `git clone` produces, since .nanotune/.gitignore lists benchmarks/ and
@@ -1060,7 +1186,7 @@ test.serial("results saved into a cloned project are discoverable afterwards", (
   }
 });
 
-// ── writeFileAtomic ───────────────────────────────────────────────────
+// â”€â”€ writeFileAtomic â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 test.serial("writeFileAtomic writes the contents and leaves no temp file behind", (t) => {
   setupBenchTest();
@@ -1123,7 +1249,7 @@ test.serial("writeFileAtomic surfaces a missing parent rather than inventing one
   }
 });
 
-// ── sweepStaleAtomicWrites ────────────────────────────────────────────
+// â”€â”€ sweepStaleAtomicWrites â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // Intentionally above common pid_max values (e.g. Linux default 4,194,304), so it is extremely unlikely to name a live process.
 const DEAD_PID = 9_999_999;
@@ -1198,7 +1324,7 @@ test.serial("writeFileAtomic sweeps only its own target's dead-pid temps", (t) =
   }
 });
 
-// ── initializeProjectDirs .gitignore back-fill ────────────────────────
+// â”€â”€ initializeProjectDirs .gitignore back-fill â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // Entries join GITIGNORE_CONTENTS over releases, but a project keeps the
 // .gitignore it was initialised with. judge.json can hold a literal API key,
@@ -1229,6 +1355,8 @@ test.serial("initializeProjectDirs writes the full .gitignore for a new project"
       "benchmarks/",
       "runs/",
       "chats/",
+      "data/",
+      "data.lock/",
       "judge.json*",
     ]);
   } finally {

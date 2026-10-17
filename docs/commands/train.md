@@ -36,6 +36,8 @@ nanotune train
 | `--resume` | Resume from last checkpoint |
 | `--dry-run` | Validate config without training |
 | `--seed <n>` | Integer seed for a reproducible train/validation split |
+| `--validation-ratio <n>` | Portion of the data to hold out for validation (default `0.1`) |
+| `--stratify <mode>` | Split by the categories in each example's tags: `auto`, `on`, or `off` |
 | `--train-seed <n>` | Random seed for mlx_lm's training run |
 
 Every flag above overrides the matching field under `training` in
@@ -50,11 +52,45 @@ than several minutes in.
 - `--seed` seeds Nanotune's train/validation split. It only affects the run that
   actually creates the split. Once `valid.jsonl` exists the split is left alone,
   so passing a seed to an already-split project does nothing and `train` says so.
-  Delete `valid.jsonl` first to re-split.
+  Delete `valid.jsonl` first to re-split. The same goes for `--stratify` and
+  `--validation-ratio`, which are named in the same warning.
 - `--train-seed` seeds mlx_lm's training run itself (shuffling, dropout, LoRA
   init) and applies on every run.
 
 Both reject a non-integer value rather than silently coercing it.
+
+## How the split is chosen
+
+When `valid.jsonl` does not exist, `train` creates it from `train.jsonl`:
+
+- **By category.** Examples are grouped by the first tag in their `tags` array
+  (see [Training Data](/guides/training-data)), and each category contributes
+  roughly the same share of the validation set. A category with one example
+  among two hundred still gets a validation slot, which a purely random 10%
+  split would drop about nine times in ten.
+- **By whole duplicate groups.** Two examples that differ only in case,
+  punctuation or whitespace are the same example as far as evaluation goes, so
+  they are held out together. A copy on both sides would make the validation
+  loss measure memorization rather than generalization. `nanotune data validate`
+  reports any overlap that already exists.
+- **By shuffle** when there is nothing to stratify on, which is every dataset
+  without tags.
+
+`--stratify off` restores the original shuffle, duplicate leakage included.
+`--validation-ratio` changes the share held out; it must be at least 0 and less
+than 1, and is rejected before anything is written rather than part-way through.
+
+`--seed`, `--stratify` and `--validation-ratio` all take effect only on the run
+that creates the split. Once `valid.jsonl` exists they are all ignored, and
+`train` names the ones you passed rather than accepting them quietly — together
+with the `--stratify` and `--validation-ratio` the existing set was actually
+split with, read back from `.nanotune/data/.split-manifest.json`. Delete
+`valid.jsonl` to re-split.
+
+The split never drops or duplicates an example: both files together are checked
+against the input before either is written. If the split cannot cover every
+category at the requested ratio — twenty categories and room for ten examples —
+the ones left out are named rather than quietly omitted.
 
 ## Examples
 
