@@ -43,8 +43,19 @@ nanotune export --skip-fuse
 1. **Adapter fusion** — Your LoRA adapter is fused with the base model weights
 2. **GGUF conversion** — The fused model is converted to GGUF format using llama.cpp
 3. **Quantization** — The model is quantized to reduce file size
+4. **Model card** — A Hugging Face-style `README.md` is written beside the GGUF
 
 Pre-built llama.cpp binaries are downloaded automatically — no compilation needed.
+
+## Model Card
+
+Export creates `.nanotune/models/README.md`. The card includes Hugging Face metadata, the base model, exported filename and quantization, fine-tuning settings including LoRA parameters, and training/validation example counts. Settings and counts reflect the project at export time rather than a historical training snapshot.
+
+The latest valid saved benchmark for the same artifact path supplies the pass rate and evaluation date. Base-model benchmarks and results for other artifacts are excluded; partial runs are labeled. A saved run with zero tests is reported without a pass rate. Saved results may predate the export, so they do not establish the performance of newly exported weights. When no matching report exists, the card says no results are available.
+
+Existing `README.md` files are preserved, including on re-export. Rename the existing card before exporting to generate an updated one. Before uploading the README and GGUF to Hugging Face, fill in the intended use, dataset sources, limitations, and license information.
+
+The card is published atomically, so an interrupted write does not leave a partial README. If generating or writing the card fails, export still succeeds and displays the GGUF path with a warning explaining the model-card failure.
 
 ## Fused Model Cache
 
