@@ -1,28 +1,26 @@
-import {
-	appendFileSync,
-	closeSync,
-	existsSync,
-	mkdirSync,
-	openSync,
-	readFileSync,
-	readSync,
-	statSync,
-	writeFileSync,
-} from 'node:fs';
+import {existsSync, mkdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import type {ChatMessage, TrainingExample} from '../types/index.js';
 import {
+	ensureProjectGitignore,
 	getDataDir,
 	loadConfig,
 	resolveContextMessage,
 	writeFileAtomic,
 } from './config.js';
+import {withDataLock} from './data-lock.js';
+import {
+	appendDatasetRecord,
+	recoverDatasetAppend,
+	repairDataset,
+} from './data-recovery.js';
 
 function ensureDataDir(): void {
 	const dataDir = getDataDir();
 	if (!existsSync(dataDir)) {
 		mkdirSync(dataDir, {recursive: true});
 	}
+	ensureProjectGitignore();
 }
 
 const TRAIN_FILE = 'train.jsonl';
@@ -38,6 +36,7 @@ export function getEvalDataPath(): string {
 
 export function countExamples(isEval = false): number {
 	const path = isEval ? getEvalDataPath() : getTrainDataPath();
+	recoverDatasetAppend(path);
 	if (!existsSync(path)) {
 		return 0;
 	}
@@ -78,6 +77,7 @@ export function parseTrainingData(isEval = false): ParsedTrainingData {
 	const examples: TrainingExample[] = [];
 	const errors: string[] = [];
 	const path = isEval ? getEvalDataPath() : getTrainDataPath();
+	recoverDatasetAppend(path);
 	if (!existsSync(path)) {
 		return {examples, errors};
 	}
@@ -129,25 +129,12 @@ export function appendTrainingExample(
 ): void {
 	ensureDataDir();
 	const path = isEval ? getEvalDataPath() : getTrainDataPath();
-	// A hand-edited file may end without a newline; appending straight onto it
-	// would glue this example to the previous line and corrupt both.
-	let prefix = '';
-	if (existsSync(path)) {
-		const {size} = statSync(path);
-		if (size > 0) {
-			const last = Buffer.alloc(1);
-			const fd = openSync(path, 'r');
-			try {
-				readSync(fd, last, 0, 1, size - 1);
-			} finally {
-				closeSync(fd);
-			}
-			if (last[0] !== 0x0a) {
-				prefix = '\n';
-			}
-		}
-	}
-	appendFileSync(path, `${prefix}${JSON.stringify(example)}\n`);
+	appendDatasetRecord(path, `${JSON.stringify(example)}\n`);
+}
+
+export function repairTrainingData(isEval = false) {
+	ensureDataDir();
+	return repairDataset(isEval ? getEvalDataPath() : getTrainDataPath());
 }
 
 export function appendToTrainingData(
@@ -177,13 +164,13 @@ export function saveTrainingData(
 	examples: TrainingExample[],
 	isEval: boolean,
 ): void {
-	ensureDataDir();
-	const path = isEval ? getEvalDataPath() : getTrainDataPath();
-	const content = `${examples.map(ex => JSON.stringify(ex)).join('\n')}\n`;
-	// Temp-file-and-rename: this rewrites the user's whole dataset, so a crash,
-	// a full disk or a kill between truncate and write would otherwise leave
-	// train.jsonl short of the examples it started with.
-	writeFileAtomic(path, content);
+	withDataLock(() => {
+		ensureDataDir();
+		const path = isEval ? getEvalDataPath() : getTrainDataPath();
+		recoverDatasetAppend(path);
+		const content = `${examples.map(ex => JSON.stringify(ex)).join('\n')}\n`;
+		writeFileAtomic(path, content);
+	});
 }
 
 export function deleteExample(index: number, isEval: boolean): void {
