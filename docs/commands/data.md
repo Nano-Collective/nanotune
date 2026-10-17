@@ -140,6 +140,7 @@ Validate your training data before training. Checks for:
 - Context message consistency
 - Minimum example count
 - Consecutive same-role messages (broken turn alternation)
+- Examples that look longer than `maxSeqLength`
 
 **Options:**
 
@@ -155,6 +156,8 @@ Validate your training data before training. Checks for:
 ```bash
 nanotune data validate --fix --rewrite-context
 ```
+
+An example longer than `training.maxSeqLength` is a warning, not an error. The length is a character estimate, about 4 characters per token, not the model's tokenizer. The warning names the five longest examples over the limit.
 
 After a split, `data validate` reports on `train.jsonl` only. Pass `--eval` to
 check `valid.jsonl` too — the "recommend at least 50 examples" warning is not
