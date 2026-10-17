@@ -17,6 +17,7 @@ import {
 	resolveContextMessage,
 	writeFileAtomic,
 } from './config.js';
+import {withDataLock} from './data-lock.js';
 
 function ensureDataDir(): void {
 	const dataDir = getDataDir();
@@ -129,25 +130,32 @@ export function appendTrainingExample(
 ): void {
 	ensureDataDir();
 	const path = isEval ? getEvalDataPath() : getTrainDataPath();
-	// A hand-edited file may end without a newline; appending straight onto it
-	// would glue this example to the previous line and corrupt both.
-	let prefix = '';
-	if (existsSync(path)) {
-		const {size} = statSync(path);
-		if (size > 0) {
-			const last = Buffer.alloc(1);
-			const fd = openSync(path, 'r');
-			try {
-				readSync(fd, last, 0, 1, size - 1);
-			} finally {
-				closeSync(fd);
-			}
-			if (last[0] !== 0x0a) {
-				prefix = '\n';
+	// O_APPEND is atomic against other appenders, so two /keeps cannot lose each
+	// other's example. It does nothing against a whole-file rewrite: an append
+	// landing between a split's read and its rename goes to the inode the rename
+	// replaces. Both sides have to take the lock for either to be worth taking.
+	withDataLock(() => {
+		// A hand-edited file may end without a newline; appending straight onto it
+		// would glue this example to the previous line and corrupt both. Under the
+		// lock because this check and the append that depends on it are one step.
+		let prefix = '';
+		if (existsSync(path)) {
+			const {size} = statSync(path);
+			if (size > 0) {
+				const last = Buffer.alloc(1);
+				const fd = openSync(path, 'r');
+				try {
+					readSync(fd, last, 0, 1, size - 1);
+				} finally {
+					closeSync(fd);
+				}
+				if (last[0] !== 0x0a) {
+					prefix = '\n';
+				}
 			}
 		}
-	}
-	appendFileSync(path, `${prefix}${JSON.stringify(example)}\n`);
+		appendFileSync(path, `${prefix}${JSON.stringify(example)}\n`);
+	});
 }
 
 export function appendToTrainingData(
@@ -177,21 +185,31 @@ export function saveTrainingData(
 	examples: TrainingExample[],
 	isEval: boolean,
 ): void {
-	ensureDataDir();
-	const path = isEval ? getEvalDataPath() : getTrainDataPath();
-	const content = `${examples.map(ex => JSON.stringify(ex)).join('\n')}\n`;
-	// Temp-file-and-rename: this rewrites the user's whole dataset, so a crash,
-	// a full disk or a kill between truncate and write would otherwise leave
-	// train.jsonl short of the examples it started with.
-	writeFileAtomic(path, content);
+	withDataLock(() => {
+		ensureDataDir();
+		const path = isEval ? getEvalDataPath() : getTrainDataPath();
+		const content = `${examples.map(ex => JSON.stringify(ex)).join('\n')}\n`;
+		// Temp-file-and-rename: this rewrites the user's whole dataset, so a crash,
+		// a full disk or a kill between truncate and write would otherwise leave
+		// train.jsonl short of the examples it started with.
+		writeFileAtomic(path, content);
+	});
 }
 
+/**
+ * The read and the write have to be one step, or a process that appended,
+ * edited or deleted in between has its work overwritten by a file written from
+ * a snapshot taken before it. The callers below each wrap their own load and
+ * save; the lock here covers a direct save of its own.
+ */
 export function deleteExample(index: number, isEval: boolean): void {
-	const examples = loadTrainingData(isEval);
-	if (index >= 0 && index < examples.length) {
-		examples.splice(index, 1);
-		saveTrainingData(examples, isEval);
-	}
+	withDataLock(() => {
+		const examples = loadTrainingData(isEval);
+		if (index >= 0 && index < examples.length) {
+			examples.splice(index, 1);
+			saveTrainingData(examples, isEval);
+		}
+	});
 }
 
 export function updateTrainingExample(
@@ -199,11 +217,13 @@ export function updateTrainingExample(
 	example: TrainingExample,
 	isEval: boolean,
 ): void {
-	const examples = loadTrainingData(isEval);
-	if (index >= 0 && index < examples.length) {
-		examples[index] = example;
-		saveTrainingData(examples, isEval);
-	}
+	withDataLock(() => {
+		const examples = loadTrainingData(isEval);
+		if (index >= 0 && index < examples.length) {
+			examples[index] = example;
+			saveTrainingData(examples, isEval);
+		}
+	});
 }
 
 /**
@@ -468,28 +488,30 @@ export interface DedupeResult {
  * context message are left alone.
  */
 export function dedupeExamples(isEval: boolean): DedupeResult {
-	const examples = loadTrainingData(isEval);
-	const seen = new Set<string>();
-	const kept: TrainingExample[] = [];
-	const removedIndexes: number[] = [];
+	return withDataLock(() => {
+		const examples = loadTrainingData(isEval);
+		const seen = new Set<string>();
+		const kept: TrainingExample[] = [];
+		const removedIndexes: number[] = [];
 
-	examples.forEach((ex, i) => {
-		const key = JSON.stringify(
-			ex.messages.map(m => ({role: m.role, content: m.content})),
-		);
-		if (seen.has(key)) {
-			removedIndexes.push(i + 1);
-			return;
+		examples.forEach((ex, i) => {
+			const key = JSON.stringify(
+				ex.messages.map(m => ({role: m.role, content: m.content})),
+			);
+			if (seen.has(key)) {
+				removedIndexes.push(i + 1);
+				return;
+			}
+			seen.add(key);
+			kept.push(ex);
+		});
+
+		if (removedIndexes.length > 0) {
+			saveTrainingData(kept, isEval);
 		}
-		seen.add(key);
-		kept.push(ex);
+
+		return {removedCount: removedIndexes.length, removedIndexes};
 	});
-
-	if (removedIndexes.length > 0) {
-		saveTrainingData(kept, isEval);
-	}
-
-	return {removedCount: removedIndexes.length, removedIndexes};
 }
 
 export interface ContextFixResult {
@@ -506,34 +528,36 @@ export function fixContextMessages(
 	contextMessage: ChatMessage,
 	isEval: boolean,
 ): ContextFixResult {
-	const examples = loadTrainingData(isEval);
-	let fixedCount = 0;
+	return withDataLock(() => {
+		const examples = loadTrainingData(isEval);
+		let fixedCount = 0;
 
-	const updated = examples.map(ex => {
-		const first = ex.messages[0];
-		if (!first || first.role === 'user' || first.role === 'assistant') {
-			return ex;
+		const updated = examples.map(ex => {
+			const first = ex.messages[0];
+			if (!first || first.role === 'user' || first.role === 'assistant') {
+				return ex;
+			}
+			if (
+				first.role === contextMessage.role &&
+				first.content === contextMessage.content
+			) {
+				return ex;
+			}
+			fixedCount++;
+			return {
+				messages: [
+					{role: contextMessage.role, content: contextMessage.content},
+					...ex.messages.slice(1),
+				],
+			};
+		});
+
+		if (fixedCount > 0) {
+			saveTrainingData(updated, isEval);
 		}
-		if (
-			first.role === contextMessage.role &&
-			first.content === contextMessage.content
-		) {
-			return ex;
-		}
-		fixedCount++;
-		return {
-			messages: [
-				{role: contextMessage.role, content: contextMessage.content},
-				...ex.messages.slice(1),
-			],
-		};
+
+		return {fixedCount};
 	});
-
-	if (fixedCount > 0) {
-		saveTrainingData(updated, isEval);
-	}
-
-	return {fixedCount};
 }
 
 /** Counts of the repairs `--fix` and `--rewrite-context` actually made. */
@@ -586,43 +610,47 @@ export function collectValidation({
 	isEval = false,
 }: ValidationOptions = {}): ValidationReport {
 	const contextMessage = resolveContextMessage(loadConfig());
+	// The repairs and the report they justify are one locked step. Held
+	// separately, a process that writes in between makes
+	// `fixes.duplicatesRemoved` describe a state that is no longer on disk.
+	return withDataLock(() => {
+		// Rewrite context first: examples that only become identical after context
+		// normalization must still be caught by dedupe in this pass.
+		const contextFix = rewriteContext
+			? fixContextMessages(contextMessage, isEval)
+			: null;
+		const dedupe = fix ? dedupeExamples(isEval) : null;
 
-	// Rewrite context first: examples that only become identical after context
-	// normalization must still be caught by dedupe in this pass.
-	const contextFix = rewriteContext
-		? fixContextMessages(contextMessage, isEval)
-		: null;
-	const dedupe = fix ? dedupeExamples(isEval) : null;
+		// Count and validate after the fixes, so the report describes the data
+		// actually left on disk rather than the state it was in on entry.
+		const examples = countExamples(isEval);
+		const result = validateTrainingData(contextMessage, isEval);
 
-	// Count and validate after the fixes, so the report describes the data
-	// actually left on disk rather than the state it was in on entry.
-	const examples = countExamples(isEval);
-	const result = validateTrainingData(contextMessage, isEval);
-
-	return {
-		set: isEval ? 'eval' : 'train',
-		examples,
-		valid: result.valid,
-		errors: result.errors,
-		warnings: result.warnings,
-		checks: {
-			dataFileExists: examples > 0,
-			validJsonStructure: result.errors.length === 0,
-			contextMessageConsistency: result.inconsistentContextMessages === 0,
-			noDuplicateInputs: result.duplicateInputs === 0,
-			// A validation set is a slice of the training data, so the 50-example
-			// floor does not apply to it — matching the rule `validateTrainingData`
-			// already uses when deciding whether to warn.
-			minimumExampleCount: isEval || examples >= 50,
-		},
-		fixes:
-			contextFix || dedupe
-				? {
-						duplicatesRemoved: dedupe?.removedCount ?? 0,
-						contextMessagesRewritten: contextFix?.fixedCount ?? 0,
-					}
-				: null,
-	};
+		return {
+			set: isEval ? 'eval' : 'train',
+			examples,
+			valid: result.valid,
+			errors: result.errors,
+			warnings: result.warnings,
+			checks: {
+				dataFileExists: examples > 0,
+				validJsonStructure: result.errors.length === 0,
+				contextMessageConsistency: result.inconsistentContextMessages === 0,
+				noDuplicateInputs: result.duplicateInputs === 0,
+				// A validation set is a slice of the training data, so the 50-example
+				// floor does not apply to it — matching the rule `validateTrainingData`
+				// already uses when deciding whether to warn.
+				minimumExampleCount: isEval || examples >= 50,
+			},
+			fixes:
+				contextFix || dedupe
+					? {
+							duplicatesRemoved: dedupe?.removedCount ?? 0,
+							contextMessagesRewritten: contextFix?.fixedCount ?? 0,
+						}
+					: null,
+		};
+	});
 }
 
 export interface ImportResult {
@@ -727,11 +755,40 @@ export interface ImportCSVOptions {
 	headerless?: boolean;
 }
 
+/**
+ * `isEval` is required — never defaulted — on every helper that writes into the
+ * dataset: a caller that forgets it silently appends to, or overwrites, the
+ * wrong file. Read-only helpers keep the `isEval = false` default, where a
+ * missing flag shows the wrong set but destroys nothing.
+ *
+ * The importers take the lock for their whole run rather than per appended row.
+ * Held per row, a split starting halfway through an import would put the rows
+ * imported before it in valid.jsonl and the rows after it in train.jsonl - an
+ * import silently turning into part of the validation set. The cost is that a
+ * `/keep` or a `data list` waits for a long import to finish, which is reported
+ * by the wait ending rather than by anything on screen: every caller here is an
+ * Ink command that owns the terminal, so there is nowhere to draw a message.
+ *
+ * An import is still not transactional. A bad row, a full disk or a Ctrl+C
+ * leaves the rows already written in place, which is what the imported/skipped
+ * counts describe and what a user re-running the file expects.
+ */
 export function importFromCSV(
 	filePath: string,
 	contextMessage: ChatMessage,
 	isEval: boolean,
 	options: ImportCSVOptions = {},
+): ImportResult {
+	return withDataLock(() =>
+		runCSVImport(filePath, contextMessage, isEval, options),
+	);
+}
+
+function runCSVImport(
+	filePath: string,
+	contextMessage: ChatMessage,
+	isEval: boolean,
+	options: ImportCSVOptions,
 ): ImportResult {
 	const errors: string[] = [];
 	let imported = 0;
@@ -789,6 +846,14 @@ export function importFromCSV(
 }
 
 export function importFromJSONL(
+	filePath: string,
+	contextMessage: ChatMessage,
+	isEval: boolean,
+): ImportResult {
+	return withDataLock(() => runJSONLImport(filePath, contextMessage, isEval));
+}
+
+function runJSONLImport(
 	filePath: string,
 	contextMessage: ChatMessage,
 	isEval: boolean,
@@ -852,6 +917,14 @@ export function importFromJSONL(
 }
 
 export function importFromJSON(
+	filePath: string,
+	contextMessage: ChatMessage,
+	isEval: boolean,
+): ImportResult {
+	return withDataLock(() => runJSONImport(filePath, contextMessage, isEval));
+}
+
+function runJSONImport(
 	filePath: string,
 	contextMessage: ChatMessage,
 	isEval: boolean,
@@ -1054,6 +1127,17 @@ export function splitTrainValidation(
 	validationRatio = 0.1,
 	seed?: number,
 ): {trainCount: number; validCount: number} {
+	// A split reads the whole dataset and writes both halves back. An append
+	// that lands while it runs goes to the file the rename then replaces, and
+	// that example is gone with no error anywhere. The lock covers the read and
+	// both writes.
+	return withDataLock(() => runSplit(validationRatio, seed));
+}
+
+function runSplit(
+	validationRatio: number,
+	seed: number | undefined,
+): {trainCount: number; validCount: number} {
 	const allExamples = loadTrainingData();
 
 	if (allExamples.length === 0) {
@@ -1092,19 +1176,24 @@ export function ensureValidationSet(seed?: number): {
 	validCount: number;
 	didSplit: boolean;
 } {
-	const validCount = countExamples(true);
-	const trainCount = countExamples(false);
+	// The count and the split have to be one decision. Read separately, two
+	// `nanotune train` runs on a fresh project both see no validation set, both
+	// split, and the second quietly discards the first's.
+	return withDataLock(() => {
+		const validCount = countExamples(true);
+		const trainCount = countExamples(false);
 
-	if (validCount === 0 && trainCount > 0) {
-		// No validation set - create one by splitting.
-		const result = splitTrainValidation(0.1, seed);
-		// A single example cannot be split, so valid.jsonl stays empty and the
-		// next call lands here again. Reporting didSplit for that no-op would
-		// repeat "Split 1 examples into 1 train / 0 validation." on every run.
-		return {...result, didSplit: result.validCount > 0};
-	}
+		if (validCount === 0 && trainCount > 0) {
+			// No validation set - create one by splitting.
+			const result = splitTrainValidation(0.1, seed);
+			// A single example cannot be split, so valid.jsonl stays empty and the
+			// next call lands here again. Reporting didSplit for that no-op would
+			// repeat "Split 1 examples into 1 train / 0 validation." on every run.
+			return {...result, didSplit: result.validCount > 0};
+		}
 
-	return {trainCount, validCount, didSplit: false};
+		return {trainCount, validCount, didSplit: false};
+	});
 }
 
 /**
