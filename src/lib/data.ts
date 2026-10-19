@@ -51,9 +51,9 @@ export function countExamples(isEval = false): number {
 export interface ParsedTrainingData {
 	examples: TrainingExample[];
 	/**
-	 * One `Example N: invalid JSON` per unparseable line, or `Example N: invalid
-	 * structure` per line that parses but isn't `{messages: [{role, content}]}`,
-	 * in file order.
+	 * One `Example N: invalid JSON: <parser detail>` per unparseable line, or
+	 * `Example N: invalid structure` per line that parses but isn't
+	 * `{messages: [{role, content}]}`, in file order.
 	 */
 	errors: string[];
 }
@@ -90,8 +90,9 @@ export function parseTrainingData(isEval = false): ParsedTrainingData {
 		let parsed: unknown;
 		try {
 			parsed = JSON.parse(line);
-		} catch {
-			errors.push(`Example ${i + 1}: invalid JSON`);
+		} catch (error) {
+			const detail = error instanceof Error ? error.message : String(error);
+			errors.push(`Example ${i + 1}: invalid JSON: ${detail}`);
 			return;
 		}
 		if (isWellFormedExample(parsed)) {

@@ -1,7 +1,9 @@
-import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "ava";
 import { collectStatus } from "./status.js";
+import { saveTrainingRun } from "./training-runs.js";
+import { TrainingConfigSchema } from "../types/index.js";
 
 const ORIG_CWD = process.cwd();
 const TEST_DIR = join(ORIG_CWD, ".test-status-spec");
@@ -85,6 +87,7 @@ test.serial("collectStatus nulls absent timestamps rather than omitting them", (
   t.true("trainLastModified" in report.data);
   t.is(report.data.trainLastModified, null);
   t.is(report.training.lastRun, null);
+  t.is(report.training.adapterRun, null);
   t.false(report.training.hasTrained);
   t.is(report.benchmarks.latest, null);
   t.deepEqual(report.exports, []);
@@ -97,6 +100,35 @@ test.serial("collectStatus reports training once an adapter exists", (t) => {
 
   t.true(report.training.hasTrained);
   t.is(typeof report.training.lastRun, "string");
+});
+
+test.serial("collectStatus shows settings for the run that produced the adapter", (t) => {
+  const adapterPath = join(ADAPTERS_DIR, "adapters.safetensors");
+  writeFileSync(adapterPath, "weights");
+  const adapterModifiedAt = statSync(adapterPath).mtime.toISOString();
+  saveTrainingRun({
+    id: "a1000000-0000-4000-8000-000000000004",
+    startedAt: "2026-08-01T10:00:00.000Z",
+    finishedAt: "2026-08-01T10:01:00.000Z",
+    status: "completed",
+    baseModel: CONFIG.baseModel,
+    training: TrainingConfigSchema.parse({ iterations: 25, learningRate: 0.0001 }),
+    examples: { train: 12, validation: 3 },
+    durationMs: 60000,
+    lossHistory: [{ iteration: 25, trainLoss: 0.8, valLoss: 0.9 }],
+    finalTrainLoss: 0.8,
+    finalValLoss: 0.9,
+    resume: false,
+    adapterPath: ".nanotune/adapters/adapters.safetensors",
+    adapterModifiedAt,
+  });
+
+  const report = collectStatus();
+
+  t.is(report.training.adapterRun?.baseModel, CONFIG.baseModel);
+  t.is(report.training.adapterRun?.training.iterations, 25);
+  t.is(report.training.adapterRun?.finalValLoss, 0.9);
+  t.false("lossHistory" in (report.training.adapterRun ?? {}));
 });
 
 test.serial("collectStatus lists GGUF exports newest first with raw byte sizes", (t) => {

@@ -6,13 +6,14 @@ sidebar_order: 5
 
 # JSON Output
 
-`nanotune status`, `nanotune data validate` and `nanotune benchmark` accept
-`--json`, which prints a single JSON document to stdout instead of the
-interactive report. This is what you want in CI, in a shell pipeline, or
-anywhere you would otherwise have parsed a box-drawn table.
+`nanotune status`, `nanotune runs`, `nanotune data validate` and
+`nanotune benchmark` accept `--json`, which prints a single JSON document to
+stdout instead of the interactive report. This is what you want in CI, in a
+shell pipeline, or anywhere you would otherwise have parsed a box-drawn table.
 
 ```bash
 nanotune status --json | jq .
+nanotune runs --json | jq '.[0].lossHistory'
 nanotune data validate --json | jq '.checks'
 nanotune benchmark --json | jq '.summary.passRate'
 ```
@@ -73,7 +74,8 @@ nanotune status --json
   },
   "training": {
     "hasTrained": true,
-    "lastRun": "2026-09-03T18:40:11.000Z"
+    "lastRun": "2026-09-03T18:40:11.000Z",
+    "adapterRun": null
   },
   "exports": [
     {
@@ -105,6 +107,7 @@ nanotune status --json
 | `data.trainLastModified` | string \| null | ISO 8601 mtime of `train.jsonl`; `null` if it does not exist |
 | `training.hasTrained` | boolean | Whether an adapter checkpoint exists |
 | `training.lastRun` | string \| null | ISO 8601 mtime of `adapters.safetensors`; `null` if never trained |
+| `training.adapterRun` | object \| null | Settings, outcome, data counts, duration, and latest losses for the run that produced the current adapter, including failed or still-running runs |
 | `exports[]` | array | Exported GGUFs, **newest first** — `.exports[0]` is the latest |
 | `exports[].sizeBytes` | number | File size in bytes |
 | `benchmarks.latest` | object \| null | Most recent saved run; `null` if none, or if the saved run could not be parsed |

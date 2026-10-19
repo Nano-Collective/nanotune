@@ -9,6 +9,7 @@ import {
 	loadConfig,
 } from './config.js';
 import {countExamples} from './data.js';
+import {listTrainingRuns, type TrainingRunRecord} from './training-runs.js';
 
 /** One exported GGUF in the project's models directory. */
 export interface StatusExport {
@@ -54,6 +55,16 @@ export interface StatusReport {
 	training: {
 		hasTrained: boolean;
 		lastRun: string | null;
+		adapterRun: Pick<
+			TrainingRunRecord,
+			| 'baseModel'
+			| 'status'
+			| 'training'
+			| 'examples'
+			| 'durationMs'
+			| 'finalTrainLoss'
+			| 'finalValLoss'
+		> | null;
 	};
 	/** Newest first, so `.exports[0]` is the latest export. */
 	exports: StatusExport[];
@@ -78,6 +89,21 @@ export function collectStatus(): StatusReport {
 	// `hasTrained` is derived from the same stat rather than a second
 	// existsSync, so the two can never disagree about whether a run happened.
 	const lastRun = mtimeIso(join(getAdaptersDir(), 'adapters.safetensors'));
+	const runs = listTrainingRuns();
+	const matchingAdapterRun = lastRun
+		? (runs.find(run => run.adapterModifiedAt === lastRun) ?? null)
+		: null;
+	const adapterRun = matchingAdapterRun
+		? {
+				baseModel: matchingAdapterRun.baseModel,
+				status: matchingAdapterRun.status,
+				training: matchingAdapterRun.training,
+				examples: matchingAdapterRun.examples,
+				durationMs: matchingAdapterRun.durationMs,
+				finalTrainLoss: matchingAdapterRun.finalTrainLoss,
+				finalValLoss: matchingAdapterRun.finalValLoss,
+			}
+		: null;
 
 	const exports: StatusExport[] = (
 		existsSync(modelsDir)
@@ -129,6 +155,7 @@ export function collectStatus(): StatusReport {
 		training: {
 			hasTrained: lastRun !== null,
 			lastRun,
+			adapterRun,
 		},
 		exports,
 		benchmarks: {latest},

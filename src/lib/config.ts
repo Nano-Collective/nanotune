@@ -11,13 +11,13 @@ import {
 } from 'node:fs';
 import {basename, dirname, join} from 'node:path';
 import {z} from 'zod';
-import {isProcessAlive} from './model-cache.js';
 import {
 	type BenchmarkResult,
 	type ChatMessage,
 	type Config,
 	ConfigSchema,
 } from '../types/index.js';
+import {isProcessAlive} from './model-cache.js';
 
 const CONFIG_DIR = '.nanotune';
 const CONFIG_FILE = 'config.json';
@@ -437,6 +437,7 @@ const GITIGNORE_CONTENTS = `# Nanotune project artifacts
 adapters/
 models/
 benchmarks/
+runs/
 chats/
 judge.json*
 `;
@@ -635,6 +636,8 @@ export function createDefaultConfig(
 			gradCheckpoint: false,
 			valBatches: 25,
 			seed: 0,
+			earlyStoppingPatience: 0,
+			loadBestModelAtEnd: false,
 		},
 		export: {
 			quantization: 'q4_k_m',

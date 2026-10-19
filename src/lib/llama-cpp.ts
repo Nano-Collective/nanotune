@@ -1,11 +1,11 @@
-import {createWriteStream, existsSync, mkdirSync} from 'node:fs';
+import {existsSync, mkdirSync} from 'node:fs';
 import {chmod, rm} from 'node:fs/promises';
 import {createServer} from 'node:net';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
-import {pipeline} from 'node:stream/promises';
 import {execa, type ResultPromise} from 'execa';
 import type {ChatMessage, QuantizationType} from '../types/index.js';
+import {downloadToFile, fetchJson} from './download.js';
 import {assertSupportedPlatform} from './platform.js';
 
 const LLAMA_CPP_DIR = join(homedir(), '.nanotune', 'llama.cpp');
@@ -41,15 +41,11 @@ async function getLatestRelease(): Promise<{
 	tag: string;
 	downloadUrl: string;
 }> {
-	const response = await fetch(GITHUB_API_LATEST, {
+	// A 502 from the GitHub API is usually gone within a second or two, and
+	// losing the whole install over one blip is a poor trade for a 1 s wait.
+	const release = await fetchJson<GitHubRelease>(GITHUB_API_LATEST, {
 		headers: {Accept: 'application/vnd.github.v3+json'},
 	});
-
-	if (!response.ok) {
-		throw new Error(`Failed to fetch release info: ${response.statusText}`);
-	}
-
-	const release = (await response.json()) as GitHubRelease;
 
 	// Find the macOS arm64 binary (Apple Silicon)
 	const asset = release.assets.find(
@@ -70,14 +66,7 @@ async function downloadAndExtract(url: string, destDir: string): Promise<void> {
 	const tarPath = join(destDir, 'llama.tar.gz');
 
 	// Download
-	const response = await fetch(url);
-	if (!response.ok || !response.body) {
-		throw new Error(`Failed to download: ${response.statusText}`);
-	}
-
-	// Save to file
-	const fileStream = createWriteStream(tarPath);
-	await pipeline(response.body as unknown as NodeJS.ReadableStream, fileStream);
+	await downloadToFile(url, tarPath);
 
 	// Extract
 	await execa('tar', ['-xzf', tarPath, '-C', destDir, '--strip-components=1']);
@@ -115,15 +104,7 @@ async function downloadConvertScript(tag: string): Promise<void> {
 	// Download the convert script matching the release version
 	const scriptUrl = `https://raw.githubusercontent.com/ggerganov/llama.cpp/${tag}/convert_hf_to_gguf.py`;
 
-	const response = await fetch(scriptUrl);
-	if (!response.ok || !response.body) {
-		throw new Error(
-			`Failed to download convert script: ${response.statusText}`,
-		);
-	}
-
-	const fileStream = createWriteStream(scriptPath);
-	await pipeline(response.body as unknown as NodeJS.ReadableStream, fileStream);
+	await downloadToFile(scriptUrl, scriptPath);
 	await chmod(scriptPath, 0o755);
 
 	// Download the bundled gguf-py package (the script uses this instead of pip gguf)
@@ -133,16 +114,7 @@ async function downloadConvertScript(tag: string): Promise<void> {
 	const ggufTarUrl = `https://github.com/ggerganov/llama.cpp/archive/${tag}.tar.gz`;
 	const ggufTarPath = join(LLAMA_CPP_DIR, 'repo.tar.gz');
 
-	const ggufResponse = await fetch(ggufTarUrl);
-	if (!ggufResponse.ok || !ggufResponse.body) {
-		throw new Error(`Failed to download gguf-py: ${ggufResponse.statusText}`);
-	}
-
-	const ggufFileStream = createWriteStream(ggufTarPath);
-	await pipeline(
-		ggufResponse.body as unknown as NodeJS.ReadableStream,
-		ggufFileStream,
-	);
+	await downloadToFile(ggufTarUrl, ggufTarPath);
 
 	// Extract just the gguf-py directory
 	await execa('tar', [
