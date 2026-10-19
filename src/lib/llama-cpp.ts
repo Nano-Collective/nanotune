@@ -307,11 +307,17 @@ async function findFreePort(): Promise<number> {
 	});
 }
 
-async function waitForServer(port: number, timeoutMs = 30_000): Promise<void> {
+async function waitForServer(
+	port: number,
+	timeoutMs = 30_000,
+	signal?: AbortSignal,
+): Promise<void> {
 	const start = Date.now();
 	while (Date.now() - start < timeoutMs) {
+		// Stop polling once the caller no longer cares (e.g. the child exited).
+		if (signal?.aborted) return;
 		try {
-			const res = await fetch(`http://127.0.0.1:${port}/health`);
+			const res = await fetch(`http://127.0.0.1:${port}/health`, {signal});
 			if (res.ok) return;
 		} catch {
 			// Server not ready yet
@@ -461,23 +467,29 @@ export function createServerHandle(
  * Wait for the server to answer /health, giving up early if the child exits
  * first. Without the race a bad GGUF — which llama-server rejects in
  * milliseconds — reports a generic timeout a full minute later instead of the
- * exit that actually happened.
+ * exit that actually happened. `Promise.race` ignores the loser instead of
+ * cancelling it, so the health poll is aborted explicitly once the race ends.
  */
 export async function waitForServerOrExit(
 	port: number,
 	exited: Promise<unknown>,
 	timeoutMs: number,
 ): Promise<void> {
-	await Promise.race([
-		waitForServer(port, timeoutMs),
-		exited.then(value => {
-			throw new Error(
-				`llama-server exited during startup${
-					value instanceof Error ? `: ${value.message}` : ''
-				}`,
-			);
-		}),
-	]);
+	const poll = new AbortController();
+	try {
+		await Promise.race([
+			waitForServer(port, timeoutMs, poll.signal),
+			exited.then(value => {
+				throw new Error(
+					`llama-server exited during startup${
+						value instanceof Error ? `: ${value.message}` : ''
+					}`,
+				);
+			}),
+		]);
+	} finally {
+		poll.abort();
+	}
 }
 
 /**
