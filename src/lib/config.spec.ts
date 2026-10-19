@@ -1256,8 +1256,27 @@ test.serial("initializeProjectDirs writes the full .gitignore for a new project"
       "benchmarks/",
       "runs/",
       "chats/",
+      "data.lock/",
       "judge.json*",
     ]);
+  } finally {
+    teardownBenchTest();
+  }
+});
+
+test.serial("initializeProjectDirs back-fills the .gitignore: adds data.lock/ to a project created before it", (t) => {
+  setupBenchTest();
+  try {
+    // The lock is taken by every command that writes the dataset, and no entry
+    // already listed would match it: a gitignore pattern is a whole name, not a
+    // prefix. Without this line each write leaves an untracked directory.
+    writeExistingGitignore("# Nanotune project artifacts\nadapters/\nchats/\n");
+
+    initializeProjectDirs();
+
+    const lines = gitignoreLines();
+    t.true(lines.includes("data.lock/"));
+    t.true(lines.includes("chats/"));
   } finally {
     teardownBenchTest();
   }

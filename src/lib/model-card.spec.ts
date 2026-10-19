@@ -77,7 +77,7 @@ test.serial('names cannot break frontmatter or inject Markdown rows and headings
 	t.is(JSON.parse(baseModelLine.slice('base_model: '.length)), specialConfig.baseModel);
 	t.false(card.includes('\nlicense: fake'));
 	t.false(card.includes('\n# injected'));
-	t.false(card.includes('<script>'));
+	t.true(card.includes('&lt;script&gt;'));
 	t.true(card.includes('\\|'));
 });
 
