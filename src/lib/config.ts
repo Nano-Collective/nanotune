@@ -1,6 +1,7 @@
 import {
 	type Dirent,
 	existsSync,
+	linkSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
@@ -421,13 +422,23 @@ export function sweepStaleAtomicWrites(dir: string): void {
  * where the rename never happened. A process killed mid-write (SIGKILL,
  * crash) skips that cleanup; a sweep of dead-pid leftovers for this target is
  * done up front so the next run heals the last one.
+ * With overwrite disabled, publish via a hard link instead: this atomically
+ * refuses an existing destination, preserving files created by another writer.
  */
-export function writeFileAtomic(path: string, contents: string): void {
+export function writeFileAtomic(
+	path: string,
+	contents: string,
+	options: {overwrite?: boolean} = {},
+): void {
 	removeStaleTemps(dirname(path), `${basename(path)}.tmp-`);
 	const tmp = `${path}.tmp-${process.pid}`;
 	try {
 		writeFileSync(tmp, contents);
-		renameSync(tmp, path);
+		if (options.overwrite === false) {
+			linkSync(tmp, path);
+		} else {
+			renameSync(tmp, path);
+		}
 	} finally {
 		rmSync(tmp, {force: true});
 	}
@@ -439,6 +450,7 @@ models/
 benchmarks/
 runs/
 chats/
+data.lock/
 judge.json*
 `;
 
@@ -452,6 +464,11 @@ judge.json*
  * temporary files an interrupted save leaves behind (`judge.json.tmp` in
  * older versions, `judge.json.tmp-<UUID>` now). These files can hold a literal
  * API key that `git add .` would commit.
+ *
+ * `data.lock/` is the lock taken while writing the dataset. It needs its own
+ * line because a gitignore pattern is a whole name, not a prefix - nothing
+ * already listed would match it - so without it every command that writes
+ * leaves an untracked directory in the user's `git status`.
  */
 function writeProjectGitignore(): void {
 	const gitignorePath = join(getProjectDir(), '.gitignore');

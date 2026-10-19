@@ -273,6 +273,7 @@ test.serial("DataValidateCommand reports a valid dataset", async (t) => {
     const output = await renderCommand(<DataValidateCommand />, "Training data is valid");
     t.true(output.includes("Training data is valid!"));
     t.true(output.includes("Examples:"));
+    t.true(output.includes("Within max sequence length"));
   } finally {
     teardown();
   }
@@ -292,6 +293,50 @@ test.serial("DataValidateCommand reports errors and warnings", async (t) => {
     t.true(output.includes("Expected at least 2 messages"));
     t.true(output.includes("Warnings:"));
     t.true(output.includes("duplicate user inputs"));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("DataValidateCommand reports train/validation overlap", async (t) => {
+  try {
+    setupProject();
+    writeExamples([example("hello"), example("goodbye")]);
+    writeEvalExamples([example("hello")]);
+    const output = await renderCommand(<DataValidateCommand />, "data leakage");
+    // The check label renders either way, so the warning line is what proves
+    // the overlap was actually found - and it must name the offending example.
+    t.true(output.includes("No train/validation overlap"));
+    // Asserted as two short substrings rather than the whole sentence: the
+    // full warning is ~98 columns and would be broken up by Ink's wrap.
+    t.true(output.includes("data leakage"));
+    t.true(output.includes("train.jsonl example 1"));
+    // A warning, not an error - the dataset itself is still structurally fine.
+    t.true(output.includes("Training data is valid!"));
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("DataValidateCommand warns when an example looks longer than maxSeqLength", async (t) => {
+  try {
+    setupProject();
+    writeFileSync(
+      join(NANOTUNE_DIR, "config.json"),
+      JSON.stringify(
+        { ...CONFIG, training: { ...CONFIG.training, maxSeqLength: 4 } },
+        null,
+        2,
+      ),
+    );
+    writeExamples([example("hello")]);
+    const output = await renderCommand(
+      <DataValidateCommand />,
+      "Training data is valid",
+    );
+    t.true(output.includes("Training data is valid!"));
+    t.true(output.includes("may be longer than maxSeqLength (4)"));
+    t.true(output.includes("example 1"));
   } finally {
     teardown();
   }

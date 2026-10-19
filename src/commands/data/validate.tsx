@@ -172,9 +172,21 @@ export function DataValidateCommand({
 				</Box>
 				<Box>
 					<StatusBadge
+						status={checks.noTrainValidOverlap ? 'success' : 'warning'}
+					/>
+					<Text> No train/validation overlap</Text>
+				</Box>
+				<Box>
+					<StatusBadge
 						status={checks.minimumExampleCount ? 'success' : 'warning'}
 					/>
 					<Text> Minimum example count (50+)</Text>
+				</Box>
+				<Box>
+					<StatusBadge
+						status={checks.withinMaxSeqLength ? 'success' : 'warning'}
+					/>
+					<Text> Within max sequence length</Text>
 				</Box>
 			</Box>
 
