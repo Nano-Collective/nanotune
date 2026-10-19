@@ -176,6 +176,12 @@ export function DataValidateCommand({
 					/>
 					<Text> Minimum example count (50+)</Text>
 				</Box>
+				<Box>
+					<StatusBadge
+						status={checks.withinMaxSeqLength ? 'success' : 'warning'}
+					/>
+					<Text> Within max sequence length</Text>
+				</Box>
 			</Box>
 
 			<Text> </Text>

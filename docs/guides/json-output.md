@@ -143,7 +143,8 @@ disk.
     "validJsonStructure": true,
     "contextMessageConsistency": true,
     "noDuplicateInputs": false,
-    "minimumExampleCount": true
+    "minimumExampleCount": true,
+    "withinMaxSeqLength": true
   },
   "fixes": null
 }
@@ -161,6 +162,7 @@ disk.
 | `checks.contextMessageConsistency` | boolean | True when every example's context message matches `config.json` |
 | `checks.noDuplicateInputs` | boolean | True when no two examples share a user input |
 | `checks.minimumExampleCount` | boolean | True at 50+ examples. Always true for a validation set, which is a slice of the training data and not subject to the floor |
+| `checks.withinMaxSeqLength` | boolean | True when no example's character estimate (about 4 characters per token) is over `training.maxSeqLength`. A miss is a warning, not an error |
 | `fixes` | object \| null | `null` unless `--fix` or `--rewrite-context` ran |
 | `fixes.duplicatesRemoved` | number | Exact-duplicate examples deleted by `--fix` |
 | `fixes.contextMessagesRewritten` | number | Examples rewritten by `--rewrite-context` |
