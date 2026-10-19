@@ -439,6 +439,7 @@ models/
 benchmarks/
 runs/
 chats/
+data.lock/
 judge.json*
 `;
 
@@ -451,6 +452,11 @@ judge.json*
  * and one from 1.4.0-1.6.x has a bare `judge.json` that misses the
  * judge.json.tmp an interrupted save leaves behind. Both of those files can
  * hold a literal API key that `git add .` would commit.
+ *
+ * `data.lock/` is the lock taken while writing the dataset. It needs its own
+ * line because a gitignore pattern is a whole name, not a prefix - nothing
+ * already listed would match it - so without it every command that writes
+ * leaves an untracked directory in the user's `git status`.
  */
 function writeProjectGitignore(): void {
 	const gitignorePath = join(getProjectDir(), '.gitignore');
