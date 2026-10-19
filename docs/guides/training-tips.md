@@ -42,7 +42,7 @@ Watch the training progress display for these indicators:
 - **Validation loss tracks training loss** — They should decrease together
 - **Final loss around 0.1–0.3** — This range typically produces good results
 
-> **Tip:** If validation loss starts increasing while training loss continues to decrease, the model is overfitting. Stop training earlier or reduce iterations.
+> **Tip:** If validation loss starts increasing while training loss continues to decrease, the model is overfitting. Set `earlyStoppingPatience` (or pass `--early-stopping-patience`) so the run stops on its own and keeps the best saved checkpoint.
 
 ## Iterative Improvement
 

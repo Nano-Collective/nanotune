@@ -690,7 +690,8 @@ test.serial("parseTrainingData reports a bad line instead of throwing", (t) => {
 
   const { examples, errors } = parseTrainingData(false);
   t.is(examples.length, 2);
-  t.deepEqual(errors, ["Example 2: invalid JSON"]);
+  const syntaxError = t.throws(() => JSON.parse("not json at all"));
+  t.deepEqual(errors, [`Example 2: invalid JSON: ${syntaxError?.message}`]);
 });
 
 test.serial("parseTrainingData numbers bad lines by file position", (t) => {
@@ -698,7 +699,9 @@ test.serial("parseTrainingData numbers bad lines by file position", (t) => {
 
   const { examples, errors } = parseTrainingData(false);
   t.is(examples.length, 1);
-  t.deepEqual(errors, ["Example 1: invalid JSON", "Example 3: invalid JSON"]);
+  t.is(errors.length, 2);
+  t.true(errors[0]?.startsWith("Example 1: invalid JSON: "));
+  t.true(errors[1]?.startsWith("Example 3: invalid JSON: "));
 });
 
 test.serial("parseTrainingData reports nothing on clean data", (t) => {
@@ -715,7 +718,7 @@ test.serial("loadTrainingData still throws, naming the bad line", (t) => {
   // Deliberately strict: the mutating helpers load, transform and write the
   // whole file back, so skipping the line here would delete it on save.
   const err = t.throws(() => loadTrainingData(false));
-  t.is(err?.message, "Example 2: invalid JSON");
+  t.true(err?.message.startsWith("Example 2: invalid JSON: "));
 });
 
 test.serial("a malformed line survives a failed delete", (t) => {
@@ -739,7 +742,9 @@ test.serial("validateTrainingData reports a bad line as an error", (t) => {
 
   const result = validateTrainingData(SYSTEM_CTX, false);
   t.false(result.valid);
-  t.true(result.errors.includes("Example 2: invalid JSON"));
+  t.true(
+    result.errors.some(error => error.startsWith("Example 2: invalid JSON: ")),
+  );
 });
 
 const WRONG_SHAPE_LINES = [
@@ -773,7 +778,8 @@ test.serial("validateTrainingData does not call a malformed file empty", (t) => 
 
   const result = validateTrainingData(SYSTEM_CTX, false);
   t.false(result.valid);
-  t.deepEqual(result.errors, ["Example 1: invalid JSON"]);
+  t.is(result.errors.length, 1);
+  t.true(result.errors[0]?.startsWith("Example 1: invalid JSON: "));
 });
 
 // ── importData ────────────────────────────────────────────────────────
@@ -2028,6 +2034,7 @@ test.serial("validateTrainingData reports zero counts when there is no data", (t
 
   t.is(result.duplicateInputs, 0);
   t.is(result.inconsistentContextMessages, 0);
+  t.is(result.overlongExamples, 0);
 });
 
 // ── collectValidation ─────────────────────────────────────────────────
@@ -2062,6 +2069,7 @@ test.serial("collectValidation reports a clean training set", (t) => {
   t.true(report.checks.validJsonStructure);
   t.true(report.checks.contextMessageConsistency);
   t.true(report.checks.noDuplicateInputs);
+  t.true(report.checks.withinMaxSeqLength);
 });
 
 test.serial("collectValidation flags duplicates through checks, not warning text", (t) => {
@@ -2150,6 +2158,66 @@ test.serial("collectValidation surfaces errors for a malformed example", (t) => 
   t.false(report.valid);
   t.false(report.checks.validJsonStructure);
   t.true(report.errors.some((e) => e.includes("at least 2 messages")));
+});
+
+test.serial("validateTrainingData lists only the five longest examples over maxSeqLength", (t) => {
+  // chars/4. Assistant content is one character, so length is n + 1.
+  const lengths = [8, 40, 20, 80, 12, 60, 100];
+  saveTrainingData(
+    lengths.map((n) => ({
+      messages: [
+        { role: "user", content: "x".repeat(n) },
+        { role: "assistant", content: "y" },
+      ],
+    })),
+    false,
+  );
+
+  const result = validateTrainingData(SYSTEM_CTX, false, 4);
+
+  t.true(result.valid);
+  t.is(result.overlongExamples, 5);
+  const warning = result.warnings.find((w) => w.includes("maxSeqLength"));
+  t.is(
+    warning,
+    "5 examples may be longer than maxSeqLength (4). Longest: example 7 (~26 tokens), example 4 (~21 tokens), example 6 (~16 tokens), example 2 (~11 tokens), example 3 (~6 tokens)",
+  );
+});
+
+test.serial("validateTrainingData does not warn when the estimate equals maxSeqLength", (t) => {
+  saveTrainingData(
+    [{ messages: [{ role: "user", content: "x".repeat(15) }, { role: "assistant", content: "y" }] }],
+    false,
+  );
+
+  const result = validateTrainingData(SYSTEM_CTX, false, 4);
+
+  t.is(result.overlongExamples, 0);
+  t.false(result.warnings.some((w) => w.includes("maxSeqLength")));
+});
+
+test.serial("collectValidation reads maxSeqLength from the project config", (t) => {
+  writeFileSync(
+    join(TEST_DIR, ".nanotune", "config.json"),
+    JSON.stringify(
+      {
+        ...VALIDATE_CONFIG,
+        training: { maxSeqLength: 4 },
+      },
+      null,
+      2,
+    ),
+  );
+  appendToTrainingData(
+    { contextMessage: SYSTEM_CTX, userInput: "x".repeat(40), assistantOutput: "y" },
+    false,
+  );
+
+  const report = collectValidation();
+
+  t.true(report.valid);
+  t.false(report.checks.withinMaxSeqLength);
+  t.is(report.warnings.filter((w) => w.includes("example 1")).length, 1);
 });
 
 test.serial("collectValidation throws the init hint outside a project", (t) => {
