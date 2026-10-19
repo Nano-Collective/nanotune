@@ -129,6 +129,9 @@ export function appendTrainingExample(
 ): void {
 	ensureDataDir();
 	const path = isEval ? getEvalDataPath() : getTrainDataPath();
+	// Takes the data lock itself, and handles a hand-edited file that ends without
+	// a newline, which would otherwise glue this example onto the previous line.
+	// The journal means a crash mid-append is rolled back on the next read.
 	appendDatasetRecord(path, `${JSON.stringify(example)}\n`);
 }
 
@@ -169,16 +172,27 @@ export function saveTrainingData(
 		const path = isEval ? getEvalDataPath() : getTrainDataPath();
 		recoverDatasetAppend(path);
 		const content = `${examples.map(ex => JSON.stringify(ex)).join('\n')}\n`;
+		// Temp-file-and-rename: this rewrites the user's whole dataset, so a crash,
+		// a full disk or a kill between truncate and write would otherwise leave
+		// train.jsonl short of the examples it started with.
 		writeFileAtomic(path, content);
 	});
 }
 
+/**
+ * The read and the write have to be one step, or a process that appended,
+ * edited or deleted in between has its work overwritten by a file written from
+ * a snapshot taken before it. The callers below each wrap their own load and
+ * save; the lock here covers a direct save of its own.
+ */
 export function deleteExample(index: number, isEval: boolean): void {
-	const examples = loadTrainingData(isEval);
-	if (index >= 0 && index < examples.length) {
-		examples.splice(index, 1);
-		saveTrainingData(examples, isEval);
-	}
+	withDataLock(() => {
+		const examples = loadTrainingData(isEval);
+		if (index >= 0 && index < examples.length) {
+			examples.splice(index, 1);
+			saveTrainingData(examples, isEval);
+		}
+	});
 }
 
 export function updateTrainingExample(
@@ -186,11 +200,13 @@ export function updateTrainingExample(
 	example: TrainingExample,
 	isEval: boolean,
 ): void {
-	const examples = loadTrainingData(isEval);
-	if (index >= 0 && index < examples.length) {
-		examples[index] = example;
-		saveTrainingData(examples, isEval);
-	}
+	withDataLock(() => {
+		const examples = loadTrainingData(isEval);
+		if (index >= 0 && index < examples.length) {
+			examples[index] = example;
+			saveTrainingData(examples, isEval);
+		}
+	});
 }
 
 /**
@@ -321,6 +337,18 @@ export function countTurns(example: TrainingExample): number {
 	return turns;
 }
 
+/**
+ * The key by which two examples count as sharing an input: the first user-role
+ * message, trimmed and lowercased. Shared by the in-set duplicate warning and
+ * the train/validation overlap check so the two cannot disagree about what
+ * "the same input" means. Undefined for an example with no non-empty user
+ * message, which never matches anything.
+ */
+function inputKeyOf(example: TrainingExample): string | undefined {
+	const userMsg = example.messages.find(m => m.role === 'user');
+	return userMsg?.content?.trim().toLowerCase() || undefined;
+}
+
 export interface ValidationResult {
 	valid: boolean;
 	errors: string[];
@@ -334,11 +362,22 @@ export interface ValidationResult {
 	 */
 	duplicateInputs: number;
 	inconsistentContextMessages: number;
+	overlongExamples: number;
+}
+
+// chars/4, not the model tokenizer. Use the tokenizer if this misses real mlx failures.
+function estimateTokens(example: TrainingExample): number {
+	const chars = example.messages.reduce(
+		(n, message) => n + (message.content?.length ?? 0),
+		0,
+	);
+	return Math.ceil(chars / 4);
 }
 
 export function validateTrainingData(
 	contextMessage: ChatMessage,
 	isEval = false,
+	maxSeqLength = 2048,
 ): ValidationResult {
 	const warnings: string[] = [];
 	const {examples, errors} = parseTrainingData(isEval);
@@ -357,6 +396,7 @@ export function validateTrainingData(
 			warnings,
 			duplicateInputs: 0,
 			inconsistentContextMessages: 0,
+			overlongExamples: 0,
 		};
 	}
 
@@ -371,9 +411,14 @@ export function validateTrainingData(
 	const seenInputs = new Set<string>();
 	let duplicateCount = 0;
 	let inconsistentPromptCount = 0;
+	const overlong: {index: number; tokens: number}[] = [];
 
 	for (let i = 0; i < examples.length; i++) {
 		const ex = examples[i];
+		const tokens = estimateTokens(ex);
+		if (tokens > maxSeqLength) {
+			overlong.push({index: i + 1, tokens});
+		}
 
 		if (ex.messages.length < 2) {
 			errors.push(
@@ -413,8 +458,7 @@ export function validateTrainingData(
 		}
 
 		// Check duplicates based on user-role messages
-		const userMsg = ex.messages.find(m => m.role === 'user');
-		const inputKey = userMsg?.content?.trim().toLowerCase();
+		const inputKey = inputKeyOf(ex);
 		if (inputKey && seenInputs.has(inputKey)) {
 			duplicateCount++;
 		} else if (inputKey) {
@@ -432,12 +476,24 @@ export function validateTrainingData(
 		warnings.push(`${duplicateCount} duplicate user inputs found`);
 	}
 
+	if (overlong.length > 0) {
+		overlong.sort((a, b) => b.tokens - a.tokens || a.index - b.index);
+		const listed = overlong
+			.slice(0, 5)
+			.map(item => `example ${item.index} (~${item.tokens} tokens)`)
+			.join(', ');
+		warnings.push(
+			`${overlong.length} example${overlong.length === 1 ? '' : 's'} may be longer than maxSeqLength (${maxSeqLength}). Longest: ${listed}`,
+		);
+	}
+
 	return {
 		valid: errors.length === 0,
 		errors,
 		warnings,
 		duplicateInputs: duplicateCount,
 		inconsistentContextMessages: inconsistentPromptCount,
+		overlongExamples: overlong.length,
 	};
 }
 
@@ -455,28 +511,100 @@ export interface DedupeResult {
  * context message are left alone.
  */
 export function dedupeExamples(isEval: boolean): DedupeResult {
-	const examples = loadTrainingData(isEval);
-	const seen = new Set<string>();
-	const kept: TrainingExample[] = [];
-	const removedIndexes: number[] = [];
+	return withDataLock(() => {
+		const examples = loadTrainingData(isEval);
+		const seen = new Set<string>();
+		const kept: TrainingExample[] = [];
+		const removedIndexes: number[] = [];
 
-	examples.forEach((ex, i) => {
-		const key = JSON.stringify(
-			ex.messages.map(m => ({role: m.role, content: m.content})),
-		);
-		if (seen.has(key)) {
-			removedIndexes.push(i + 1);
-			return;
+		examples.forEach((ex, i) => {
+			const key = JSON.stringify(
+				ex.messages.map(m => ({role: m.role, content: m.content})),
+			);
+			if (seen.has(key)) {
+				removedIndexes.push(i + 1);
+				return;
+			}
+			seen.add(key);
+			kept.push(ex);
+		});
+
+		if (removedIndexes.length > 0) {
+			saveTrainingData(kept, isEval);
 		}
-		seen.add(key);
-		kept.push(ex);
+
+		return {removedCount: removedIndexes.length, removedIndexes};
+	});
+}
+
+export interface TrainValidOverlapResult {
+	/** Distinct normalized user inputs present in both sets. */
+	overlapCount: number;
+	/**
+	 * 1-based example numbers in train.jsonl whose input also appears in
+	 * valid.jsonl. Numbered the way `validateTrainingData` numbers examples -
+	 * the Nth parseable example, which is the Nth line only when every line
+	 * ahead of it parsed. A file with unparseable lines reports those
+	 * separately as errors.
+	 */
+	trainIndexes: number[];
+	/** The same, for the examples in valid.jsonl. */
+	validIndexes: number[];
+}
+
+/**
+ * Find user inputs present in both train.jsonl and valid.jsonl — data leakage,
+ * which makes validation loss look better than the model really is. The split
+ * produces disjoint sets, but the two files can drift apart afterwards (a
+ * hand-edit, a re-import, or an interrupted split that left a recoverable
+ * duplicate), so the overlap is recomputed from disk rather than assumed gone.
+ *
+ * Direction-agnostic: leakage is a property of the pair, so one intersection
+ * reports both sides' positions and the caller picks which to show. That also
+ * means `validate` and `validate --eval` cannot report different counts.
+ *
+ * Reads through parseTrainingData, not loadTrainingData: a malformed line is
+ * already reported as a structural error by that set's own validation, and must
+ * not make this check throw.
+ */
+export function findTrainValidOverlap(): TrainValidOverlapResult {
+	// A fresh object per return: callers own what they get, and sharing one
+	// literal would hand every no-overlap caller the same two arrays.
+	const none = (): TrainValidOverlapResult => ({
+		overlapCount: 0,
+		trainIndexes: [],
+		validIndexes: [],
 	});
 
-	if (removedIndexes.length > 0) {
-		saveTrainingData(kept, isEval);
+	const trainKeys = parseTrainingData(false).examples.map(inputKeyOf);
+	const validKeys = parseTrainingData(true).examples.map(inputKeyOf);
+
+	const validSet = new Set(validKeys.filter(k => k !== undefined));
+	if (validSet.size === 0) {
+		return none();
 	}
 
-	return {removedCount: removedIndexes.length, removedIndexes};
+	// Distinct shared inputs, not rows: an input repeated inside train.jsonl is
+	// the separate noDuplicateInputs check's business, and counting rows here
+	// would report the same leak twice.
+	const shared = new Set<string>();
+	for (const key of trainKeys) {
+		if (key !== undefined && validSet.has(key)) {
+			shared.add(key);
+		}
+	}
+	if (shared.size === 0) {
+		return none();
+	}
+
+	const positions = (keys: (string | undefined)[]): number[] =>
+		keys.flatMap((k, i) => (k !== undefined && shared.has(k) ? [i + 1] : []));
+
+	return {
+		overlapCount: shared.size,
+		trainIndexes: positions(trainKeys),
+		validIndexes: positions(validKeys),
+	};
 }
 
 export interface ContextFixResult {
@@ -493,34 +621,36 @@ export function fixContextMessages(
 	contextMessage: ChatMessage,
 	isEval: boolean,
 ): ContextFixResult {
-	const examples = loadTrainingData(isEval);
-	let fixedCount = 0;
+	return withDataLock(() => {
+		const examples = loadTrainingData(isEval);
+		let fixedCount = 0;
 
-	const updated = examples.map(ex => {
-		const first = ex.messages[0];
-		if (!first || first.role === 'user' || first.role === 'assistant') {
-			return ex;
+		const updated = examples.map(ex => {
+			const first = ex.messages[0];
+			if (!first || first.role === 'user' || first.role === 'assistant') {
+				return ex;
+			}
+			if (
+				first.role === contextMessage.role &&
+				first.content === contextMessage.content
+			) {
+				return ex;
+			}
+			fixedCount++;
+			return {
+				messages: [
+					{role: contextMessage.role, content: contextMessage.content},
+					...ex.messages.slice(1),
+				],
+			};
+		});
+
+		if (fixedCount > 0) {
+			saveTrainingData(updated, isEval);
 		}
-		if (
-			first.role === contextMessage.role &&
-			first.content === contextMessage.content
-		) {
-			return ex;
-		}
-		fixedCount++;
-		return {
-			messages: [
-				{role: contextMessage.role, content: contextMessage.content},
-				...ex.messages.slice(1),
-			],
-		};
+
+		return {fixedCount};
 	});
-
-	if (fixedCount > 0) {
-		saveTrainingData(updated, isEval);
-	}
-
-	return {fixedCount};
 }
 
 /** Counts of the repairs `--fix` and `--rewrite-context` actually made. */
@@ -536,8 +666,16 @@ export interface ValidationChecks {
 	validJsonStructure: boolean;
 	contextMessageConsistency: boolean;
 	noDuplicateInputs: boolean;
+	/**
+	 * True when no user input appears in both train.jsonl and valid.jsonl.
+	 * Reported for both sets: leakage is a property of the pair, so `--eval`
+	 * flags the same condition from the validation side.
+	 */
+	noTrainValidOverlap: boolean;
 	/** Always true for a validation set — the 50-example floor is a training-set rule. */
 	minimumExampleCount: boolean;
+	/** True when no example's character estimate exceeds training.maxSeqLength. */
+	withinMaxSeqLength: boolean;
 }
 
 /** Everything `nanotune data validate` reports, as data. */
@@ -547,6 +685,12 @@ export interface ValidationReport {
 	valid: boolean;
 	errors: string[];
 	warnings: string[];
+	/**
+	 * Distinct user inputs present in both train.jsonl and valid.jsonl. The
+	 * count behind the leakage warning; `checks.noTrainValidOverlap` is derived
+	 * from this, never from the warning prose.
+	 */
+	trainValidOverlap: number;
 	checks: ValidationChecks;
 	/** Null unless `--fix` or `--rewrite-context` ran. */
 	fixes: ValidationFixes | null;
@@ -572,44 +716,77 @@ export function collectValidation({
 	rewriteContext = false,
 	isEval = false,
 }: ValidationOptions = {}): ValidationReport {
-	const contextMessage = resolveContextMessage(loadConfig());
+	const config = loadConfig();
+	const contextMessage = resolveContextMessage(config);
+	// The repairs and the report they justify are one locked step. Held
+	// separately, a process that writes in between makes
+	// `fixes.duplicatesRemoved` describe a state that is no longer on disk.
+	return withDataLock(() => {
+		// Rewrite context first: examples that only become identical after context
+		// normalization must still be caught by dedupe in this pass.
+		const contextFix = rewriteContext
+			? fixContextMessages(contextMessage, isEval)
+			: null;
+		const dedupe = fix ? dedupeExamples(isEval) : null;
 
-	// Rewrite context first: examples that only become identical after context
-	// normalization must still be caught by dedupe in this pass.
-	const contextFix = rewriteContext
-		? fixContextMessages(contextMessage, isEval)
-		: null;
-	const dedupe = fix ? dedupeExamples(isEval) : null;
+		// Count and validate after the fixes, so the report describes the data
+		// actually left on disk rather than the state it was in on entry.
+		const examples = countExamples(isEval);
+		const result = validateTrainingData(
+			contextMessage,
+			isEval,
+			config.training.maxSeqLength,
+		);
 
-	// Count and validate after the fixes, so the report describes the data
-	// actually left on disk rather than the state it was in on entry.
-	const examples = countExamples(isEval);
-	const result = validateTrainingData(contextMessage, isEval);
+		// Cross-file, so it lives here rather than in validateTrainingData, which is
+		// single-set by contract and early-returns on an empty set - skipping the
+		// check exactly when one of the two files is empty. Computed after the
+		// fixes, like the counts above, so the report describes what is on disk.
+		const overlap = findTrainValidOverlap();
+		const warnings = [...result.warnings];
+		if (overlap.overlapCount > 0) {
+			const file = isEval ? EVAL_FILE : TRAIN_FILE;
+			// rows.length counts this file's rows; overlapCount counts distinct
+			// inputs across both files. One input can occupy several rows here.
+			const rows = isEval ? overlap.validIndexes : overlap.trainIndexes;
+			// Truncated: a badly diverged pair of files would otherwise flood the
+			// warning list with row numbers.
+			const shown = rows.slice(0, 5).join(', ');
+			const more = rows.length > 5 ? ', ...' : '';
+			const plural = overlap.overlapCount > 1;
+			warnings.push(
+				`${overlap.overlapCount} user input${plural ? 's' : ''} appear${plural ? '' : 's'} in both ${TRAIN_FILE} and ${EVAL_FILE} (data leakage) - ${file} example${rows.length > 1 ? 's' : ''} ${shown}${more}`,
+			);
+		}
 
-	return {
-		set: isEval ? 'eval' : 'train',
-		examples,
-		valid: result.valid,
-		errors: result.errors,
-		warnings: result.warnings,
-		checks: {
-			dataFileExists: examples > 0,
-			validJsonStructure: result.errors.length === 0,
-			contextMessageConsistency: result.inconsistentContextMessages === 0,
-			noDuplicateInputs: result.duplicateInputs === 0,
-			// A validation set is a slice of the training data, so the 50-example
-			// floor does not apply to it — matching the rule `validateTrainingData`
-			// already uses when deciding whether to warn.
-			minimumExampleCount: isEval || examples >= 50,
-		},
-		fixes:
-			contextFix || dedupe
-				? {
-						duplicatesRemoved: dedupe?.removedCount ?? 0,
-						contextMessagesRewritten: contextFix?.fixedCount ?? 0,
-					}
-				: null,
-	};
+		return {
+			set: isEval ? 'eval' : 'train',
+			examples,
+			valid: result.valid,
+			errors: result.errors,
+			warnings,
+			trainValidOverlap: overlap.overlapCount,
+			checks: {
+				dataFileExists: examples > 0,
+				validJsonStructure: result.errors.length === 0,
+				contextMessageConsistency: result.inconsistentContextMessages === 0,
+				noDuplicateInputs: result.duplicateInputs === 0,
+				noTrainValidOverlap: overlap.overlapCount === 0,
+				// A validation set is a slice of the training data, so the 50-example
+				// floor does not apply to it — matching the rule `validateTrainingData`
+				// already uses when deciding whether to warn.
+				minimumExampleCount: isEval || examples >= 50,
+				withinMaxSeqLength: result.overlongExamples === 0,
+			},
+			fixes:
+				contextFix || dedupe
+					? {
+							duplicatesRemoved: dedupe?.removedCount ?? 0,
+							contextMessagesRewritten: contextFix?.fixedCount ?? 0,
+						}
+					: null,
+		};
+	});
 }
 
 export interface ImportResult {
@@ -714,11 +891,40 @@ export interface ImportCSVOptions {
 	headerless?: boolean;
 }
 
+/**
+ * `isEval` is required — never defaulted — on every helper that writes into the
+ * dataset: a caller that forgets it silently appends to, or overwrites, the
+ * wrong file. Read-only helpers keep the `isEval = false` default, where a
+ * missing flag shows the wrong set but destroys nothing.
+ *
+ * The importers take the lock for their whole run rather than per appended row.
+ * Held per row, a split starting halfway through an import would put the rows
+ * imported before it in valid.jsonl and the rows after it in train.jsonl - an
+ * import silently turning into part of the validation set. The cost is that a
+ * `/keep` or a `data list` waits for a long import to finish, which is reported
+ * by the wait ending rather than by anything on screen: every caller here is an
+ * Ink command that owns the terminal, so there is nowhere to draw a message.
+ *
+ * An import is still not transactional. A bad row, a full disk or a Ctrl+C
+ * leaves the rows already written in place, which is what the imported/skipped
+ * counts describe and what a user re-running the file expects.
+ */
 export function importFromCSV(
 	filePath: string,
 	contextMessage: ChatMessage,
 	isEval: boolean,
 	options: ImportCSVOptions = {},
+): ImportResult {
+	return withDataLock(() =>
+		runCSVImport(filePath, contextMessage, isEval, options),
+	);
+}
+
+function runCSVImport(
+	filePath: string,
+	contextMessage: ChatMessage,
+	isEval: boolean,
+	options: ImportCSVOptions,
 ): ImportResult {
 	const errors: string[] = [];
 	let imported = 0;
@@ -776,6 +982,14 @@ export function importFromCSV(
 }
 
 export function importFromJSONL(
+	filePath: string,
+	contextMessage: ChatMessage,
+	isEval: boolean,
+): ImportResult {
+	return withDataLock(() => runJSONLImport(filePath, contextMessage, isEval));
+}
+
+function runJSONLImport(
 	filePath: string,
 	contextMessage: ChatMessage,
 	isEval: boolean,
@@ -839,6 +1053,14 @@ export function importFromJSONL(
 }
 
 export function importFromJSON(
+	filePath: string,
+	contextMessage: ChatMessage,
+	isEval: boolean,
+): ImportResult {
+	return withDataLock(() => runJSONImport(filePath, contextMessage, isEval));
+}
+
+function runJSONImport(
 	filePath: string,
 	contextMessage: ChatMessage,
 	isEval: boolean,
@@ -1041,6 +1263,17 @@ export function splitTrainValidation(
 	validationRatio = 0.1,
 	seed?: number,
 ): {trainCount: number; validCount: number} {
+	// A split reads the whole dataset and writes both halves back. An append
+	// that lands while it runs goes to the file the rename then replaces, and
+	// that example is gone with no error anywhere. The lock covers the read and
+	// both writes.
+	return withDataLock(() => runSplit(validationRatio, seed));
+}
+
+function runSplit(
+	validationRatio: number,
+	seed: number | undefined,
+): {trainCount: number; validCount: number} {
 	const allExamples = loadTrainingData();
 
 	if (allExamples.length === 0) {
@@ -1079,19 +1312,24 @@ export function ensureValidationSet(seed?: number): {
 	validCount: number;
 	didSplit: boolean;
 } {
-	const validCount = countExamples(true);
-	const trainCount = countExamples(false);
+	// The count and the split have to be one decision. Read separately, two
+	// `nanotune train` runs on a fresh project both see no validation set, both
+	// split, and the second quietly discards the first's.
+	return withDataLock(() => {
+		const validCount = countExamples(true);
+		const trainCount = countExamples(false);
 
-	if (validCount === 0 && trainCount > 0) {
-		// No validation set - create one by splitting.
-		const result = splitTrainValidation(0.1, seed);
-		// A single example cannot be split, so valid.jsonl stays empty and the
-		// next call lands here again. Reporting didSplit for that no-op would
-		// repeat "Split 1 examples into 1 train / 0 validation." on every run.
-		return {...result, didSplit: result.validCount > 0};
-	}
+		if (validCount === 0 && trainCount > 0) {
+			// No validation set - create one by splitting.
+			const result = splitTrainValidation(0.1, seed);
+			// A single example cannot be split, so valid.jsonl stays empty and the
+			// next call lands here again. Reporting didSplit for that no-op would
+			// repeat "Split 1 examples into 1 train / 0 validation." on every run.
+			return {...result, didSplit: result.validCount > 0};
+		}
 
-	return {trainCount, validCount, didSplit: false};
+		return {trainCount, validCount, didSplit: false};
+	});
 }
 
 /**

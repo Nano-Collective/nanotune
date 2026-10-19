@@ -1,6 +1,7 @@
 import {
 	type Dirent,
 	existsSync,
+	linkSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
@@ -422,17 +423,23 @@ export function sweepStaleAtomicWrites(dir: string): void {
  * crash) skips that cleanup; a sweep of dead-pid leftovers for this target is
  * done up front so the next run heals the last one.
  * Set flush for recovery metadata that must reach disk before publication.
+ * With overwrite disabled, publish via a hard link instead: this atomically
+ * refuses an existing destination, preserving files created by another writer.
  */
 export function writeFileAtomic(
 	path: string,
 	contents: string | Uint8Array,
-	options: {flush?: boolean} = {},
+	options: {flush?: boolean; overwrite?: boolean} = {},
 ): void {
 	removeStaleTemps(dirname(path), `${basename(path)}.tmp-`);
 	const tmp = `${path}.tmp-${process.pid}`;
 	try {
 		writeFileSync(tmp, contents, {flush: options.flush ?? false});
-		renameSync(tmp, path);
+		if (options.overwrite === false) {
+			linkSync(tmp, path);
+		} else {
+			renameSync(tmp, path);
+		}
 	} finally {
 		rmSync(tmp, {force: true});
 	}
@@ -444,8 +451,8 @@ models/
 benchmarks/
 runs/
 chats/
-judge.json*
 data.lock/
+judge.json*
 data/*.append-journal.json
 data/quarantine/
 `;
@@ -457,8 +464,17 @@ data/quarantine/
  * added to this list over time and a project keeps whatever .gitignore it was
  * initialised with: one from 1.3.x or earlier has no judge.json line at all,
  * and one from 1.4.0-1.6.x has a bare `judge.json` that misses the
- * judge.json.tmp an interrupted save leaves behind. Both of those files can
- * hold a literal API key that `git add .` would commit.
+ * temporary files an interrupted save leaves behind (`judge.json.tmp` in
+ * older versions, `judge.json.tmp-<UUID>` now). These files can hold a literal
+ * API key that `git add .` would commit.
+ *
+ * `data.lock/` is the lock taken while writing the dataset. It needs its own
+ * line because a gitignore pattern is a whole name, not a prefix - nothing
+ * already listed would match it - so without it every command that writes
+ * leaves an untracked directory in the user's `git status`.
+ *
+ * The append journal and quarantine are recovery state written beside the
+ * dataset. They are local scratch, not training data, so they stay out of git.
  */
 export function ensureProjectGitignore(): void {
 	mkdirSync(getProjectDir(), {recursive: true});

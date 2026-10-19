@@ -432,6 +432,30 @@ test("waitForServerOrExit still times out when the child stays up but never answ
 	await stopLlamaServer(handle);
 });
 
+// Serial: it swaps the global fetch and counts its calls, so no other test may
+// poll /health at the same time.
+test.serial("waitForServerOrExit stops polling /health once the child has exited", async (t) => {
+	// Promise.race ignores the loser rather than cancelling it, so the health
+	// poll used to keep hitting the dead port until its own startup timeout.
+	let polls = 0;
+	await withMockFetch(
+		() => {
+			polls += 1;
+			return Promise.reject(new Error("ECONNREFUSED"));
+		},
+		async () => {
+			const handle = createServerHandle(1, spawnChild("process.exit(1)"));
+			await t.throwsAsync(waitForServerOrExit(1, handle.exited, 5000));
+			const pollsAtExit = polls;
+
+			// Several poll intervals (250ms) — a leaked loop would keep counting.
+			await new Promise((resolve) => setTimeout(resolve, 800));
+
+			t.is(polls, pollsAtExit);
+		},
+	);
+});
+
 // ── chatCompletionStream ──────────────────────────────────────────────
 
 const enc = new TextEncoder();

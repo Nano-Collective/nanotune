@@ -1091,6 +1091,33 @@ test.serial("writeFileAtomic replaces an existing file", (t) => {
   }
 });
 
+test.serial("writeFileAtomic can publish a new file without replacing existing files", (t) => {
+  setupBenchTest();
+  try {
+    const dir = ensureBenchmarksDir();
+    const path = join(dir, "README.md");
+    writeFileAtomic(path, "Complete model card\n", {overwrite: false});
+    t.is(readFileSync(path, "utf-8"), "Complete model card\n");
+    t.deepEqual(readdirSync(dir), ["README.md"]);
+  } finally {
+    teardownBenchTest();
+  }
+});
+
+test.serial("writeFileAtomic preserves the destination and cleans up after create-only publication fails", (t) => {
+  setupBenchTest();
+  try {
+    const dir = ensureBenchmarksDir();
+    const path = join(dir, "README.md");
+    writeFileSync(path, "User documentation\n");
+    t.throws(() => writeFileAtomic(path, "Generated card\n", {overwrite: false}), {code: "EEXIST"});
+    t.is(readFileSync(path, "utf-8"), "User documentation\n");
+    t.deepEqual(readdirSync(dir), ["README.md"]);
+  } finally {
+    teardownBenchTest();
+  }
+});
+
 test.serial("writeFileAtomic cleans up its temp file when the rename fails", (t) => {
   setupBenchTest();
   try {
@@ -1229,11 +1256,29 @@ test.serial("initializeProjectDirs writes the full .gitignore for a new project"
       "benchmarks/",
       "runs/",
       "chats/",
-      "judge.json*",
       "data.lock/",
+      "judge.json*",
       "data/*.append-journal.json",
       "data/quarantine/",
     ]);
+  } finally {
+    teardownBenchTest();
+  }
+});
+
+test.serial("initializeProjectDirs back-fills the .gitignore: adds data.lock/ to a project created before it", (t) => {
+  setupBenchTest();
+  try {
+    // The lock is taken by every command that writes the dataset, and no entry
+    // already listed would match it: a gitignore pattern is a whole name, not a
+    // prefix. Without this line each write leaves an untracked directory.
+    writeExistingGitignore("# Nanotune project artifacts\nadapters/\nchats/\n");
+
+    initializeProjectDirs();
+
+    const lines = gitignoreLines();
+    t.true(lines.includes("data.lock/"));
+    t.true(lines.includes("chats/"));
   } finally {
     teardownBenchTest();
   }

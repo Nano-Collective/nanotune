@@ -29,8 +29,26 @@ import {
 	installLlamaCpp,
 } from '../lib/llama-cpp.js';
 import {fuseAdapters} from '../lib/mlx.js';
+import {writeModelCard} from '../lib/model-card.js';
 import {assertSupportedPlatform} from '../lib/platform.js';
 import type {QuantizationType} from '../types/index.js';
+
+const exportDependencies = {
+	assertSupportedPlatform,
+	checkLlamaCppInstalled,
+	installLlamaCpp,
+	fuseAdapters,
+	exportModel,
+	writeModelCard,
+};
+
+type ExportDependencies = Omit<typeof exportDependencies, 'writeModelCard'> & {
+	writeModelCard: (
+		...args: Parameters<typeof writeModelCard>
+	) =>
+		| ReturnType<typeof writeModelCard>
+		| Promise<ReturnType<typeof writeModelCard>>;
+};
 
 interface Props {
 	options: {
@@ -38,6 +56,7 @@ interface Props {
 		output?: string;
 		skipFuse?: boolean;
 	};
+	dependencies?: ExportDependencies;
 }
 
 type Status =
@@ -45,27 +64,37 @@ type Status =
 	| 'installing'
 	| 'fusing'
 	| 'converting'
+	| 'documenting'
 	| 'done'
 	| 'error';
 
 interface Step {
 	name: string;
-	status: 'pending' | 'running' | 'done' | 'error';
+	status: 'pending' | 'running' | 'done' | 'error' | 'warning';
 }
 
-export function ExportCommand({options}: Props) {
+export function ExportCommand({
+	options,
+	dependencies = exportDependencies,
+}: Props) {
 	const {exit} = useApp();
 	const [status, setStatus] = useState<Status>('checking');
 	const [error, setError] = useState<string | null>(null);
 	const [progress, setProgress] = useState(0);
 	const [currentStep, setCurrentStep] = useState('');
 	const [outputPath, setOutputPath] = useState<string | null>(null);
+	const [modelCardWarning, setModelCardWarning] = useState<string | null>(null);
+	const [modelCard, setModelCard] = useState<{
+		path: string;
+		created: boolean;
+	} | null>(null);
 	const [fileSize, setFileSize] = useState<string | null>(null);
 	const [fusedCacheInfo, setFusedCacheInfo] = useState<string | null>(null);
 	const [steps, setSteps] = useState<Step[]>([
 		{name: 'Fusing adapters', status: 'pending'},
 		{name: 'Converting to GGUF', status: 'pending'},
 		{name: 'Quantizing', status: 'pending'},
+		{name: 'Writing model card', status: 'pending'},
 	]);
 
 	useKeyInput((_input, key) => {
@@ -86,7 +115,7 @@ export function ExportCommand({options}: Props) {
 		try {
 			// Fail fast on unsupported hardware rather than after a multi-minute
 			// adapter fuse, when the llama.cpp download finds no matching asset.
-			assertSupportedPlatform();
+			dependencies.assertSupportedPlatform();
 
 			// Check project exists
 			if (!configExists()) {
@@ -123,10 +152,10 @@ export function ExportCommand({options}: Props) {
 
 			// Check llama.cpp
 			setStatus('checking');
-			const hasLlamaCpp = await checkLlamaCppInstalled();
+			const hasLlamaCpp = await dependencies.checkLlamaCppInstalled();
 			if (!hasLlamaCpp) {
 				setStatus('installing');
-				for await (const msg of installLlamaCpp()) {
+				for await (const msg of dependencies.installLlamaCpp()) {
 					setCurrentStep(msg);
 				}
 			}
@@ -145,7 +174,11 @@ export function ExportCommand({options}: Props) {
 				setCurrentStep('Fusing adapters with base model...');
 				setProgress(10);
 
-				await fuseAdapters(config.baseModel, adaptersDir, fusedModelPath);
+				await dependencies.fuseAdapters(
+					config.baseModel,
+					adaptersDir,
+					fusedModelPath,
+				);
 
 				updateStep(0, 'done');
 				setProgress(33);
@@ -158,7 +191,7 @@ export function ExportCommand({options}: Props) {
 			setStatus('converting');
 			updateStep(1, 'running');
 
-			for await (const update of exportModel(
+			for await (const update of dependencies.exportModel(
 				fusedModelPath,
 				finalOutputPath,
 				quantization,
@@ -175,9 +208,28 @@ export function ExportCommand({options}: Props) {
 				} else if (update.progress === 100) {
 					updateStep(1, 'done');
 					updateStep(2, 'done');
-					setProgress(100);
+					setProgress(95);
 				}
 			}
+
+			setStatus('documenting');
+			updateStep(3, 'running');
+			setCurrentStep('Writing model card...');
+			try {
+				setModelCard(
+					await dependencies.writeModelCard(
+						config,
+						finalOutputPath,
+						quantization,
+					),
+				);
+				updateStep(3, 'done');
+			} catch (err) {
+				const reason = err instanceof Error ? err.message : String(err);
+				setModelCardWarning(`Model card could not be written: ${reason}`);
+				updateStep(3, 'warning');
+			}
+			setProgress(100);
 
 			// Get file size
 			if (existsSync(finalOutputPath)) {
@@ -197,7 +249,13 @@ export function ExportCommand({options}: Props) {
 			setError(err instanceof Error ? err.message : 'Export failed');
 			setStatus('error');
 		}
-	}, [options.quantization, options.output, options.skipFuse, updateStep]);
+	}, [
+		options.quantization,
+		options.output,
+		options.skipFuse,
+		updateStep,
+		dependencies,
+	]);
 
 	useEffect(() => {
 		run();
@@ -244,7 +302,9 @@ export function ExportCommand({options}: Props) {
 				</Box>
 			)}
 
-			{(status === 'fusing' || status === 'converting') && (
+			{(status === 'fusing' ||
+				status === 'converting' ||
+				status === 'documenting') && (
 				<Box flexDirection="column">
 					<Box flexDirection="column" marginBottom={1}>
 						{steps.map((step, i) => (
@@ -256,12 +316,15 @@ export function ExportCommand({options}: Props) {
 									{step.status === 'running' && <Spinner />}
 									{step.status === 'done' && <StatusBadge status="success" />}
 									{step.status === 'error' && <StatusBadge status="error" />}
+									{step.status === 'warning' && (
+										<StatusBadge status="warning" />
+									)}
 								</Box>
 								<Text
 									color={step.status === 'running' ? 'yellow' : undefined}
 									dimColor={step.status === 'pending'}
 								>
-									Step {i + 1}/3: {step.name}
+									Step {i + 1}/{steps.length}: {step.name}
 								</Text>
 							</Box>
 						))}
@@ -280,6 +343,15 @@ export function ExportCommand({options}: Props) {
 					<Text>
 						Output: <Text color="cyan">{outputPath}</Text>
 					</Text>
+					{modelCard && (
+						<Text>
+							Model card: <Text color="cyan">{modelCard.path}</Text>
+							{!modelCard.created && ' (existing README preserved)'}
+						</Text>
+					)}
+					{modelCardWarning && (
+						<StatusMessage variant="warning">{modelCardWarning}</StatusMessage>
+					)}
 					{fileSize && (
 						<Text>
 							Size: <Text color="cyan">{fileSize}</Text>

@@ -23,6 +23,8 @@
 		"test:ava": "ava",
 		"test:ava:coverage": "c8 ava",
 		"test:knip": "knip",
+		"test:lock": "ava src/lib/data-lock.spec.ts src/lib/data-concurrency.spec.ts src/lib/config.spec.ts",
+		"verify:data-lock": "pnpm test:lint && pnpm test:types && pnpm test:knip && pnpm build && pnpm test:lock",
 		"test:all": "pnpm test:lint && pnpm test:format && pnpm test:types && pnpm test:knip && pnpm test:security && pnpm test:audit && pnpm test:ava",
 		"test:security": "semgrep scan --config auto --error",
 		"test:audit": "pnpm audit --audit-level=high",
