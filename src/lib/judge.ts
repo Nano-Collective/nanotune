@@ -1,5 +1,8 @@
+import {randomUUID} from 'node:crypto';
 import {
+	closeSync,
 	existsSync,
+	openSync,
 	readFileSync,
 	renameSync,
 	rmSync,
@@ -97,20 +100,24 @@ export function loadJudgeConfig(): JudgeProviderConfig {
 export function saveJudgeConfig(config: JudgeProviderConfig): void {
 	initializeProjectDirs();
 	const path = getJudgeConfigPath();
-	const tmp = `${path}.tmp`;
-	// Clear a temp left behind by a process that died between write and
-	// rename. Without this the `wx` below would fail with EEXIST on every
-	// subsequent save.
-	rmSync(tmp, {force: true});
+	// Each save owns its temp, including when multiple processes save at once.
+	// Never remove another writer's temp: it may still be about to rename it.
+	const tmp = `${path}.tmp-${randomUUID()}`;
 	// `wx` is O_CREAT|O_EXCL: it guarantees a brand new inode, which is what
 	// makes open(2) honour `mode` — it ignores mode for a file that already
 	// exists. It also means we fail outright rather than write the key into a
 	// file someone else put there.
-	writeFileSync(tmp, JSON.stringify(config, null, 2), {
-		mode: 0o600,
-		flag: 'wx',
-	});
-	renameSync(tmp, path);
+	const fd = openSync(tmp, 'wx', 0o600);
+	try {
+		try {
+			writeFileSync(fd, JSON.stringify(config, null, 2));
+		} finally {
+			closeSync(fd);
+		}
+		renameSync(tmp, path);
+	} finally {
+		rmSync(tmp, {force: true});
+	}
 }
 
 /** Resolve criteria names to full JudgeCriteria objects */
