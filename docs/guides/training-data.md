@@ -113,6 +113,7 @@ This checks for:
 - Valid JSON structure
 - Required fields present
 - No duplicate examples
+- No overlap between `train.jsonl` and `valid.jsonl` (data leakage)
 - Context message consistency
 - Minimum example count
 - Consecutive same-role messages (broken turn alternation)
