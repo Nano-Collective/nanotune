@@ -24,19 +24,23 @@ import {
 	tryLoadConfig,
 } from '../lib/config.js';
 import {
+	checkConvertDependencies,
 	checkLlamaCppInstalled,
 	exportModel,
+	installConvertDependencies,
 	installLlamaCpp,
 } from '../lib/llama-cpp.js';
 import {fuseAdapters} from '../lib/mlx.js';
 import {writeModelCard} from '../lib/model-card.js';
 import {assertSupportedPlatform} from '../lib/platform.js';
-import type {QuantizationType} from '../types/index.js';
+import {QUANTIZATION_TYPES, type QuantizationType} from '../types/index.js';
 
 const exportDependencies = {
 	assertSupportedPlatform,
 	checkLlamaCppInstalled,
 	installLlamaCpp,
+	checkConvertDependencies,
+	installConvertDependencies,
 	fuseAdapters,
 	exportModel,
 	writeModelCard,
@@ -97,8 +101,19 @@ export function ExportCommand({
 		{name: 'Writing model card', status: 'pending'},
 	]);
 
-	useKeyInput((_input, key) => {
-		if (key.escape || key.return) {
+	// Ctrl+C stops the process; see BenchmarkCommand. Escape and Enter leave
+	// only once the export has finished, never in the middle of fusing.
+	useKeyInput((input, key) => {
+		if (key.ctrl && input === 'c') {
+			// Children are killed on exit: execa's default `cleanup` does it for
+			// every process it spawned, the fuse, converter and quantizer included, even through
+			// process.exit().
+			process.exit(130);
+		}
+		if (
+			(status === 'done' || status === 'error') &&
+			(key.escape || key.return)
+		) {
 			exit();
 		}
 	});
@@ -120,6 +135,21 @@ export function ExportCommand({
 			// Check project exists
 			if (!configExists()) {
 				setError('Not a Nanotune project. Run `nanotune init` first.');
+				setStatus('error');
+				return;
+			}
+
+			// An unknown quantization is only noticed by llama-quantize, at the
+			// very end, after the adapter has been fused and converted.
+			if (
+				options.quantization !== undefined &&
+				!(QUANTIZATION_TYPES as readonly string[]).includes(
+					options.quantization,
+				)
+			) {
+				setError(
+					`Invalid --quantization "${options.quantization}": expected one of ${QUANTIZATION_TYPES.join(', ')}.`,
+				);
 				setStatus('error');
 				return;
 			}
@@ -156,6 +186,15 @@ export function ExportCommand({
 			if (!hasLlamaCpp) {
 				setStatus('installing');
 				for await (const msg of dependencies.installLlamaCpp()) {
+					setCurrentStep(msg);
+				}
+			}
+
+			// The convert script needs PyTorch, which `mlx-lm` does not install.
+			// Find that out now, not after a multi-minute fuse.
+			if (!(await dependencies.checkConvertDependencies())) {
+				setStatus('installing');
+				for await (const msg of dependencies.installConvertDependencies()) {
 					setCurrentStep(msg);
 				}
 			}

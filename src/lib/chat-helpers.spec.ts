@@ -170,10 +170,12 @@ test("buildServerOptions: preset wins over individual flags", (t) => {
 	t.is(result.ctxSize, 2048);
 });
 
-test("buildServerOptions: unknown preset falls back to individual flags", (t) => {
-	const result = buildServerOptions({ preset: "nonexistent", threads: "12" });
-	t.is(result.threads, 12);
-	t.is(result.ctxSize, 4096); // default, since preset lookup missed
+test("buildServerOptions: an unknown preset is rejected, as it is for benchmark", (t) => {
+	// It used to fall back silently to the individual flags, so a typo'd
+	// --preset ran with whatever the defaults happened to be.
+	t.throws(() => buildServerOptions({ preset: "nonexistent", threads: "12" }), {
+		message: "Invalid preset: nonexistent. Valid presets: low, medium, high, ultra",
+	});
 });
 
 // ── buildGenerateOptions ──────────────────────────────────────────────
@@ -468,4 +470,50 @@ test.serial("saveTranscript ends the file with a newline", (t) => {
 		const path = saveTranscript(SYSTEM, HISTORY, "session.json");
 		t.true(readFileSync(path, "utf-8").endsWith("}\n]\n"));
 	});
+});
+
+// ── numeric flag validation ───────────────────────────────────────────
+
+test("buildServerOptions rejects a partly numeric flag instead of truncating it", (t) => {
+	t.throws(() => buildServerOptions({ ctxSize: "4096x" }), {
+		message: 'Invalid --ctx-size "4096x": expected a non-negative integer.',
+	});
+});
+
+test("buildServerOptions rejects an unparseable flag instead of passing NaN to llama-server", (t) => {
+	t.throws(() => buildServerOptions({ gpuLayers: "abc" }), { message: /Invalid --gpu-layers "abc"/ });
+	t.throws(() => buildServerOptions({ threads: "0" }), { message: /Invalid --threads "0"/ });
+	t.throws(() => buildServerOptions({ batchSize: "-4" }), { message: /Invalid --batch-size "-4"/ });
+});
+
+test("buildServerOptions still checks a flag that a --preset will override", (t) => {
+	t.throws(() => buildServerOptions({ preset: "low", threads: "x" }), { message: /Invalid --threads "x"/ });
+});
+
+test("buildServerOptions accepts 0 for --ctx-size, which llama-server reads as the model's own size", (t) => {
+	t.is(buildServerOptions({ ctxSize: "0" }).ctxSize, 0);
+});
+
+test("buildServerOptions rejects an unknown preset rather than ignoring it", (t) => {
+	t.throws(() => buildServerOptions({ preset: "bogus" }), {
+		message: "Invalid preset: bogus. Valid presets: low, medium, high, ultra",
+	});
+});
+
+test("buildGenerateOptions rejects values llama-server would silently replace with its defaults", (t) => {
+	// NaN in a JSON body becomes null, which llama-server reads as "not given".
+	t.throws(() => buildGenerateOptions({ temperature: "abc" }), { message: /Invalid --temperature "abc"/ });
+	t.throws(() => buildGenerateOptions({ temperature: "-1" }), { message: /Invalid --temperature "-1"/ });
+	t.throws(() => buildGenerateOptions({ topP: "7" }), { message: /Invalid --top-p "7": expected a number between 0 and 1/ });
+	t.throws(() => buildGenerateOptions({ maxTokens: "-5" }), { message: /Invalid --max-tokens "-5"/ });
+	t.throws(() => buildGenerateOptions({ maxTokens: "10.5" }), { message: /Invalid --max-tokens "10.5"/ });
+	t.throws(() => buildGenerateOptions({ seed: "1.5" }), { message: /Invalid --seed "1.5"/ });
+});
+
+test("buildGenerateOptions keeps accepting sensible values", (t) => {
+	t.deepEqual(
+		buildGenerateOptions({ maxTokens: "33", temperature: "0.3", topP: "0.5", seed: "9" }),
+		{ maxTokens: 33, temperature: 0.3, topP: 0.5, seed: 9 },
+	);
+	t.is(buildGenerateOptions({ temperature: "0" }).temperature, 0);
 });

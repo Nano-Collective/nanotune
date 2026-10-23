@@ -15,6 +15,7 @@ import {
 } from '../../lib/config.js';
 import {
 	countTurns,
+	describeEmptyImport,
 	type ImportResult,
 	importData,
 	loadTrainingData,
@@ -81,6 +82,14 @@ export function DataImportCommand({
 			);
 
 			setResult(importResult);
+			// An import that brought nothing in is a failure, not a success with
+			// a footnote: nothing changed, and the exit code has to say so.
+			const failure = describeEmptyImport(importResult, file);
+			if (failure) {
+				setError(failure);
+				setStatus('error');
+				return;
+			}
 			setStatus('done');
 		} catch (err) {
 			setError(err instanceof Error ? err.message : 'Import failed');
@@ -109,6 +118,23 @@ export function DataImportCommand({
 	});
 
 	useAutoExit(status === 'done' || status === 'error', status === 'error');
+
+	// Per-row problems, shown after a partial import and under the failure
+	// message when every row was rejected.
+	const warnings =
+		result && result.errors.length > 0 ? (
+			<Box flexDirection="column" marginTop={1}>
+				<Text color="yellow">Warnings:</Text>
+				{result.errors.slice(0, 5).map((e, i) => (
+					<Text key={i} dimColor>
+						- {e}
+					</Text>
+				))}
+				{result.errors.length > 5 && (
+					<Text dimColor>... and {result.errors.length - 5} more</Text>
+				)}
+			</Box>
+		) : null;
 
 	if (!configExists()) {
 		return (
@@ -169,19 +195,7 @@ export function DataImportCommand({
 							Skipped: <Text color="yellow">{result.skipped}</Text>
 						</Text>
 					)}
-					{result.errors.length > 0 && (
-						<Box flexDirection="column" marginTop={1}>
-							<Text color="yellow">Warnings:</Text>
-							{result.errors.slice(0, 5).map((e, i) => (
-								<Text key={i} dimColor>
-									- {e}
-								</Text>
-							))}
-							{result.errors.length > 5 && (
-								<Text dimColor>... and {result.errors.length - 5} more</Text>
-							)}
-						</Box>
-					)}
+					{warnings}
 					<Text> </Text>
 					<ExitHint>Press any key to exit</ExitHint>
 				</Box>
@@ -190,6 +204,7 @@ export function DataImportCommand({
 			{status === 'error' && (
 				<Box flexDirection="column">
 					<StatusMessage variant="error">{error}</StatusMessage>
+					{result && result.skipped > 0 && warnings}
 					<Text> </Text>
 					<ExitHint>Press any key to exit</ExitHint>
 				</Box>

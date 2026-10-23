@@ -629,10 +629,12 @@ export interface ContextFixResult {
 }
 
 /**
- * Rewrite each example's context message (messages[0]) to match the given
- * contextMessage, but only when a context message already exists. Never
- * inserts one where the example starts with a user message, since that
- * would change the example's shape rather than just fix a mismatch.
+ * Make each example's context message (messages[0]) match the given one:
+ * rewrite it when it differs, and insert it ahead of the first user turn when
+ * the example has none. The second case is what imported `user`/`assistant`
+ * pairs are, and `data validate` warns about every one of them, so it has to
+ * be repairable. A project whose context message is empty gets nothing
+ * inserted: an empty system turn would only add noise.
  */
 export function fixContextMessages(
 	contextMessage: ChatMessage,
@@ -644,20 +646,25 @@ export function fixContextMessages(
 
 		const updated = examples.map(ex => {
 			const first = ex.messages[0];
-			if (!first || first.role === 'user' || first.role === 'assistant') {
+			if (!first) {
 				return ex;
 			}
-			if (
-				first.role === contextMessage.role &&
-				first.content === contextMessage.content
-			) {
+			const hasContext = first.role !== 'user' && first.role !== 'assistant';
+			if (hasContext) {
+				if (
+					first.role === contextMessage.role &&
+					first.content === contextMessage.content
+				) {
+					return ex;
+				}
+			} else if (!contextMessage.content) {
 				return ex;
 			}
 			fixedCount++;
 			return {
 				messages: [
 					{role: contextMessage.role, content: contextMessage.content},
-					...ex.messages.slice(1),
+					...(hasContext ? ex.messages.slice(1) : ex.messages),
 				],
 			};
 		});
@@ -739,12 +746,20 @@ export function collectValidation({
 	// separately, a process that writes in between makes
 	// `fixes.duplicatesRemoved` describe a state that is no longer on disk.
 	return withDataLock(() => {
+		// The fixes load the whole file, transform it and write it back, so they
+		// refuse to run over lines that do not parse: rewriting around them would
+		// delete them. Skip, say so, and let the report below show the lines.
+		const unreadable =
+			fix || rewriteContext ? parseTrainingData(isEval).errors : [];
+		const fixesSkipped = unreadable.length > 0;
+
 		// Rewrite context first: examples that only become identical after context
 		// normalization must still be caught by dedupe in this pass.
-		const contextFix = rewriteContext
-			? fixContextMessages(contextMessage, isEval)
-			: null;
-		const dedupe = fix ? dedupeExamples(isEval) : null;
+		const contextFix =
+			rewriteContext && !fixesSkipped
+				? fixContextMessages(contextMessage, isEval)
+				: null;
+		const dedupe = fix && !fixesSkipped ? dedupeExamples(isEval) : null;
 
 		// Count and validate after the fixes, so the report describes the data
 		// actually left on disk rather than the state it was in on entry.
@@ -761,6 +776,13 @@ export function collectValidation({
 		// fixes, like the counts above, so the report describes what is on disk.
 		const overlap = findTrainValidOverlap();
 		const warnings = [...result.warnings];
+		if (fixesSkipped) {
+			const more =
+				unreadable.length > 1 ? ` (and ${unreadable.length - 1} more)` : '';
+			warnings.push(
+				`--fix and --rewrite-context were not applied: ${isEval ? EVAL_FILE : TRAIN_FILE} has lines that do not parse, starting with "${unreadable[0]}"${more}. Nothing was changed; repair or remove those lines first.`,
+			);
+		}
 		if (overlap.overlapCount > 0) {
 			const file = isEval ? EVAL_FILE : TRAIN_FILE;
 			// rows.length counts this file's rows; overlapCount counts distinct
@@ -1006,6 +1028,33 @@ export function importFromJSONL(
 	return withDataLock(() => runJSONLImport(filePath, contextMessage, isEval));
 }
 
+/**
+ * An imported `messages` array, with the project's context message put in
+ * front when the record has none. Records that already open with a context
+ * message keep it, so a JSONL export re-imports exactly. Records that start
+ * with a user turn are what plain `user`/`assistant` datasets look like; they
+ * get the context the model is trained and served with, instead of training
+ * without it and then failing validation for lacking it.
+ */
+function withImportedContext(
+	messages: ChatMessage[],
+	contextMessage: ChatMessage,
+): TrainingExample {
+	const first = messages[0];
+	if (!first || (first.role !== 'user' && first.role !== 'assistant')) {
+		return {messages};
+	}
+	if (!contextMessage.content) {
+		return {messages};
+	}
+	return {
+		messages: [
+			{role: contextMessage.role, content: contextMessage.content},
+			...messages,
+		],
+	};
+}
+
 function runJSONLImport(
 	filePath: string,
 	contextMessage: ChatMessage,
@@ -1033,7 +1082,10 @@ function runJSONLImport(
 					);
 
 					if (userMsg?.content && assistantMsg?.content) {
-						appendTrainingExample({messages: data.messages}, isEval);
+						appendTrainingExample(
+							withImportedContext(data.messages, contextMessage),
+							isEval,
+						);
 						imported++;
 						continue;
 					}
@@ -1104,7 +1156,10 @@ function runJSONImport(
 			);
 
 			if (userMsg?.content && assistantMsg?.content) {
-				appendTrainingExample({messages: item.messages}, isEval);
+				appendTrainingExample(
+					withImportedContext(item.messages, contextMessage),
+					isEval,
+				);
 				imported++;
 				continue;
 			}
@@ -1134,6 +1189,32 @@ function runJSONImport(
 	return {imported, skipped, errors};
 }
 
+/**
+ * Why an import that brought nothing in is a failure, or null when something
+ * was imported. A missing file, an unsupported format, an empty file and a
+ * file in which every row was rejected all leave the dataset exactly as it
+ * was, so a script running `import --yes && train` has to be told, not handed
+ * a success banner and exit code 0. A partial import (some rows in, some
+ * skipped) is not a failure: its counts and warnings describe it.
+ */
+export function describeEmptyImport(
+	result: ImportResult,
+	file: string,
+): string | null {
+	if (result.imported > 0) {
+		return null;
+	}
+	if (result.skipped > 0) {
+		const rows =
+			result.skipped === 1 ? '1 row was' : `${result.skipped} rows were`;
+		const first = result.errors[0]
+			? ` First problem: ${result.errors[0]}.`
+			: '';
+		return `Nothing was imported: ${rows} skipped.${first}`;
+	}
+	return result.errors[0] ?? `No examples were found in ${file}.`;
+}
+
 export function importData(
 	filePath: string,
 	contextMessage: ChatMessage,
@@ -1141,7 +1222,7 @@ export function importData(
 	csvOptions: ImportCSVOptions = {},
 ): ImportResult {
 	if (!existsSync(filePath)) {
-		return {imported: 0, skipped: 0, errors: ['File not found']};
+		return {imported: 0, skipped: 0, errors: [`File not found: ${filePath}`]};
 	}
 
 	const ext = filePath.toLowerCase().split('.').pop();
@@ -1157,7 +1238,9 @@ export function importData(
 			return {
 				imported: 0,
 				skipped: 0,
-				errors: [`Unsupported file format: ${ext}`],
+				errors: [
+					`Unsupported file format: ${ext} (expected .jsonl, .csv or .json)`,
+				],
 			};
 	}
 }

@@ -29,6 +29,8 @@ const dependencies = {
 	writeModelCard,
 	checkLlamaCppInstalled: async () => true,
 	installLlamaCpp: async function* () {},
+	checkConvertDependencies: async () => true,
+	installConvertDependencies: async function* () {},
 	fuseAdapters: async (_base: string, _adapters: string, fused: string) => {
 		mkdirSync(fused, {recursive: true});
 		writeFileSync(join(fused, 'model.safetensors'), 'fused');
@@ -137,6 +139,70 @@ test.serial('ExportCommand does not create a card when conversion fails', async 
 			await new Promise(resolve => setTimeout(resolve, 20));
 		}
 		t.is(process.exitCode, 1);
+	} finally {
+		instance.unmount();
+	}
+});
+
+test.serial('ExportCommand installs the conversion dependencies before it spends time fusing', async t => {
+	const order: string[] = [];
+	const instance = render(<ExportCommand options={{}} dependencies={{
+		...dependencies,
+		checkConvertDependencies: async () => false,
+		installConvertDependencies: async function* () {
+			order.push('install');
+			yield 'Installing PyTorch (needed to convert to GGUF)...';
+		},
+		fuseAdapters: async (...args) => {
+			order.push('fuse');
+			await dependencies.fuseAdapters(...args);
+		},
+	}} />);
+	try {
+		await waitForOutput(instance, 'Export complete!');
+		t.deepEqual(order, ['install', 'fuse']);
+	} finally {
+		instance.unmount();
+	}
+});
+
+test.serial('ExportCommand stops with the install error when the conversion dependencies cannot be installed', async t => {
+	let fused = false;
+	const instance = render(<ExportCommand options={{}} dependencies={{
+		...dependencies,
+		checkConvertDependencies: async () => false,
+		installConvertDependencies: async function* () {
+			throw new Error('pip refuses to install torch');
+		},
+		fuseAdapters: async () => {
+			fused = true;
+		},
+	}} />);
+	try {
+		await waitForOutput(instance, 'pip refuses to install torch');
+		t.false(fused);
+	} finally {
+		instance.unmount();
+	}
+});
+
+test.serial('ExportCommand rejects an unknown quantization before it fuses anything', async t => {
+	let fused = false;
+	let checked = false;
+	const instance = render(<ExportCommand options={{quantization: 'q9'}} dependencies={{
+		...dependencies,
+		checkLlamaCppInstalled: async () => {
+			checked = true;
+			return true;
+		},
+		fuseAdapters: async () => {
+			fused = true;
+		},
+	}} />);
+	try {
+		await waitForOutput(instance, 'Invalid --quantization "q9": expected one of f16, q8_0, q4_k_m, q4_k_s.');
+		t.false(fused);
+		t.false(checked);
 	} finally {
 		instance.unmount();
 	}

@@ -124,7 +124,7 @@ View and manage your training data with pagination, editing, and delete. Shows a
 The header also reports the other set's size, so a split is visible from either
 side.
 
-Editing reuses the same input flow as `data add`, but only covers the example's **first** user/assistant turn — any additional turns and the example's context message are preserved unchanged. Press **Tab** to switch between the input and output fields, **Enter** to submit a field, and **Esc** to cancel without saving.
+Editing reuses the same input flow as `data add`. For a multi-turn example, `e` first shows a turn picker: choose the turn to change with the arrow keys and **Enter**. Only that turn is replaced; the other turns and the example's context message are kept as they are. Press **Tab** to switch between the input and output fields, **Enter** to submit a field, and **Esc** to cancel without saving.
 
 ## nanotune data validate
 
@@ -152,11 +152,13 @@ Validate your training data before training. Checks for:
 | `-e, --eval` | Validate the validation set (`valid.jsonl`) instead of training data |
 | `--json` | Print the validation report as JSON on stdout instead of the interactive report |
 
-`--fix` is intentionally stricter than the "duplicate user inputs" warning above: the warning flags examples that merely share the same input text (worth a human look, since the outputs or context could differ on purpose), while `--fix` only ever removes examples whose entire message list is identical — the only case where deleting one is provably safe. `--rewrite-context` only touches examples that already have a context/system message; it never inserts one where an example starts directly with a user message. Both flags report exactly how many examples they changed, and can be combined:
+`--fix` is intentionally stricter than the "duplicate user inputs" warning above: the warning flags examples that merely share the same input text (worth a human look, since the outputs or context could differ on purpose), while `--fix` only ever removes examples whose entire message list is identical — the only case where deleting one is provably safe. `--rewrite-context` makes every example's context message match `config.json`: it rewrites one that differs and inserts one where an example starts with a user turn (the case for plain `user`/`assistant` datasets). An example whose project context is empty is left alone. Both flags report exactly how many examples they changed, and can be combined:
 
 ```bash
 nanotune data validate --fix --rewrite-context
 ```
+
+Both flags rewrite `train.jsonl` as a whole, so they refuse to run while the file has a line that does not parse: the report says so, names the first bad line, and changes nothing. Fix or remove those lines first.
 
 An example longer than `training.maxSeqLength` is a warning, not an error. The length is a character estimate, about 4 characters per token, not the model's tokenizer. The warning names the five longest examples over the limit.
 

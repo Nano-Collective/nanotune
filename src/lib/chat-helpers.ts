@@ -5,6 +5,7 @@ import {
 	type BenchmarkPreset,
 	type ChatMessage,
 } from '../types/index.js';
+import {FLAG_RULES, parseNumericFlag} from './cli-flags.js';
 import {getChatsDir} from './config.js';
 import type {GenerateOptions, ServerOptions} from './llama-cpp.js';
 
@@ -29,27 +30,49 @@ export interface ChatRawOptions {
  * the benchmark command's behaviour).
  */
 export function buildServerOptions(options: ChatRawOptions): ServerOptions {
+	// Validate everything that was typed, even what a `--preset` will replace:
+	// an unparseable number must not reach llama-server as the text "NaN".
+	const threads = parseNumericFlag(
+		'--threads',
+		options.threads,
+		FLAG_RULES.positiveInteger,
+	);
+	const gpuLayers = parseNumericFlag(
+		'--gpu-layers',
+		options.gpuLayers,
+		FLAG_RULES.integer,
+	);
+	// 0 is llama-server's "use the model's own context size".
+	const ctxSize = parseNumericFlag(
+		'--ctx-size',
+		options.ctxSize,
+		FLAG_RULES.nonNegativeInteger,
+	);
+	const batchSize = parseNumericFlag(
+		'--batch-size',
+		options.batchSize,
+		FLAG_RULES.positiveInteger,
+	);
 	if (options.preset) {
 		const preset = BENCHMARK_PRESETS[options.preset as BenchmarkPreset];
-		if (preset) {
-			return {
-				threads: preset.threads,
-				gpuLayers: preset.gpuLayers,
-				ctxSize: preset.ctxSize,
-				batchSize: preset.batchSize,
-				cpuOnly: preset.gpuLayers === 0,
-			};
+		if (!preset) {
+			throw new Error(
+				`Invalid preset: ${options.preset}. Valid presets: ${Object.keys(BENCHMARK_PRESETS).join(', ')}`,
+			);
 		}
+		return {
+			threads: preset.threads,
+			gpuLayers: preset.gpuLayers,
+			ctxSize: preset.ctxSize,
+			batchSize: preset.batchSize,
+			cpuOnly: preset.gpuLayers === 0,
+		};
 	}
 	return {
-		threads: options.threads ? Number.parseInt(options.threads, 10) : undefined,
-		gpuLayers: options.gpuLayers
-			? Number.parseInt(options.gpuLayers, 10)
-			: undefined,
-		ctxSize: options.ctxSize ? Number.parseInt(options.ctxSize, 10) : 4096,
-		batchSize: options.batchSize
-			? Number.parseInt(options.batchSize, 10)
-			: 2048,
+		threads,
+		gpuLayers,
+		ctxSize: ctxSize ?? 4096,
+		batchSize: batchSize ?? 2048,
 		cpuOnly: options.cpuOnly,
 	};
 }
@@ -63,15 +86,27 @@ export function buildGenerateOptions(options: ChatRawOptions): GenerateOptions {
 	const presetMax = options.preset
 		? BENCHMARK_PRESETS[options.preset as BenchmarkPreset]?.maxTokens
 		: undefined;
+	const maxTokens = parseNumericFlag(
+		'--max-tokens',
+		options.maxTokens,
+		FLAG_RULES.positiveInteger,
+	);
+	const temperature = parseNumericFlag(
+		'--temperature',
+		options.temperature,
+		FLAG_RULES.nonNegativeNumber,
+	);
+	const topP = parseNumericFlag(
+		'--top-p',
+		options.topP,
+		FLAG_RULES.unitInterval,
+	);
+	const seed = parseNumericFlag('--seed', options.seed, FLAG_RULES.integer);
 	return {
-		maxTokens: options.maxTokens
-			? Number.parseInt(options.maxTokens, 10)
-			: (presetMax ?? 256),
-		temperature: options.temperature
-			? Number.parseFloat(options.temperature)
-			: 0.8,
-		topP: options.topP ? Number.parseFloat(options.topP) : 0.9,
-		seed: options.seed ? Number.parseInt(options.seed, 10) : undefined,
+		maxTokens: maxTokens ?? presetMax ?? 256,
+		temperature: temperature ?? 0.8,
+		topP: topP ?? 0.9,
+		seed,
 	};
 }
 

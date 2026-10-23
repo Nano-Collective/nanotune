@@ -7,6 +7,7 @@ import {
 	abortTraining,
 	buildLoraConfigYaml,
 	buildTrainingArgs,
+	ensureModelDownloaded,
 	needsLoraConfig,
 	parseTrainingLogLine,
 	restoreAdapterFile,
@@ -132,4 +133,47 @@ test('shouldTreatAsStop only accepts an aborted signal', t => {
 	t.false(shouldTreatAsStop(controller.signal));
 	controller.abort();
 	t.true(shouldTreatAsStop(controller.signal));
+});
+
+test.serial('ensureModelDownloaded reports a failed download instead of crashing the process', async t => {
+	const dir = mkdtempSync(join(tmpdir(), 'nanotune-download-'));
+	const path = process.env.PATH;
+	const unhandled: unknown[] = [];
+	const onUnhandled = (reason: unknown) => {
+		unhandled.push(reason);
+	};
+	process.on('unhandledRejection', onUnhandled);
+	try {
+		// Stands in for the embedded huggingface_hub script: it reports the
+		// failure as a JSON line and then exits non-zero, exactly as the real
+		// one does for a mistyped, gated or unreachable model.
+		writeFileSync(
+			join(dir, 'python3'),
+			`#!/bin/sh
+echo '{"status":"start","totalSize":0,"fileCount":0}'
+echo '{"status":"error","error":"Repository Not Found"}'
+exit 1
+`,
+			{mode: 0o755},
+		);
+		process.env.PATH = `${dir}:${path}`;
+
+		await t.throwsAsync(
+			async () => {
+				for await (const _ of ensureModelDownloaded('org/mistyped')) {
+					// consume progress
+				}
+			},
+			{message: /Model download failed: Repository Not Found/},
+		);
+
+		// The child's non-zero exit used to surface as an unhandled rejection
+		// a tick later, which Node turns into a fatal crash with a stack dump.
+		await new Promise(resolve => setTimeout(resolve, 250));
+		t.deepEqual(unhandled, []);
+	} finally {
+		process.off('unhandledRejection', onUnhandled);
+		process.env.PATH = path;
+		rmSync(dir, {recursive: true, force: true});
+	}
 });

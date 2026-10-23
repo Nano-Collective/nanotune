@@ -12,7 +12,7 @@ import {StatusCommand} from './status.js';
  */
 
 const ORIG_CWD = process.cwd();
-const TEST_DIR = join(ORIG_CWD, '.test-status-spec');
+const TEST_DIR = join(ORIG_CWD, '.test-status-command-spec');
 const NANOTUNE_DIR = join(TEST_DIR, '.nanotune');
 const DATA_DIR = join(NANOTUNE_DIR, 'data');
 const ADAPTERS_DIR = join(NANOTUNE_DIR, 'adapters');

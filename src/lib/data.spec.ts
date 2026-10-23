@@ -11,6 +11,7 @@ import {
   countTurns,
   dedupeExamples,
   deleteExample,
+  describeEmptyImport,
   ensureValidationSet,
   exportData,
   exportToCSV,
@@ -328,7 +329,37 @@ test.serial("fixContextMessages does nothing when already matching", (t) => {
   t.is(result.fixedCount, 0);
 });
 
-test.serial("fixContextMessages does not insert a context message when none exists", (t) => {
+test.serial("fixContextMessages inserts the context message where an example has none", (t) => {
+  // What `data import` of plain user/assistant pairs leaves behind, and what
+  // `data validate` then warns about on every example.
+  const bare: TrainingExample = {
+    messages: [
+      { role: "user", content: "A" },
+      { role: "assistant", content: "B" },
+    ],
+  };
+  const multi: TrainingExample = {
+    messages: [
+      { role: "user", content: "m1" },
+      { role: "assistant", content: "a1" },
+      { role: "user", content: "m2" },
+      { role: "assistant", content: "a2" },
+    ],
+  };
+  writeFileSync(join(DATA_DIR, "train.jsonl"), [bare, multi].map((e) => JSON.stringify(e)).join("\n") + "\n");
+
+  const result = fixContextMessages(SYSTEM_CTX, false);
+  t.is(result.fixedCount, 2);
+
+  const [single, multiTurn] = loadTrainingData();
+  t.deepEqual(single.messages, [SYSTEM_CTX, { role: "user", content: "A" }, { role: "assistant", content: "B" }]);
+  t.is(multiTurn.messages.length, 5);
+  t.deepEqual(multiTurn.messages[0], SYSTEM_CTX);
+  t.is(multiTurn.messages[4].content, "a2");
+  t.is(fixContextMessages(SYSTEM_CTX, false).fixedCount, 0, "idempotent");
+});
+
+test.serial("fixContextMessages does not insert an empty context message", (t) => {
   const bare: TrainingExample = {
     messages: [
       { role: "user", content: "A" },
@@ -337,7 +368,7 @@ test.serial("fixContextMessages does not insert a context message when none exis
   };
   writeFileSync(join(DATA_DIR, "train.jsonl"), JSON.stringify(bare) + "\n");
 
-  const result = fixContextMessages(SYSTEM_CTX, false);
+  const result = fixContextMessages({ role: "system", content: "" }, false);
   t.is(result.fixedCount, 0);
   t.is(loadTrainingData()[0].messages[0].role, "user");
 });
@@ -770,7 +801,43 @@ test.serial("wrong-shaped lines are reported, not thrown on, by every consumer",
   t.throws(() => dedupeExamples(false), { message: "Example 2: invalid structure" });
   t.is(readFileSync(join(DATA_DIR, "train.jsonl"), "utf-8"), before);
 
-  t.throws(() => collectValidation({ fix: true }), { message: "Example 2: invalid structure" });
+  // The repair flags skip over data they cannot read and say so, instead of
+  // throwing: the report is the useful part, and it must still be produced.
+  for (const flags of [{ fix: true }, { rewriteContext: true }, { fix: true, rewriteContext: true }]) {
+    const report = collectValidation(flags);
+    t.false(report.valid);
+    t.is(report.fixes, null);
+    t.true(report.errors.includes("Example 2: invalid structure"), JSON.stringify(flags));
+    t.true(
+      report.warnings.some((w) => w.includes("--fix and --rewrite-context were not applied") && w.includes("Example 2: invalid structure") && w.includes("and 3 more")),
+      JSON.stringify(report.warnings),
+    );
+    t.is(readFileSync(join(DATA_DIR, "train.jsonl"), "utf-8"), before, "the file is untouched");
+  }
+});
+
+test.serial("collectValidation applies the fixes when the data parses, with no skipped-fixes warning", (t) => {
+  writeConfig();
+  writeRawTrain(GOOD_LINE + "\n" + GOOD_LINE + "\n");
+
+  const report = collectValidation({ fix: true });
+  t.is(report.fixes?.duplicatesRemoved, 1);
+  t.false(report.warnings.some((w) => w.includes("were not applied")));
+});
+
+test.serial("collectValidation can set the context message on examples that have none", (t) => {
+  writeConfig();
+  writeRawTrain(
+    JSON.stringify({ messages: [{ role: "user", content: "A" }, { role: "assistant", content: "B" }] }) + "\n",
+  );
+
+  const before = collectValidation();
+  t.false(before.checks.contextMessageConsistency);
+
+  const report = collectValidation({ rewriteContext: true });
+  t.is(report.fixes?.contextMessagesRewritten, 1);
+  t.true(report.checks.contextMessageConsistency);
+  t.is(loadTrainingData()[0].messages[0].role, "system");
 });
 
 test.serial("validateTrainingData does not call a malformed file empty", (t) => {
@@ -792,10 +859,75 @@ test.serial("importData dispatches to correct importer by extension", (t) => {
   t.is(result.imported, 1);
 });
 
+function countContextMessages(): number {
+  return loadTrainingData().filter((e) => e.messages[0].role === "system").length;
+}
+
+test.serial("importData adds the project context to JSONL records that have none", (t) => {
+  const path = join(TEST_DIR, "plain.jsonl");
+  writeFileSync(
+    path,
+    [
+      { messages: [{ role: "user", content: "A" }, { role: "assistant", content: "B" }] },
+      { messages: [SYSTEM_CTX, { role: "user", content: "C" }, { role: "assistant", content: "D" }] },
+    ]
+      .map((e) => JSON.stringify(e))
+      .join("\n") + "\n",
+  );
+
+  const result = importData(path, SYSTEM_CTX, false);
+  t.is(result.imported, 2);
+
+  const [plain, kept] = loadTrainingData();
+  t.deepEqual(plain.messages[0], SYSTEM_CTX);
+  t.is(plain.messages.length, 3);
+  // A record that already has a context message keeps its own, so a JSONL
+  // export still re-imports byte for byte.
+  t.deepEqual(kept.messages.map((m) => m.content), [SYSTEM_CTX.content, "C", "D"]);
+  t.is(countContextMessages(), 2);
+});
+
+test.serial("importData leaves JSON records alone when the project has no context message", (t) => {
+  const path = join(TEST_DIR, "plain.json");
+  writeFileSync(
+    path,
+    JSON.stringify([{ messages: [{ role: "user", content: "A" }, { role: "assistant", content: "B" }] }]),
+  );
+
+  importData(path, { role: "system", content: "" }, false);
+
+  t.is(loadTrainingData()[0].messages[0].role, "user");
+});
+
 test.serial("importData returns error for missing file", (t) => {
   const result = importData("/nonexistent/file.csv", SYSTEM_CTX, false);
   t.is(result.imported, 0);
   t.true(result.errors[0].includes("File not found"));
+  t.true(result.errors[0].includes("/nonexistent/file.csv"), "names the file it looked for");
+});
+
+test("describeEmptyImport is silent when anything was imported", (t) => {
+  t.is(describeEmptyImport({ imported: 3, skipped: 2, errors: ["Line 4: bad"] }, "f.jsonl"), null);
+  t.is(describeEmptyImport({ imported: 1, skipped: 0, errors: [] }, "f.jsonl"), null);
+});
+
+test("describeEmptyImport reports a file that could not be read as that error", (t) => {
+  t.is(describeEmptyImport({ imported: 0, skipped: 0, errors: ["File not found: x.csv"] }, "x.csv"), "File not found: x.csv");
+});
+
+test("describeEmptyImport explains a file whose rows were all rejected", (t) => {
+  t.is(
+    describeEmptyImport({ imported: 0, skipped: 1, errors: ["Line 1: Invalid JSON"] }, "f.jsonl"),
+    "Nothing was imported: 1 row was skipped. First problem: Line 1: Invalid JSON.",
+  );
+  t.is(
+    describeEmptyImport({ imported: 0, skipped: 4, errors: [] }, "f.jsonl"),
+    "Nothing was imported: 4 rows were skipped.",
+  );
+});
+
+test("describeEmptyImport treats a file with nothing in it as a failure too", (t) => {
+  t.is(describeEmptyImport({ imported: 0, skipped: 0, errors: [] }, "empty.jsonl"), "No examples were found in empty.jsonl.");
 });
 
 test.serial("importData returns error for unsupported format", (t) => {
