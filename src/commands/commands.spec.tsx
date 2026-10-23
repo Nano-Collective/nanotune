@@ -1294,6 +1294,16 @@ test.serial("DataImportCommand reports a missing source file", async (t) => {
   }
 });
 
+/**
+ * CI sets FORCE_COLOR, so a value drawn in colour (the import counts) carries
+ * ANSI escapes there and none locally. Strip them before matching, or the
+ * assertion passes on a laptop and fails in CI.
+ */
+function stripAnsi(text: string): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: matching ANSI.
+  return text.replace(/\u001B\[[0-9;]*m/g, "");
+}
+
 /** The exit code is set by an effect that can run just after the first paint. */
 async function exitCodeAfterRender(): Promise<typeof process.exitCode> {
   const deadline = Date.now() + 2000;
@@ -1364,7 +1374,9 @@ test.serial("DataImportCommand still succeeds, with warnings, when only some row
     const source = join(TEST_DIR, "mixed.jsonl");
     writeFileSync(source, `${JSON.stringify(example("good one"))}\nnot json\n${JSON.stringify(example("good two"))}\n`);
 
-    const output = await renderCommand(<DataImportCommand file={source} yes />, "Import complete");
+    const output = stripAnsi(
+      await renderCommand(<DataImportCommand file={source} yes />, "Import complete"),
+    );
 
     t.regex(output, /Import complete/);
     t.regex(output, /Imported: 2/);
