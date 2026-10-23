@@ -227,7 +227,12 @@ test.serial(
       await waitFor(output, "Could not save:");
 
       t.true(output().includes("Failure 1/1"), output());
-      t.true(output().includes("Press Enter to retry"), output());
+      // The error names the full dataset path, so the message wraps and
+      // "Press" and "Enter" can land on different lines. Compare on whitespace.
+      t.true(
+        output().replace(/\s+/g, " ").includes("Press Enter to retry"),
+        output(),
+      );
       t.false(output().includes("Reviewed 1/1"), output());
 
       rmSync(trainPath, { recursive: true, force: true });

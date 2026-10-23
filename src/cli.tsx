@@ -143,6 +143,26 @@ dataCommand
 	});
 
 dataCommand
+	.command('repair')
+	.description('Back up the dataset and quarantine malformed rows')
+	.option('-e, --eval', 'Repair the validation set instead of training data')
+	.option('--json', 'Print the repair report as JSON on stdout')
+	.action(async (options: {eval?: boolean; json?: boolean}) => {
+		if (options.json) {
+			const {loadConfig} = await import('./lib/config.js');
+			const {repairTrainingData} = await import('./lib/data.js');
+			const {emitJson} = await import('./lib/json-output.js');
+			await emitJson(() => {
+				loadConfig();
+				return repairTrainingData(options.eval);
+			});
+			return;
+		}
+		const {DataRepairCommand} = await import('./commands/data/repair.js');
+		render(<DataRepairCommand isEval={options.eval} />);
+	});
+
+dataCommand
 	.command('validate')
 	.description('Validate training data format and quality')
 	.option('--fix', 'Remove exact-duplicate examples')

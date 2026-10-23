@@ -1287,6 +1287,8 @@ test.serial("initializeProjectDirs writes the full .gitignore for a new project"
       "chats/",
       "data.lock/",
       "judge.json*",
+      "data/*.append-journal.json",
+      "data/quarantine/",
     ]);
   } finally {
     teardownBenchTest();
@@ -1324,6 +1326,9 @@ test.serial("initializeProjectDirs back-fills a pre-1.4.0 .gitignore", (t) => {
     t.true(lines.includes("benchmarks/"));
     t.true(lines.includes("runs/"));
     t.true(lines.includes("chats/"));
+    t.true(lines.includes("data.lock/"));
+    t.true(lines.includes("data/*.append-journal.json"));
+    t.true(lines.includes("data/quarantine/"));
     // Entries already there are neither lost nor repeated.
     t.is(lines.filter((line) => line === "adapters/").length, 1);
     t.is(lines.filter((line) => line === "# Nanotune project artifacts").length, 1);

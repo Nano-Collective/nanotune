@@ -1,6 +1,9 @@
 import {
+	linkSync,
 	mkdirSync,
+	readdirSync,
 	readFileSync,
+	renameSync,
 	rmSync,
 	statSync,
 	writeFileSync,
@@ -144,11 +147,17 @@ function acquire(timeoutMs: number): void {
 			}
 		}
 
-		if (abandoned(path)) {
+		if (unownedStale(path)) {
+			// A crash between creating the directory and writing the owner leaves a
+			// lock that nothing will ever fill in. Only the grace period makes it safe
+			// to remove by path.
+			rmSync(path, {recursive: true, force: true});
+			continue;
+		}
+		if (reclaim(path)) {
 			// SIGKILL and a hard crash skip the `finally` that removes this,
 			// so without taking it over every later command would refuse to run
 			// against the project for good.
-			rmSync(path, {recursive: true, force: true});
 			continue;
 		}
 
@@ -187,11 +196,9 @@ function claimAsCurrentProcess(path: string): void {
 	}
 }
 
-function readOwner(path: string): LockOwner | null {
+function parseOwner(file: string): LockOwner | null {
 	try {
-		const parsed = JSON.parse(
-			readFileSync(join(path, OWNER_FILE), 'utf-8'),
-		) as LockOwner;
+		const parsed = JSON.parse(readFileSync(file, 'utf-8')) as LockOwner;
 		return typeof parsed?.pid === 'number' &&
 			typeof parsed.host === 'string' &&
 			typeof parsed.since === 'number'
@@ -202,18 +209,40 @@ function readOwner(path: string): LockOwner | null {
 	}
 }
 
-/**
- * Only a lock this host took can be judged by its pid. Another host's pid means
- * nothing here - this may be a shared home directory. An unreadable owner is
- * not taken over on a guess either, unless it has stayed that way for longer
- * than the acquisition window could ever take.
- */
-function abandoned(path: string): boolean {
-	const owner = readOwner(path);
-	if (owner === null) {
-		return ageMs(path) > UNOWNED_GRACE_MS;
+function readOwnership(path: string): {owner: LockOwner; file: string} | null {
+	const file = join(path, OWNER_FILE);
+	const owner = parseOwner(file);
+	if (owner) return {owner, file};
+	try {
+		for (const name of readdirSync(path)) {
+			const match = name.match(/^reclaim-(\d+)-([a-f0-9]+)\.json$/);
+			if (!match) continue;
+			return {
+				owner: {
+					pid: Number(match[1]),
+					host: Buffer.from(match[2], 'hex').toString(),
+					since: Date.now(),
+				},
+				file: join(path, name),
+			};
+		}
+	} catch {
+		// The holder can release the directory between the failed mkdir and read.
 	}
-	return owner.host === hostname() && !isProcessAlive(owner.pid);
+	return null;
+}
+
+function readOwner(path: string): LockOwner | null {
+	return readOwnership(path)?.owner ?? null;
+}
+
+/**
+ * A lock with no readable owner is taken over only once it has stayed that way
+ * for longer than the acquisition window could take. The owner file is written
+ * straight after the directory is created, so a fresh lock may just be mid-write.
+ */
+function unownedStale(path: string): boolean {
+	return readOwnership(path) === null && ageMs(path) > UNOWNED_GRACE_MS;
 }
 
 function ageMs(path: string): number {
@@ -222,6 +251,54 @@ function ageMs(path: string): number {
 	} catch {
 		return 0;
 	}
+}
+
+/**
+ * Only a lock this host took can be judged by its pid. Another host's pid means
+ * nothing here - this may be a shared home directory - so it is never reclaimed.
+ */
+function reclaim(path: string): boolean {
+	const state = readOwnership(path);
+	if (
+		!state ||
+		state.owner.host !== hostname() ||
+		state.owner.pid === process.pid ||
+		isProcessAlive(state.owner.pid)
+	) {
+		return false;
+	}
+	const claim = join(
+		path,
+		`reclaim-${process.pid}-${Buffer.from(hostname()).toString('hex')}.json`,
+	);
+	try {
+		// Renaming the owner record elects one reclaimer. Another contender's
+		// stale observation must not authorize deleting a newly acquired lock.
+		renameSync(state.file, claim);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+		throw error;
+	}
+	const captured = parseOwner(claim);
+	if (
+		captured &&
+		captured.host === hostname() &&
+		!isProcessAlive(captured.pid)
+	) {
+		rmSync(path, {recursive: true, force: true});
+		return true;
+	}
+	// A live/new owner was captured after our stale observation. Restore its
+	// record without replacing another owner that may have appeared meanwhile.
+	try {
+		linkSync(claim, join(path, OWNER_FILE));
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code !== 'EEXIST' && code !== 'ENOENT') throw error;
+	} finally {
+		rmSync(claim, {force: true});
+	}
+	return false;
 }
 
 function describeHolder(path: string): string {
