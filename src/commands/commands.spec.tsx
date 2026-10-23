@@ -352,6 +352,31 @@ test.serial("DataValidateCommand warns when an example looks longer than maxSeqL
 // data back in between, and a write that re-runs cleans it up again where a
 // write that ran once leaves it.
 
+test.serial("DataValidateCommand --fix on unreadable data reports it instead of crashing into a stack trace", async (t) => {
+  try {
+    setupProject();
+    process.exitCode = 0;
+    const path = join(DATA_DIR, "train.jsonl");
+    writeFileSync(path, `${JSON.stringify(example("hello"))}\n{ not json\n`);
+    const before = readFileSync(path, "utf-8");
+
+    const output = await renderCommand(
+      <DataValidateCommand fix rewriteContext />,
+      "were not applied",
+    );
+
+    t.regex(output, /Example 2: invalid JSON/);
+    t.regex(output, /--fix and --rewrite-context were not applied/);
+    t.false(output.includes("ERROR"), "Ink's error boundary must not be what reports this");
+    t.false(output.includes("file://"), "no stack frames");
+    t.is(await exitCodeAfterRender(), 1);
+    t.is(readFileSync(path, "utf-8"), before, "nothing was rewritten");
+    process.exitCode = 0;
+  } finally {
+    teardown();
+  }
+});
+
 test.serial("DataValidateCommand dedupes once, not on every render", async (t) => {
   const originalTTY = process.stdin.isTTY;
   try {
@@ -1259,7 +1284,106 @@ test.serial("DataImportCommand reports a missing source file", async (t) => {
       "not found",
     );
     t.regex(output, /not found|does not exist|No such/i);
+    // The shape of the bug: a "✔ Import complete! Imported: 0" banner and exit
+    // code 0 for a file that was never read.
+    t.false(output.includes("Import complete"));
+    t.is(await exitCodeAfterRender(), 1);
     process.exitCode = 0;
+  } finally {
+    teardown();
+  }
+});
+
+/**
+ * CI sets FORCE_COLOR, so a value drawn in colour (the import counts) carries
+ * ANSI escapes there and none locally. Strip them before matching, or the
+ * assertion passes on a laptop and fails in CI.
+ */
+function stripAnsi(text: string): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: matching ANSI.
+  return text.replace(/\u001B\[[0-9;]*m/g, "");
+}
+
+/** The exit code is set by an effect that can run just after the first paint. */
+async function exitCodeAfterRender(): Promise<typeof process.exitCode> {
+  const deadline = Date.now() + 2000;
+  while (process.exitCode !== 1 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return process.exitCode;
+}
+
+test.serial("DataImportCommand fails on an unsupported file extension", async (t) => {
+  try {
+    setupProject();
+    process.exitCode = 0;
+    const source = join(TEST_DIR, "notes.txt");
+    writeFileSync(source, "not training data");
+
+    const output = await renderCommand(<DataImportCommand file={source} yes />, "Unsupported");
+
+    t.regex(output, /Unsupported file format: txt \(expected \.jsonl, \.csv or \.json\)/);
+    t.false(output.includes("Import complete"));
+    t.is(await exitCodeAfterRender(), 1);
+    process.exitCode = 0;
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("DataImportCommand fails when every row in the file is rejected", async (t) => {
+  try {
+    setupProject();
+    process.exitCode = 0;
+    const source = join(TEST_DIR, "garbage.jsonl");
+    writeFileSync(source, "not json\n{broken\n");
+
+    const output = await renderCommand(<DataImportCommand file={source} yes />, "Nothing was imported");
+
+    t.regex(output, /Nothing was imported: 2 rows were skipped\. First problem: Line 1: Invalid JSON/);
+    t.regex(output, /Line 2: Invalid JSON/);
+    t.false(output.includes("Import complete"));
+    t.is(await exitCodeAfterRender(), 1);
+    process.exitCode = 0;
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("DataImportCommand fails on an empty file rather than reporting zero as success", async (t) => {
+  try {
+    setupProject();
+    process.exitCode = 0;
+    const source = join(TEST_DIR, "empty.jsonl");
+    writeFileSync(source, "");
+
+    const output = await renderCommand(<DataImportCommand file={source} yes />, "No examples were found");
+
+    t.false(output.includes("Import complete"));
+    t.is(await exitCodeAfterRender(), 1);
+    process.exitCode = 0;
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("DataImportCommand still succeeds, with warnings, when only some rows are rejected", async (t) => {
+  try {
+    setupProject();
+    process.exitCode = 0;
+    const source = join(TEST_DIR, "mixed.jsonl");
+    writeFileSync(source, `${JSON.stringify(example("good one"))}\nnot json\n${JSON.stringify(example("good two"))}\n`);
+
+    const output = stripAnsi(
+      await renderCommand(<DataImportCommand file={source} yes />, "Import complete"),
+    );
+
+    t.regex(output, /Import complete/);
+    t.regex(output, /Imported: 2/);
+    t.regex(output, /Skipped: 1/);
+    t.regex(output, /Line 2: Invalid JSON/);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    t.not(process.exitCode, 1);
   } finally {
     teardown();
   }
@@ -1377,6 +1501,35 @@ test.serial("ChatCommand refuses to start outside a project", async (t) => {
     t.true(output.includes("Not a Nanotune project"));
     t.true(output.includes("nanotune init"), "should say what to run");
     process.exitCode = 0;
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("ChatCommand rejects an unparseable flag and fails the run", async (t) => {
+  try {
+    setupProject();
+    process.exitCode = 0;
+    // The project has no exported model: reaching that error instead would
+    // mean the flag was never looked at.
+    const output = await renderCommand(
+      <ChatCommand options={{ ctxSize: "4096x" }} />,
+      "Invalid --ctx-size",
+    );
+    t.regex(output, /Invalid --ctx-size "4096x": expected a non-negative integer\./);
+    t.false(output.includes("No exported models"));
+    t.is(await exitCodeAfterRender(), 1);
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("ChatCommand exits non-zero when it cannot start", async (t) => {
+  try {
+    setupProject();
+    process.exitCode = 0;
+    await renderCommand(<ChatCommand options={{}} />, "No exported models");
+    t.is(await exitCodeAfterRender(), 1);
   } finally {
     teardown();
   }

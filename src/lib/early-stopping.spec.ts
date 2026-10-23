@@ -49,8 +49,10 @@ def train(*args, **kwargs):
     for it, loss in enumerate(losses, 1):
         cb.on_val_loss_report({"iteration": it - 1, "val_loss": loss})
         if scenario == "user-abort":
-            print("Iter 1: Train loss 1.234", flush=True)
+            # The test aborts the moment it reads this line, so the handler has
+            # to be installed before the line is printed, not after.
             try:
+                print("Iter 1: Train loss 1.234", flush=True)
                 while True: time.sleep(0.05)
             except KeyboardInterrupt:
                 save(adapter, {"weights": 99})

@@ -17,13 +17,26 @@ export type FineTuneType = (typeof FINE_TUNE_TYPES)[number];
 // Counts are integers: mlx_lm indexes and slices with these, so a float gets
 // there and dies with an opaque Python error rather than a message naming the
 // flag. Rank/alpha/dropout are the genuinely continuous ones.
+//
+// The loop settings must be positive, not just numbers. mlx_lm takes
+// `it % steps_per_eval` and `it % save_every`, so 0 crashes it with a
+// ZeroDivisionError after the model has downloaded and the data is split, a
+// batch size of 0 fails the same way, and 0 iterations "trains" nothing and
+// reports completion. `numLayers` keeps -1: mlx_lm reads any value below 1 as
+// "every layer".
 export const TrainingConfigSchema = z.object({
-	iterations: z.number().default(150),
-	learningRate: z.number().default(5e-5),
-	batchSize: z.number().default(4),
-	numLayers: z.number().default(16),
-	stepsPerEval: z.number().default(50),
-	saveEvery: z.number().default(50),
+	iterations: z.int().positive().default(150),
+	learningRate: z.number().positive().default(5e-5),
+	batchSize: z.int().positive().default(4),
+	numLayers: z
+		.int()
+		.refine(n => n === -1 || n > 0, {
+			message:
+				'Invalid input: expected a positive integer, or -1 for all layers',
+		})
+		.default(16),
+	stepsPerEval: z.int().positive().default(50),
+	saveEvery: z.int().positive().default(50),
 	fineTuneType: z.enum(FINE_TUNE_TYPES).default('lora'),
 	loraRank: z.int().positive().default(8),
 	loraAlpha: z.number().positive().default(20),
@@ -36,8 +49,10 @@ export const TrainingConfigSchema = z.object({
 	loadBestModelAtEnd: z.boolean().default(false),
 });
 
+export const QUANTIZATION_TYPES = ['f16', 'q8_0', 'q4_k_m', 'q4_k_s'] as const;
+
 export const ExportConfigSchema = z.object({
-	quantization: z.enum(['f16', 'q8_0', 'q4_k_m', 'q4_k_s']).default('q4_k_m'),
+	quantization: z.enum(QUANTIZATION_TYPES).default('q4_k_m'),
 	outputName: z.string(),
 });
 
@@ -235,7 +250,7 @@ export interface DependencyStatus {
 	llamaCpp: boolean;
 }
 
-export type QuantizationType = 'f16' | 'q8_0' | 'q4_k_m' | 'q4_k_s';
+export type QuantizationType = (typeof QUANTIZATION_TYPES)[number];
 
 /** Benchmark hardware presets for common device profiles */
 export type BenchmarkPreset = 'low' | 'medium' | 'high' | 'ultra';

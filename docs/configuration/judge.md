@@ -94,6 +94,12 @@ protection up on its next `nanotune judge configure`.
 | Anthropic | `https://api.anthropic.com/v1` |
 | Google Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` |
 | Mistral | `https://api.mistral.ai/v1` |
+| Z.ai | `https://api.z.ai/api/paas/v4/` |
+| Z.ai Coding Subscription | `https://api.z.ai/api/coding/paas/v4/` |
+| GitHub Models | `https://models.github.ai/inference` |
+| Kimi Code | `https://api.kimi.com/coding/v1` |
+| MiniMax Coding Plan | `https://api.minimax.io/anthropic/v1` |
+| Poe | `https://api.poe.com/v1` |
 
 ### Local Providers
 
@@ -102,6 +108,8 @@ protection up on its next `nanotune judge configure`.
 | Ollama | `http://localhost:11434/v1` |
 | llama.cpp | `http://localhost:8080/v1` |
 | LM Studio | `http://localhost:1234/v1` |
+
+Choose **Custom Provider** in `nanotune judge configure` for any other OpenAI-compatible endpoint.
 
 ## See Also
 

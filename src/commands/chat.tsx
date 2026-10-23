@@ -3,7 +3,7 @@ import {basename} from 'node:path';
 import {Spinner, StatusMessage, TextInput} from '@inkjs/ui';
 import {Box, Static, Text, useApp} from 'ink';
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {Header, useKeyInput} from '../components/index.js';
+import {Header, useAutoExit, useKeyInput} from '../components/index.js';
 import {
 	buildGenerateOptions,
 	buildServerOptions,
@@ -145,21 +145,49 @@ export function ChatCommand({options}: Props) {
 
 	// Memoize so the values are stable across renders — otherwise the startup
 	// effect would tear down and restart the llama-server on every state change.
-	const serverOptions = useMemo(
-		() =>
-			buildServerOptions({
-				preset,
-				threads,
-				gpuLayers,
-				ctxSize,
-				batchSize,
-				cpuOnly,
-			}),
-		[preset, threads, gpuLayers, ctxSize, batchSize, cpuOnly],
-	);
+	// A flag that does not parse is carried as an error, not thrown: throwing
+	// from a render would take the whole UI down with a stack trace.
+	const flags = useMemo(() => {
+		try {
+			return {
+				ok: true as const,
+				serverOptions: buildServerOptions({
+					preset,
+					threads,
+					gpuLayers,
+					ctxSize,
+					batchSize,
+					cpuOnly,
+				}),
+				generateOptions: buildGenerateOptions({
+					preset,
+					maxTokens,
+					temperature,
+					topP,
+					seed,
+				}),
+			};
+		} catch (err) {
+			return {
+				ok: false as const,
+				error: err instanceof Error ? err.message : String(err),
+			};
+		}
+	}, [
+		preset,
+		threads,
+		gpuLayers,
+		ctxSize,
+		batchSize,
+		cpuOnly,
+		maxTokens,
+		temperature,
+		topP,
+		seed,
+	]);
 	const generateOptions = useMemo(
-		() => buildGenerateOptions({preset, maxTokens, temperature, topP, seed}),
-		[preset, maxTokens, temperature, topP, seed],
+		() => (flags.ok ? flags.generateOptions : {}),
+		[flags],
 	);
 
 	const appendTurn = useCallback((turn: Omit<DisplayTurn, 'id'>) => {
@@ -172,6 +200,12 @@ export function ChatCommand({options}: Props) {
 
 		const startup = async () => {
 			try {
+				if (!flags.ok) {
+					setError(flags.error);
+					setStatus('error');
+					return;
+				}
+
 				if (!configExists()) {
 					setError('Not a Nanotune project. Run `nanotune init` first.');
 					setStatus('error');
@@ -210,7 +244,7 @@ export function ChatCommand({options}: Props) {
 				setModelLabel(label);
 
 				const handle = await startLlamaServer(modelPath, {
-					...serverOptions,
+					...flags.serverOptions,
 					alias: label,
 				});
 				if (cancelled) {
@@ -237,7 +271,7 @@ export function ChatCommand({options}: Props) {
 				void stopLlamaServer(handle);
 			}
 		};
-	}, [modelArg, systemArg, serverOptions]);
+	}, [modelArg, systemArg, flags]);
 
 	// Backstop: if the process exits unexpectedly (SIGINT etc.), make sure
 	// the server child is killed. The useEffect cleanup handles graceful exit.
@@ -447,6 +481,10 @@ export function ChatCommand({options}: Props) {
 		},
 		[appendTurn, exit, history, sendMessage, systemMessage, totalTokens],
 	);
+
+	// Any startup failure, an unparseable flag included, is a failed run: the
+	// exit code is what `nanotune chat ... && next` or a shell wrapper sees.
+	useAutoExit(status === 'error', true);
 
 	useKeyInput((_input, key) => {
 		if (key.escape) {

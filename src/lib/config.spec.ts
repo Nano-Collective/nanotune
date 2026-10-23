@@ -153,6 +153,35 @@ test("ConfigSchema rejects invalid quantization type", (t) => {
   t.false(result.success);
 });
 
+test("TrainingConfigSchema rejects loop settings that would crash or silently skip mlx_lm", (t) => {
+  // `it % steps_per_eval` / `it % save_every` divide by zero in mlx_lm, a batch
+  // size of 0 fails the same way, and 0 iterations "completes" having trained
+  // nothing. Each used to pass validation and fail minutes into a run.
+  for (const field of ["iterations", "batchSize", "stepsPerEval", "saveEvery"] as const) {
+    for (const bad of [0, -1, 1.5]) {
+      const result = TrainingConfigSchema.safeParse({ [field]: bad });
+      t.false(result.success, `${field}: ${bad}`);
+      if (!result.success) t.is(String(result.error.issues[0].path[0]), field);
+    }
+    t.true(TrainingConfigSchema.safeParse({ [field]: 1 }).success, `${field}: 1`);
+  }
+});
+
+test("TrainingConfigSchema needs a positive learning rate", (t) => {
+  for (const bad of [0, -1e-5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    t.false(TrainingConfigSchema.safeParse({ learningRate: bad }).success, `learningRate: ${bad}`);
+  }
+  t.true(TrainingConfigSchema.safeParse({ learningRate: 1e-7 }).success);
+});
+
+test("TrainingConfigSchema keeps -1 for numLayers, which mlx_lm reads as every layer", (t) => {
+  t.true(TrainingConfigSchema.safeParse({ numLayers: -1 }).success);
+  t.true(TrainingConfigSchema.safeParse({ numLayers: 8 }).success);
+  for (const bad of [0, -2, 2.5]) {
+    t.false(TrainingConfigSchema.safeParse({ numLayers: bad }).success, `numLayers: ${bad}`);
+  }
+});
+
 test("TrainingConfigSchema rejects a non-positive loraRank", (t) => {
   const result = TrainingConfigSchema.safeParse({ loraRank: 0 });
   t.false(result.success);

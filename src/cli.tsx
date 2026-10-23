@@ -264,7 +264,9 @@ program
 	)
 	.action(async options => {
 		const {ExportCommand} = await import('./commands/export.js');
-		render(<ExportCommand options={options} />);
+		// Ctrl+C is handled inside the command: Ink's default exit would unmount
+		// the screen while the fuse and conversion carried on unseen.
+		render(<ExportCommand options={options} />, {exitOnCtrlC: false});
 	});
 
 // Benchmark command
@@ -328,7 +330,8 @@ const benchmarkCommand = program
 			return;
 		}
 		const {BenchmarkCommand} = await import('./commands/benchmark.js');
-		render(<BenchmarkCommand options={options} />);
+		// Ctrl+C is handled inside the command, for the same reason as export.
+		render(<BenchmarkCommand options={options} />, {exitOnCtrlC: false});
 	});
 
 benchmarkCommand
