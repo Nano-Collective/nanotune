@@ -1,4 +1,4 @@
-import {existsSync, mkdirSync} from 'node:fs';
+import {existsSync, mkdirSync, readFileSync} from 'node:fs';
 import {chmod, rm} from 'node:fs/promises';
 import {createServer} from 'node:net';
 import {homedir} from 'node:os';
@@ -6,25 +6,54 @@ import {join} from 'node:path';
 import {execa, type ResultPromise} from 'execa';
 import type {ChatMessage, QuantizationType} from '../types/index.js';
 import {downloadToFile, fetchJson} from './download.js';
+import {checkPythonModule, installPythonPackages} from './mlx.js';
 import {assertSupportedPlatform} from './platform.js';
 
 const LLAMA_CPP_DIR = join(homedir(), '.nanotune', 'llama.cpp');
 const LLAMA_CPP_BIN_DIR = join(LLAMA_CPP_DIR, 'bin');
 
-// We'll fetch the latest release dynamically
-const GITHUB_API_LATEST =
-	'https://api.github.com/repos/ggerganov/llama.cpp/releases/latest';
+// llama.cpp publishes every build as a prerelease tagged `bNNNN`, and keeps a
+// single placeholder "release" (currently `v0.7.0`, whose only asset is
+// `nightly-tag.txt`) as the repository's latest. `releases/latest` therefore
+// answers with a release that has no binaries at all, so ask for the recent
+// releases instead and take the newest one that does.
+const GITHUB_API_RELEASES =
+	'https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30';
+
+/**
+ * Whether `dir` holds a complete llama.cpp install: the quantizer binary, the
+ * convert script and the packages that script imports.
+ */
+export function isLlamaCppInstalledAt(dir: string): boolean {
+	const convertScript = join(dir, 'convert_hf_to_gguf.py');
+	if (
+		!existsSync(join(dir, 'bin', 'llama-quantize')) ||
+		!existsSync(convertScript) ||
+		!existsSync(join(dir, 'gguf-py'))
+	) {
+		return false;
+	}
+	// Newer convert scripts import a sibling `conversion` package. An install
+	// made before that, or one that never fetched it, is incomplete and is
+	// repaired by installing again rather than failing mid-export.
+	return (
+		!importsConversionPackage(convertScript) ||
+		existsSync(join(dir, 'conversion'))
+	);
+}
+
+function importsConversionPackage(scriptPath: string): boolean {
+	try {
+		return /^\s*(?:from|import)\s+conversion\b/m.test(
+			readFileSync(scriptPath, 'utf-8'),
+		);
+	} catch {
+		return false;
+	}
+}
 
 export async function checkLlamaCppInstalled(): Promise<boolean> {
-	const quantizePath = join(LLAMA_CPP_BIN_DIR, 'llama-quantize');
-	const convertScript = join(LLAMA_CPP_DIR, 'convert_hf_to_gguf.py');
-	const ggufPyDir = join(LLAMA_CPP_DIR, 'gguf-py');
-	// Need all three: binary, convert script, and gguf-py
-	return (
-		existsSync(quantizePath) &&
-		existsSync(convertScript) &&
-		existsSync(ggufPyDir)
-	);
+	return isLlamaCppInstalledAt(LLAMA_CPP_DIR);
 }
 
 interface GitHubAsset {
@@ -34,7 +63,31 @@ interface GitHubAsset {
 
 interface GitHubRelease {
 	tag_name: string;
+	draft?: boolean;
 	assets: GitHubAsset[];
+}
+
+/**
+ * The newest release that ships a macOS arm64 binary. Releases arrive newest
+ * first; drafts are skipped, prereleases are not, because that is what nearly
+ * every llama.cpp build is.
+ */
+export function pickMacArm64Release(releases: GitHubRelease[]): {
+	tag: string;
+	downloadUrl: string;
+} {
+	for (const release of releases) {
+		if (release.draft) continue;
+		const asset = release.assets.find(
+			a => a.name.includes('macos-arm64') && a.name.endsWith('.tar.gz'),
+		);
+		if (asset) {
+			return {tag: release.tag_name, downloadUrl: asset.browser_download_url};
+		}
+	}
+	throw new Error(
+		'Could not find a macOS arm64 binary in the recent llama.cpp releases',
+	);
 }
 
 async function getLatestRelease(): Promise<{
@@ -43,23 +96,10 @@ async function getLatestRelease(): Promise<{
 }> {
 	// A 502 from the GitHub API is usually gone within a second or two, and
 	// losing the whole install over one blip is a poor trade for a 1 s wait.
-	const release = await fetchJson<GitHubRelease>(GITHUB_API_LATEST, {
+	const releases = await fetchJson<GitHubRelease[]>(GITHUB_API_RELEASES, {
 		headers: {Accept: 'application/vnd.github.v3+json'},
 	});
-
-	// Find the macOS arm64 binary (Apple Silicon)
-	const asset = release.assets.find(
-		a => a.name.includes('macos-arm64') && a.name.endsWith('.tar.gz'),
-	);
-
-	if (!asset) {
-		throw new Error('Could not find macOS arm64 binary in latest release');
-	}
-
-	return {
-		tag: release.tag_name,
-		downloadUrl: asset.browser_download_url,
-	};
+	return pickMacArm64Release(releases);
 }
 
 async function downloadAndExtract(url: string, destDir: string): Promise<void> {
@@ -89,45 +129,64 @@ async function downloadAndExtract(url: string, destDir: string): Promise<void> {
 	}
 }
 
+/**
+ * Which parts of the llama.cpp source archive the convert script needs, from
+ * the archive's own listing. The archive's top directory is read rather than
+ * rebuilt from the tag, because GitHub drops a leading `v` from it.
+ * `conversion/` only exists in newer releases, so it is taken when present.
+ */
+export function selectConvertMembers(entries: string[]): string[] {
+	const first = entries.find(entry => entry.includes('/'));
+	if (!first) {
+		throw new Error('The llama.cpp source archive is empty or unreadable.');
+	}
+	const prefix = first.split('/')[0];
+	const members = [`${prefix}/gguf-py`];
+	if (entries.some(entry => entry.startsWith(`${prefix}/conversion/`))) {
+		members.push(`${prefix}/conversion`);
+	}
+	return members;
+}
+
 async function downloadConvertScript(tag: string): Promise<void> {
 	const scriptPath = join(LLAMA_CPP_DIR, 'convert_hf_to_gguf.py');
 	const ggufPyDir = join(LLAMA_CPP_DIR, 'gguf-py');
+	const conversionDir = join(LLAMA_CPP_DIR, 'conversion');
 
 	// Clean up old versions first
 	if (existsSync(scriptPath)) {
 		await rm(scriptPath);
 	}
-	if (existsSync(ggufPyDir)) {
-		await rm(ggufPyDir, {recursive: true});
-	}
+	await rm(ggufPyDir, {recursive: true, force: true});
+	await rm(conversionDir, {recursive: true, force: true});
 
 	// Download the convert script matching the release version
-	const scriptUrl = `https://raw.githubusercontent.com/ggerganov/llama.cpp/${tag}/convert_hf_to_gguf.py`;
+	const scriptUrl = `https://raw.githubusercontent.com/ggml-org/llama.cpp/${tag}/convert_hf_to_gguf.py`;
 
 	await downloadToFile(scriptUrl, scriptPath);
 	await chmod(scriptPath, 0o755);
 
-	// Download the bundled gguf-py package (the script uses this instead of pip gguf)
+	// The script imports the bundled gguf-py package (it uses that instead of
+	// pip's gguf) and, in newer releases, a sibling `conversion` package. Both
+	// come out of the source archive for the same tag.
 	mkdirSync(ggufPyDir, {recursive: true});
-
-	// Download gguf-py as a tarball from the release
-	const ggufTarUrl = `https://github.com/ggerganov/llama.cpp/archive/${tag}.tar.gz`;
+	const ggufTarUrl = `https://github.com/ggml-org/llama.cpp/archive/${tag}.tar.gz`;
 	const ggufTarPath = join(LLAMA_CPP_DIR, 'repo.tar.gz');
 
-	await downloadToFile(ggufTarUrl, ggufTarPath);
-
-	// Extract just the gguf-py directory
-	await execa('tar', [
-		'-xzf',
-		ggufTarPath,
-		'-C',
-		LLAMA_CPP_DIR,
-		'--strip-components=1',
-		`llama.cpp-${tag}/gguf-py`,
-	]);
-
-	// Clean up tarball
-	await rm(ggufTarPath);
+	try {
+		await downloadToFile(ggufTarUrl, ggufTarPath);
+		const listing = await execa('tar', ['-tzf', ggufTarPath]);
+		await execa('tar', [
+			'-xzf',
+			ggufTarPath,
+			'-C',
+			LLAMA_CPP_DIR,
+			'--strip-components=1',
+			...selectConvertMembers(listing.stdout.split('\n')),
+		]);
+	} finally {
+		await rm(ggufTarPath, {force: true});
+	}
 }
 
 export async function* installLlamaCpp(): AsyncGenerator<string> {
@@ -161,6 +220,58 @@ export interface ConvertProgress {
 	progress?: number;
 }
 
+/**
+ * Python packages the convert script imports that `pip install mlx-lm` does
+ * not bring along. The script starts with `import torch`, so a Mac that has
+ * only ever trained with MLX cannot convert until PyTorch is installed.
+ */
+const CONVERT_PYTHON_PACKAGES = ['torch'];
+
+export async function checkConvertDependencies(): Promise<boolean> {
+	for (const name of CONVERT_PYTHON_PACKAGES) {
+		if (!(await checkPythonModule(name))) {
+			return false;
+		}
+	}
+	return true;
+}
+
+export async function* installConvertDependencies(): AsyncGenerator<string> {
+	yield 'Installing PyTorch (needed to convert to GGUF)...';
+	await installPythonPackages(CONVERT_PYTHON_PACKAGES);
+	yield 'PyTorch installed.';
+}
+
+// pip's package name where it differs from the module the traceback names.
+const PIP_NAMES: Record<string, string> = {
+	google: 'protobuf',
+	yaml: 'pyyaml',
+};
+
+/**
+ * A plain-language reason for a failed conversion, read from the script's own
+ * traceback, or null when it is not a missing module. The old hint matched on
+ * the word "gguf", which is in the command line (`convert_hf_to_gguf.py`) of
+ * every failure, so it told people to `pip install gguf` whatever had gone
+ * wrong.
+ */
+export function explainConvertFailure(stderr: string): string | null {
+	const missing = /ModuleNotFoundError: No module named '([\w.]+)'/.exec(
+		stderr,
+	);
+	if (!missing) {
+		return null;
+	}
+	const module = missing[1].split('.')[0];
+	if (module === 'conversion') {
+		return (
+			'The llama.cpp install is incomplete (its `conversion` package is missing). ' +
+			'Delete ~/.nanotune/llama.cpp and run `nanotune export` again to reinstall it.'
+		);
+	}
+	return `GGUF conversion needs the Python package "${module}", which is not installed. Install it with: pip3 install ${PIP_NAMES[module] ?? module}`;
+}
+
 export async function* convertToGGUF(
 	inputPath: string,
 	outputPath: string,
@@ -179,12 +290,14 @@ export async function* convertToGGUF(
 			'f16',
 		]);
 	} catch (err) {
-		const message = err instanceof Error ? err.message : 'Unknown error';
-		// Check for common issues
-		if (message.includes('gguf')) {
-			throw new Error(
-				`Conversion failed. You may need to install gguf: pip3 install gguf\n\n${message}`,
-			);
+		const stderr =
+			err && typeof err === 'object' && 'stderr' in err
+				? String((err as {stderr: unknown}).stderr ?? '')
+				: '';
+		const reason = explainConvertFailure(stderr);
+		if (reason) {
+			const tail = stderr.trim().split('\n').slice(-5).join('\n');
+			throw new Error(`Conversion failed. ${reason}\n\nDetails:\n${tail}`);
 		}
 		throw err;
 	}

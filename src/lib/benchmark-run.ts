@@ -18,6 +18,7 @@ import {
 	type SamplingOptions,
 	summarizeSamples,
 } from './benchmark-utils.js';
+import {FLAG_RULES, parseNumericFlag} from './cli-flags.js';
 import {
 	configExists,
 	ensureBenchmarksDir,
@@ -34,10 +35,13 @@ import {
 } from './judge.js';
 import {
 	chatCompletion,
+	checkConvertDependencies,
 	checkLlamaCppInstalled,
 	exportModel,
 	type GenerateOptions,
+	installConvertDependencies,
 	installLlamaCpp,
+	type ServerHandle,
 	type ServerOptions,
 	startLlamaServer,
 	stopLlamaServer,
@@ -98,6 +102,29 @@ export type BenchmarkEvent =
  * fake instead of a live server and a real model. Production always takes the
  * default; only tests pass this.
  */
+/** How long a failed request waits for llama-server to report an exit. */
+const SERVER_EXIT_GRACE_MS = 300;
+
+/** Thrown from inside a test when the server has died under the run. */
+class ServerLostError extends Error {}
+
+/**
+ * Whether the server process has exited within `ms`. Used only on the error
+ * path, so the wait is never paid on a healthy run.
+ */
+function hasExitedWithin(handle: ServerHandle, ms: number): Promise<boolean> {
+	if (!handle.exited) {
+		return Promise.resolve(false);
+	}
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const timeout = new Promise<boolean>(resolve => {
+		timer = setTimeout(() => resolve(false), ms);
+	});
+	return Promise.race([handle.exited.then(() => true), timeout]).finally(() =>
+		clearTimeout(timer),
+	);
+}
+
 export interface BenchmarkDeps {
 	startLlamaServer: typeof startLlamaServer;
 	chatCompletion: typeof chatCompletion;
@@ -126,6 +153,36 @@ export function resolveRunOptions(
 	options: BenchmarkRunOptions,
 	sampling: Pick<SamplingOptions, 'temperature' | 'seed'>,
 ): {serverOptions: ServerOptions; generateOptions: GenerateOptions} {
+	// Validate every numeric flag that was passed, even one a `--preset` is
+	// about to replace: a typo is still a typo, and it should surface here, not
+	// as `-ngl NaN` on a llama-server command line.
+	const threads = parseNumericFlag(
+		'--threads',
+		options.threads,
+		FLAG_RULES.positiveInteger,
+	);
+	const gpuLayers = parseNumericFlag(
+		'--gpu-layers',
+		options.gpuLayers,
+		FLAG_RULES.integer,
+	);
+	// 0 is llama-server's "use the model's own context size".
+	const ctxSize = parseNumericFlag(
+		'--ctx-size',
+		options.ctxSize,
+		FLAG_RULES.nonNegativeInteger,
+	);
+	const batchSize = parseNumericFlag(
+		'--batch-size',
+		options.batchSize,
+		FLAG_RULES.positiveInteger,
+	);
+	const maxTokens = parseNumericFlag(
+		'--max-tokens',
+		options.maxTokens,
+		FLAG_RULES.positiveInteger,
+	);
+
 	if (options.preset) {
 		if (!VALID_PRESETS.includes(options.preset as BenchmarkPreset)) {
 			throw new Error(
@@ -152,22 +209,14 @@ export function resolveRunOptions(
 
 	return {
 		serverOptions: {
-			threads: options.threads
-				? Number.parseInt(options.threads, 10)
-				: undefined,
-			gpuLayers: options.gpuLayers
-				? Number.parseInt(options.gpuLayers, 10)
-				: undefined,
-			ctxSize: options.ctxSize ? Number.parseInt(options.ctxSize, 10) : 4096,
-			batchSize: options.batchSize
-				? Number.parseInt(options.batchSize, 10)
-				: 2048,
+			threads,
+			gpuLayers,
+			ctxSize: ctxSize ?? 4096,
+			batchSize: batchSize ?? 2048,
 			cpuOnly: options.cpuOnly,
 		},
 		generateOptions: {
-			maxTokens: options.maxTokens
-				? Number.parseInt(options.maxTokens, 10)
-				: 50,
+			maxTokens: maxTokens ?? 50,
 			temperature: sampling.temperature,
 			seed: sampling.seed,
 		},
@@ -486,6 +535,40 @@ export async function* runBenchmark(
 	}
 	const benchmarksDir = ensureBenchmarksDir();
 
+	// Resolve the sampling flags before anything expensive. `--base` can spend
+	// minutes downloading and quantizing a base model, and failing a typo'd
+	// `--samples` only after that has finished wastes the whole run on
+	// something we could see immediately.
+	const sampling = resolveSamplingOptions({
+		temperature: options.temperature,
+		seed: options.seed,
+		samples: options.samples,
+	});
+
+	// Reject a mistyped flag rather than running a suite under settings the
+	// user didn't ask for.
+	if (sampling.errors.length > 0) {
+		throw new Error(sampling.errors[0]);
+	}
+
+	if (sampling.samples > 1 && sampling.temperature === 0) {
+		throw new Error(
+			'Cannot use --samples with temperature 0 (greedy decoding produces identical outputs). Use --temperature 0.1 or higher for sampling.',
+		);
+	}
+
+	// Resolving the options this early also rejects a bad `--preset` before the
+	// base-model download rather than after it.
+	const {serverOptions, generateOptions} = resolveRunOptions(options, sampling);
+	// Per-call budget, in milliseconds. Read here with the rest of the flags so
+	// a typo fails before a base model is downloaded, not after.
+	const timeout =
+		parseNumericFlag(
+			'--timeout',
+			options.timeout,
+			FLAG_RULES.positiveInteger,
+		) ?? 30000;
+
 	// Load benchmark dataset before any expensive setup. An empty array would
 	// otherwise fall through to the summary and produce passRate: 0/0 = NaN,
 	// which JSON.stringify silently substitutes with null — and every
@@ -513,32 +596,6 @@ export async function* runBenchmark(
 			'`--model` and `--base` are mutually exclusive — `--base` resolves the model itself.',
 		);
 	}
-
-	// Resolve the sampling flags before anything expensive. `--base` can spend
-	// minutes downloading and quantizing a base model, and failing a typo'd
-	// `--samples` only after that has finished wastes the whole run on
-	// something we could see immediately.
-	const sampling = resolveSamplingOptions({
-		temperature: options.temperature,
-		seed: options.seed,
-		samples: options.samples,
-	});
-
-	// Reject a mistyped flag rather than running a suite under settings the
-	// user didn't ask for.
-	if (sampling.errors.length > 0) {
-		throw new Error(sampling.errors[0]);
-	}
-
-	if (sampling.samples > 1 && sampling.temperature === 0) {
-		throw new Error(
-			'Cannot use --samples with temperature 0 (greedy decoding produces identical outputs). Use --temperature 0.1 or higher for sampling.',
-		);
-	}
-
-	// Resolving the options this early also rejects a bad `--preset` before the
-	// base-model download rather than after it.
-	const {serverOptions, generateOptions} = resolveRunOptions(options, sampling);
 
 	let modelPath: string;
 	if (options.base) {
@@ -571,6 +628,13 @@ export async function* runBenchmark(
 					if (!hasLlamaCpp) {
 						latest = 'Installing llama.cpp...';
 						for await (const msg of installLlamaCpp()) {
+							latest = msg;
+						}
+					}
+					// Converting the base model needs PyTorch, which `mlx-lm` does
+					// not install.
+					if (!(await checkConvertDependencies())) {
+						for await (const msg of installConvertDependencies()) {
 							latest = msg;
 						}
 					}
@@ -669,10 +733,6 @@ export async function* runBenchmark(
 		judgeConfig = loadJudgeConfig();
 	}
 
-	const timeout = options.timeout
-		? Number.parseInt(options.timeout, 10)
-		: 30000;
-
 	const failures: BenchmarkResult['failures'] = [];
 	const allResults: BenchmarkTestResult[] = [];
 	const categoryResults: Record<string, CategoryResult> = {};
@@ -696,7 +756,7 @@ export async function* runBenchmark(
 	});
 
 	try {
-		for (let i = 0; i < tests.length; i++) {
+		testLoop: for (let i = 0; i < tests.length; i++) {
 			if (serverDied) {
 				abortReason = `llama-server exited unexpectedly after ${i} of ${tests.length} tests — saving partial results.`;
 				break;
@@ -765,6 +825,16 @@ export async function* runBenchmark(
 							tokensPerSecond = inferenceResult.tokensPerSecond;
 						}
 					} catch (err) {
+						// A connection that was refused or reset while the server has
+						// also exited is the server dying under us. Scoring it as a
+						// model failure would put a crash into the pass rate, so stop
+						// the run and leave this test out of the report.
+						if (
+							!controller.signal.aborted &&
+							(await hasExitedWithin(serverHandle, SERVER_EXIT_GRACE_MS))
+						) {
+							throw new ServerLostError();
+						}
 						// Timeout or other errors: treat this sample as failed and
 						// continue. This ensures partial results aren't thrown away
 						// when one sample times out in a multi-sample run.
@@ -860,6 +930,10 @@ export async function* runBenchmark(
 					});
 				}
 			} catch (err) {
+				if (err instanceof ServerLostError) {
+					abortReason = `llama-server exited unexpectedly after ${i} of ${tests.length} tests — saving partial results.`;
+					break testLoop;
+				}
 				latencyMs = Date.now() - startTime;
 				response =
 					err instanceof Error ? `Error: ${err.message}` : 'Unknown error';

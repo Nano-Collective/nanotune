@@ -45,6 +45,26 @@ test("resolveRunOptions parses individual flags and applies defaults", (t) => {
   t.is(generateOptions.maxTokens, 50);
 });
 
+test("resolveRunOptions rejects a partly numeric flag instead of truncating it", (t) => {
+  t.throws(() => resolveRunOptions({ ctxSize: "4096x" }, { temperature: 0, seed: 42 }), {
+    message: 'Invalid --ctx-size "4096x": expected a non-negative integer.',
+  });
+});
+
+test("resolveRunOptions rejects unparseable flags before they can reach llama-server", (t) => {
+  const sampling = { temperature: 0, seed: 42 };
+  t.throws(() => resolveRunOptions({ gpuLayers: "abc" }, sampling), { message: /Invalid --gpu-layers "abc"/ });
+  t.throws(() => resolveRunOptions({ threads: "0" }, sampling), { message: /Invalid --threads "0"/ });
+  t.throws(() => resolveRunOptions({ batchSize: "x" }, sampling), { message: /Invalid --batch-size "x"/ });
+  t.throws(() => resolveRunOptions({ maxTokens: "abc" }, sampling), { message: /Invalid --max-tokens "abc"/ });
+});
+
+test("resolveRunOptions still checks a flag that a --preset overrides", (t) => {
+  t.throws(() => resolveRunOptions({ preset: "low", threads: "x" }, { temperature: 0, seed: 42 }), {
+    message: /Invalid --threads "x"/,
+  });
+});
+
 test("resolveRunOptions leaves threads and gpuLayers undefined when unset", (t) => {
   const { serverOptions } = resolveRunOptions({}, SAMPLING);
 
@@ -392,6 +412,20 @@ test.serial("runBenchmark throws the init hint outside a project", async (t) => 
   t.true(error?.message.includes("Not a Nanotune project"));
 });
 
+test.serial("runBenchmark rejects an unparseable --timeout before any model work", async (t) => {
+  // With --base the platform check, download, conversion and quantization all
+  // come next, so reaching this error first shows the flag is read up front.
+  for (const timeout of ["abc", "0", "-5", "1.5", "30s"]) {
+    const error = await t.throwsAsync(() => drain({ timeout, base: true }));
+    t.regex(error?.message ?? "", new RegExp(`Invalid --timeout "${timeout}": expected a positive integer`));
+  }
+});
+
+test.serial("runBenchmark rejects a bad server flag before any model work", async (t) => {
+  const error = await t.throwsAsync(() => drain({ ctxSize: "4096x", base: true }));
+  t.regex(error?.message ?? "", /Invalid --ctx-size "4096x"/);
+});
+
 test.serial("runBenchmark rejects --model together with --base", async (t) => {
   const error = await t.throwsAsync(() =>
     drain({ model: "x.gguf", base: true }),
@@ -723,6 +757,8 @@ interface FakeSpec {
   failCalls?: number[];
   /** Settle the server's `exited` promise after this many completions. */
   dieAfterCalls?: number;
+  /** Refuse this call the way a dead server does: the process exits and fetch fails. */
+  connectionLostAt?: number;
   /** Judge verdict, when a test uses llm-judge. */
   judge?: (response: string) => { pass: boolean; score: number };
 }
@@ -763,6 +799,10 @@ function makeDeps(spec: FakeSpec = {}): { deps: BenchmarkDeps; log: FakeLog } {
       log.prompts.push(messages.at(-1)?.content ?? "");
       if (spec.dieAfterCalls !== undefined && call + 1 >= spec.dieAfterCalls) {
         settleExited();
+      }
+      if (spec.connectionLostAt === call) {
+        settleExited();
+        throw new TypeError("fetch failed");
       }
       if (spec.failCalls?.includes(call)) {
         throw new Error("timeout");
@@ -967,6 +1007,42 @@ test.serial("runBenchmark saves partial results when the server dies mid-run", a
   t.true(events.some((e) => e.type === "warning"));
   // Without this a saved partial run is indistinguishable from a complete one.
   t.true(result.warning?.includes("1 of 3 tests"));
+});
+
+test.serial("runBenchmark leaves a test cut short by a dying server out of the score", async (t) => {
+  const model = writeModel();
+  writeDataset([
+    { id: 1, prompt: "a", acceptable: ["ls"], category: "basic" },
+    { id: 2, prompt: "b", acceptable: ["ls"], category: "basic" },
+    { id: 3, prompt: "c", acceptable: ["ls"], category: "basic" },
+  ]);
+  // The third request is refused because the server has just died. It is not a
+  // wrong answer, so it must not appear as a failed test.
+  const { deps } = makeDeps({ connectionLostAt: 2 });
+
+  const { result } = await collect({ model }, deps);
+
+  t.is(result.summary.total, 2);
+  t.is(result.results.length, 2);
+  t.false(result.failures.some((f) => f.id === 3));
+  t.true(result.warning?.includes("2 of 3 tests"));
+});
+
+test.serial("runBenchmark still scores a refused request when the server is alive", async (t) => {
+  // A refused connection with a healthy server is a real transport failure
+  // and keeps counting as a failed test.
+  const model = writeModel();
+  writeDataset([
+    { id: 1, prompt: "a", acceptable: ["ls"], category: "basic" },
+    { id: 2, prompt: "b", acceptable: ["ls"], category: "basic" },
+  ]);
+  const { deps } = makeDeps({ failCalls: [1] });
+
+  const { result } = await collect({ model }, deps);
+
+  t.is(result.summary.total, 2);
+  t.is(result.warning, undefined);
+  t.true(result.failures.some((f) => f.id === 2));
 });
 
 test.serial("runBenchmark leaves warning unset on a complete run", async (t) => {

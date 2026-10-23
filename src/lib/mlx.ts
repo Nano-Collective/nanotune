@@ -127,11 +127,33 @@ export async function checkMLXInstalled(): Promise<boolean> {
 	}
 }
 
+/**
+ * Whether Python can find `moduleName`, without importing it. Importing
+ * something like torch costs seconds, and all that matters here is whether
+ * installing it is needed.
+ */
+export async function checkPythonModule(moduleName: string): Promise<boolean> {
+	try {
+		await execa('python3', [
+			'-c',
+			`import importlib.util, sys; sys.exit(0 if importlib.util.find_spec(${JSON.stringify(moduleName)}) else 1)`,
+		]);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 export async function installMLX(): Promise<void> {
+	await installPythonPackages(['mlx-lm']);
+}
+
+export async function installPythonPackages(packages: string[]): Promise<void> {
+	const list = packages.join(' ');
 	try {
 		// Try the friendly user-site install first; on stock macOS Python 3.12+
 		// this avoids the externally-managed-environment lockout.
-		await execa('pip3', ['install', '--user', 'mlx-lm'], {
+		await execa('pip3', ['install', '--user', ...packages], {
 			stdout: 'inherit',
 			stderr: 'pipe',
 		});
@@ -143,18 +165,18 @@ export async function installMLX(): Promise<void> {
 
 		if (stderr.includes('externally-managed-environment')) {
 			throw new Error(
-				'pip refuses to install mlx-lm into the system Python (externally-managed-environment).\n' +
+				`pip refuses to install ${list} into the system Python (externally-managed-environment).\n` +
 					'Pick one of:\n' +
-					'  • Create a venv: python3 -m venv ~/.nanotune/venv && source ~/.nanotune/venv/bin/activate && pip install mlx-lm\n' +
-					'  • Install via pipx: pipx install mlx-lm\n' +
-					'  • Override (not recommended): pip3 install --user --break-system-packages mlx-lm\n' +
-					'Then re-run `nanotune train`.',
+					`  • Create a venv: python3 -m venv ~/.nanotune/venv && source ~/.nanotune/venv/bin/activate && pip install ${list}\n` +
+					`  • Install via pipx: pipx install ${packages[0]}\n` +
+					`  • Override (not recommended): pip3 install --user --break-system-packages ${list}\n` +
+					'Then re-run your nanotune command.',
 			);
 		}
 
 		const tail = stderr.trim().split('\n').slice(-10).join('\n');
 		throw new Error(
-			`Failed to install mlx-lm via pip3.${tail ? `\n\nDetails:\n${tail}` : ''}`,
+			`Failed to install ${list} via pip3.${tail ? `\n\nDetails:\n${tail}` : ''}`,
 		);
 	}
 }
@@ -265,6 +287,13 @@ export async function* ensureModelDownloaded(
 			PYTHONUNBUFFERED: '1',
 		},
 	});
+
+	// The script exits non-zero after reporting a failure, and the reported
+	// reason is thrown below before this promise is ever awaited. Left alone,
+	// that rejection is unhandled and Node kills the process with a dump of the
+	// whole embedded script, which is what a mistyped model id used to do. The
+	// real outcome is still read from `await subprocess` further down.
+	subprocess.catch(() => {});
 
 	const stdout = subprocess.stdout;
 	if (!stdout) {

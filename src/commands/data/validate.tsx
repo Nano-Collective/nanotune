@@ -46,8 +46,17 @@ export function DataValidateCommand({
 	// reports on them, and before useAutoExit below reads result.valid to decide
 	// the exit code. An effect would run after both.
 	const reportRef = useRef<ValidationReport | null>(null);
-	if (reportRef.current === null && config) {
-		reportRef.current = collectValidation({fix, rewriteContext, isEval});
+	// A failure here (a lock that could not be taken, a file that could not be
+	// read or written) is a result to report, not an exception for Ink's error
+	// boundary to turn into a stack trace. Held in a ref for the same reason as
+	// the report: it must not be computed twice.
+	const failureRef = useRef<string | null>(null);
+	if (reportRef.current === null && failureRef.current === null && config) {
+		try {
+			reportRef.current = collectValidation({fix, rewriteContext, isEval});
+		} catch (err) {
+			failureRef.current = err instanceof Error ? err.message : String(err);
+		}
 	}
 
 	const report = reportRef.current;
@@ -60,7 +69,9 @@ export function DataValidateCommand({
 		return (
 			<Box flexDirection="column" padding={1}>
 				<Header title={title} />
-				<StatusMessage variant="error">{configError}</StatusMessage>
+				<StatusMessage variant="error">
+					{configError ?? failureRef.current}
+				</StatusMessage>
 			</Box>
 		);
 	}
@@ -104,7 +115,7 @@ export function DataValidateCommand({
 							<Text>
 								{' '}
 								{fixes.contextMessagesRewritten > 0
-									? `Rewrote context message on ${fixes.contextMessagesRewritten} example${fixes.contextMessagesRewritten > 1 ? 's' : ''}`
+									? `Set the context message on ${fixes.contextMessagesRewritten} example${fixes.contextMessagesRewritten > 1 ? 's' : ''}`
 									: 'No context-message mismatches to rewrite'}
 							</Text>
 						</Box>

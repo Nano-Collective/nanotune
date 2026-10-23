@@ -45,7 +45,7 @@ nanotune export --skip-fuse
 3. **Quantization** — The model is quantized to reduce file size
 4. **Model card** — A Hugging Face-style `README.md` is written beside the GGUF
 
-Pre-built llama.cpp binaries are downloaded automatically — no compilation needed.
+Pre-built llama.cpp binaries are downloaded automatically — no compilation needed. The GGUF conversion step needs PyTorch, which `mlx-lm` does not install, so Nanotune installs it with `pip3 install --user torch` the first time it is needed. Export checks for it before fusing, so a missing package is found at the start, not after several minutes.
 
 ## Model Card
 

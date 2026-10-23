@@ -1,6 +1,6 @@
 import { execa } from "execa";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -120,6 +120,15 @@ test.serial("leaves a lock with no readable owner alone", (t) => {
   const error = t.throws(() => withDataLock(() => "stolen", { timeoutMs: 150 }));
   t.regex(error!.message, /unidentified/);
   t.true(existsSync(getDataLockPath()));
+});
+
+test.serial("takes over a lock with no readable owner once it is old enough to be abandoned", (t) => {
+  mkdirSync(getDataLockPath(), { recursive: true });
+  const long_ago = new Date(Date.now() - 120_000);
+  utimesSync(getDataLockPath(), long_ago, long_ago);
+
+  t.is(withDataLock(() => "reclaimed", { timeoutMs: 10_000 }), "reclaimed");
+  t.false(existsSync(getDataLockPath()));
 });
 
 test.serial("names the holder and the path to remove when it gives up", (t) => {

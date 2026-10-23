@@ -1,4 +1,5 @@
 import type {BenchmarkTest, ChatMessage} from '../types/index.js';
+import {parseNumber} from './cli-flags.js';
 
 /**
  * Get the display prompt for a benchmark test.
@@ -78,17 +79,6 @@ export interface SamplingOptions {
 	errors: string[];
 }
 
-// Number() rather than parseFloat/parseInt so trailing garbage ("5abc") is
-// rejected instead of silently truncated to a plausible-looking value. A blank
-// value is screened out first because Number('') is 0.
-function parseFlag(raw: string | undefined): number | undefined {
-	if (raw === undefined) {
-		return undefined;
-	}
-	const trimmed = raw.trim();
-	return trimmed === '' ? Number.NaN : Number(trimmed);
-}
-
 /**
  * Resolve the sampling flags, defaulting anything the user didn't pass.
  *
@@ -105,7 +95,7 @@ export function resolveSamplingOptions(options: {
 	const errors: string[] = [];
 
 	let temperature = DEFAULT_BENCHMARK_TEMPERATURE;
-	const rawTemperature = parseFlag(options.temperature);
+	const rawTemperature = parseNumber(options.temperature);
 	if (rawTemperature !== undefined) {
 		if (!Number.isFinite(rawTemperature) || rawTemperature < 0) {
 			errors.push(
@@ -117,7 +107,7 @@ export function resolveSamplingOptions(options: {
 	}
 
 	let seed = DEFAULT_BENCHMARK_SEED;
-	const rawSeed = parseFlag(options.seed);
+	const rawSeed = parseNumber(options.seed);
 	if (rawSeed !== undefined) {
 		if (!Number.isInteger(rawSeed)) {
 			errors.push(`Invalid --seed "${options.seed}": expected an integer.`);
@@ -127,7 +117,7 @@ export function resolveSamplingOptions(options: {
 	}
 
 	let samples = 1;
-	const rawSamples = parseFlag(options.samples);
+	const rawSamples = parseNumber(options.samples);
 	if (rawSamples !== undefined) {
 		if (!Number.isInteger(rawSamples) || rawSamples < 1) {
 			errors.push(

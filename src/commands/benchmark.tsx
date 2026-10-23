@@ -36,8 +36,19 @@ export function BenchmarkCommand({options}: Props) {
 		{},
 	);
 
-	useKeyInput((_input, key) => {
-		if (key.escape || key.return) {
+	// Ctrl+C stops the process. The run is not resumable, so there is nothing to
+	// wait for, and exiting is what the key means. Ink would otherwise unmount
+	// the screen and leave the run going with nothing on the terminal. Escape
+	// and Enter only leave the results screen: during a run they would do the
+	// same silent detach.
+	useKeyInput((input, key) => {
+		if (key.ctrl && input === 'c') {
+			process.exit(130);
+		}
+		if (
+			(status === 'done' || status === 'error') &&
+			(key.escape || key.return)
+		) {
 			exit();
 		}
 	});

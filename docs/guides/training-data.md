@@ -27,7 +27,7 @@ Multi-turn conversations are supported — include multiple user/assistant excha
 
 The first message role is flexible — it can be `system`, `developer`, or any role your model expects. Nanotune stores this as the "context message" and applies it consistently across all training examples.
 
-> **Note:** When importing multi-turn JSONL (more than 3 messages), the full conversation is preserved as-is. Single-turn examples (3 messages or fewer) have their context message replaced with your project's configured context message.
+> **Note:** An imported `messages` record keeps its own context message if it starts with one, so a JSONL export re-imports exactly. A record that starts with a user turn gets your project's configured context message added in front, so it is trained and served with the same prompt as every other example. `nanotune data validate --rewrite-context` does the same for examples already in the file.
 
 ### CSV
 

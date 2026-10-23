@@ -1,4 +1,10 @@
-import {mkdirSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
+import {
+	mkdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from 'node:fs';
 import {hostname} from 'node:os';
 import {join} from 'node:path';
 import {getProjectDir} from './config.js';
@@ -7,12 +13,33 @@ import {isProcessAlive} from './model-cache.js';
 const LOCK_DIR = 'data.lock';
 const OWNER_FILE = 'owner.json';
 
-/** How long a caller waits before reporting the holder and giving up. */
-const DEFAULT_TIMEOUT_MS = 300_000;
+/**
+ * How long a caller waits before reporting the holder and giving up. Every
+ * write under the lock is a read, a transform and a rewrite of one file, which
+ * takes well under a second for a large dataset, so a minute means something
+ * is wrong rather than busy.
+ */
+const DEFAULT_TIMEOUT_MS = 60_000;
 const POLL_MS = 50;
 
-/** Errors from creating a directory that mean "try again", not "you cannot". */
-const TRANSIENT_MKDIR = new Set(['EPERM', 'EACCES', 'EBUSY']);
+/**
+ * The owner file is written straight after the lock directory is created, so a
+ * lock that still has no readable owner after this long was abandoned by a
+ * process killed between the two steps. A fresh one may simply be mid-write.
+ */
+const UNOWNED_GRACE_MS = 60_000;
+
+/**
+ * Errors from creating a directory that mean "try again", not "you cannot".
+ * Windows reports a directory another process has just removed, or one a
+ * real-time scanner holds open, as EPERM or EACCES. On POSIX those codes mean
+ * the directory is not writable, which no amount of waiting changes, so they
+ * fail at once rather than after the whole timeout.
+ */
+const TRANSIENT_MKDIR: ReadonlySet<string> =
+	process.platform === 'win32'
+		? new Set(['EPERM', 'EACCES', 'EBUSY'])
+		: new Set();
 
 // A busy-wait would burn a core inside the very window this lock exists to
 // protect. Node allows Atomics.wait on the main thread, unlike a browser.
@@ -177,14 +204,24 @@ function readOwner(path: string): LockOwner | null {
 
 /**
  * Only a lock this host took can be judged by its pid. Another host's pid means
- * nothing here - this may be a shared home directory - and an unreadable owner
- * proves nothing at all, so neither is taken over on a guess.
+ * nothing here - this may be a shared home directory. An unreadable owner is
+ * not taken over on a guess either, unless it has stayed that way for longer
+ * than the acquisition window could ever take.
  */
 function abandoned(path: string): boolean {
 	const owner = readOwner(path);
-	return (
-		owner !== null && owner.host === hostname() && !isProcessAlive(owner.pid)
-	);
+	if (owner === null) {
+		return ageMs(path) > UNOWNED_GRACE_MS;
+	}
+	return owner.host === hostname() && !isProcessAlive(owner.pid);
+}
+
+function ageMs(path: string): number {
+	try {
+		return Date.now() - statSync(path).mtimeMs;
+	} catch {
+		return 0;
+	}
 }
 
 function describeHolder(path: string): string {

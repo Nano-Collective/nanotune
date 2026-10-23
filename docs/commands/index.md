@@ -13,14 +13,17 @@ A complete reference for all Nanotune CLI commands.
 | [`nanotune init`](init.md) | Initialize a new fine-tuning project |
 | [`nanotune status`](status.md) | Show current project status |
 | [`nanotune runs`](runs.md) | List saved training runs and loss summaries |
-| [`nanotune clean`](clean.md) | Remove the cached fused model to reclaim disk space |
+| [`nanotune clean`](clean.md) | Remove the cached fused and/or base model to reclaim disk space |
 | [`nanotune data add`](data.md) | Add training examples interactively |
 | [`nanotune data import`](data.md) | Import training data from a file |
+| [`nanotune data export`](data.md) | Export training data to a file |
 | [`nanotune data list`](data.md) | View and manage training data |
 | [`nanotune data validate`](data.md) | Validate training data |
 | [`nanotune train`](train.md) | Run LoRA fine-tuning |
 | [`nanotune export`](export.md) | Export model to GGUF format |
 | [`nanotune benchmark`](benchmark.md) | Run benchmarks against a test dataset |
+| [`nanotune benchmark compare`](benchmark.md#nanotune-benchmark-compare) | Diff two saved benchmark runs |
+| [`nanotune benchmark review`](benchmark.md#nanotune-benchmark-review) | Turn failed benchmark tests into training data |
 | [`nanotune chat`](chat.md) | Talk to your fine-tuned model in a REPL |
 | [`nanotune judge configure`](judge.md) | Set up an LLM judge |
 | [`nanotune judge test`](judge.md) | Test the configured LLM judge |

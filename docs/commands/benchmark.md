@@ -31,6 +31,7 @@ Use `--preset <name>` to quickly configure for your hardware:
 |------|-------------|
 | `--preset <name>` | Use a hardware profile: `low`, `medium`, `high`, `ultra` |
 | `-m, --model <path>` | Path to model file |
+| `--base` | Benchmark the base (pre-fine-tuning) model as a control. The GGUF is cached in `~/.nanotune/models/base-cache/`; see [Base model control](#base-model-control) |
 | `-d, --dataset <path>` | Path to benchmark dataset |
 | `-t, --timeout <ms>` | Timeout per model call — generation, and the LLM-judge call that scores it (default: 30000) |
 | `--threads <n>` | CPU threads (default: auto) |
@@ -80,6 +81,40 @@ nanotune benchmark --preset medium --temperature 0.5 --seed 7
 # Measure variance under sampling
 nanotune benchmark --temperature 0.8 --samples 5
 ```
+
+## Base model control
+
+`--base` benchmarks the model you started from, before any fine-tuning. It is the number a fine-tuned score is only meaningful against:
+
+```bash
+nanotune benchmark --base
+nanotune benchmark
+nanotune benchmark compare
+```
+
+The first run downloads the base model, converts it to GGUF and quantizes it to your project's quantization, which takes a while. The result is cached under `~/.nanotune/models/base-cache/`, keyed by model and quantization, so every project fine-tuning from the same base pays that cost once. Reports record `isBase: true`. Remove the cache with [`nanotune clean --target base`](clean.md).
+
+## nanotune benchmark compare
+
+Compares two saved runs and reports which tests changed outcome:
+
+```bash
+nanotune benchmark compare                      # the two most recent runs
+nanotune benchmark compare before.json after.json
+```
+
+With one argument it compares that run against the latest. Each category shows its before and after pass counts and a delta, and the report lists every test that flipped (regressed or fixed). A run that is missing a test or a category is noted rather than scored as zero. The comparison is also saved as `compare-<timestamp>.md` beside the runs.
+
+## nanotune benchmark review
+
+Turns failed tests into training data:
+
+```bash
+nanotune benchmark review              # the latest run
+nanotune benchmark review <report>     # a specific run
+```
+
+For each failure it shows the prompt (or the whole conversation), the acceptable answers and what the model said. Type a corrected answer and it is appended to `train.jsonl` with the project's context message, the same way `/keep` works in [`nanotune chat`](chat.md). Multi-turn failures keep their earlier turns. Leave the answer blank to skip a failure, or press Esc to stop early. The benchmark run itself is not changed.
 
 ## JSON Output
 
