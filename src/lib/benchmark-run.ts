@@ -931,6 +931,11 @@ export async function* runBenchmark(
 				}
 			} catch (err) {
 				if (err instanceof ServerLostError) {
+					// The category total was counted when the test started. It has no
+					// result, so take it back out, or the category row would disagree
+					// with the summary and `benchmark compare` would diff a denominator
+					// that never ran.
+					categoryResults[test.category].total--;
 					abortReason = `llama-server exited unexpectedly after ${i} of ${tests.length} tests — saving partial results.`;
 					break testLoop;
 				}

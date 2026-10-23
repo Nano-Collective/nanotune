@@ -1506,6 +1506,35 @@ test.serial("ChatCommand refuses to start outside a project", async (t) => {
   }
 });
 
+test.serial("ChatCommand rejects an unparseable flag and fails the run", async (t) => {
+  try {
+    setupProject();
+    process.exitCode = 0;
+    // The project has no exported model: reaching that error instead would
+    // mean the flag was never looked at.
+    const output = await renderCommand(
+      <ChatCommand options={{ ctxSize: "4096x" }} />,
+      "Invalid --ctx-size",
+    );
+    t.regex(output, /Invalid --ctx-size "4096x": expected a non-negative integer\./);
+    t.false(output.includes("No exported models"));
+    t.is(await exitCodeAfterRender(), 1);
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("ChatCommand exits non-zero when it cannot start", async (t) => {
+  try {
+    setupProject();
+    process.exitCode = 0;
+    await renderCommand(<ChatCommand options={{}} />, "No exported models");
+    t.is(await exitCodeAfterRender(), 1);
+  } finally {
+    teardown();
+  }
+});
+
 test.serial("ChatCommand says so when nothing has been exported", async (t) => {
   try {
     setupProject();

@@ -3,7 +3,7 @@ import {basename} from 'node:path';
 import {Spinner, StatusMessage, TextInput} from '@inkjs/ui';
 import {Box, Static, Text, useApp} from 'ink';
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {Header, useKeyInput} from '../components/index.js';
+import {Header, useAutoExit, useKeyInput} from '../components/index.js';
 import {
 	buildGenerateOptions,
 	buildServerOptions,
@@ -481,6 +481,10 @@ export function ChatCommand({options}: Props) {
 		},
 		[appendTurn, exit, history, sendMessage, systemMessage, totalTokens],
 	);
+
+	// Any startup failure, an unparseable flag included, is a failed run: the
+	// exit code is what `nanotune chat ... && next` or a shell wrapper sees.
+	useAutoExit(status === 'error', true);
 
 	useKeyInput((_input, key) => {
 		if (key.escape) {

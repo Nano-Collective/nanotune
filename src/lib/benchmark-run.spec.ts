@@ -1026,6 +1026,9 @@ test.serial("runBenchmark leaves a test cut short by a dying server out of the s
   t.is(result.results.length, 2);
   t.false(result.failures.some((f) => f.id === 3));
   t.true(result.warning?.includes("2 of 3 tests"));
+  // The category row counts the same tests as the summary. `benchmark compare`
+  // diffs these rows, so a leftover denominator would show up as a delta.
+  t.deepEqual(result.categories, { basic: { passed: 2, total: 2 } });
 });
 
 test.serial("runBenchmark still scores a refused request when the server is alive", async (t) => {

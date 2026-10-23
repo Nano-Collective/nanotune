@@ -43,6 +43,9 @@ export function BenchmarkCommand({options}: Props) {
 	// same silent detach.
 	useKeyInput((input, key) => {
 		if (key.ctrl && input === 'c') {
+			// Children are killed on exit: execa's default `cleanup` does it for
+			// every process it spawned, llama-server included, even through
+			// process.exit().
 			process.exit(130);
 		}
 		if (

@@ -105,6 +105,9 @@ export function ExportCommand({
 	// only once the export has finished, never in the middle of fusing.
 	useKeyInput((input, key) => {
 		if (key.ctrl && input === 'c') {
+			// Children are killed on exit: execa's default `cleanup` does it for
+			// every process it spawned, the fuse, converter and quantizer included, even through
+			// process.exit().
 			process.exit(130);
 		}
 		if (
