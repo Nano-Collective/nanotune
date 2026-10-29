@@ -162,3 +162,76 @@ function writeOwner(owner: Record<string, unknown>): void {
 function escapeForRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+test.serial("takes over a lock whose reclaimer crashed during the handoff", (t) => {
+  const {pid: ownerPid} = spawnSync(process.execPath, ["-e", "0"]);
+  const {pid: reclaimerPid} = spawnSync(process.execPath, ["-e", "0"]);
+  mkdirSync(getDataLockPath(), {recursive: true});
+  const marker = `reclaim-${reclaimerPid}-${Buffer.from(hostname()).toString('hex')}.json`;
+  writeFileSync(join(getDataLockPath(), marker), JSON.stringify({pid: ownerPid, host: hostname(), since: Date.now()}));
+  t.is(withDataLock(() => "recovered", {timeoutMs: 1000}), "recovered");
+  t.false(existsSync(getDataLockPath()));
+});
+
+test.serial("does not steal a lock while the current process reclaims it", (t) => {
+  const {pid} = spawnSync(process.execPath, ["-e", "0"]);
+  mkdirSync(getDataLockPath(), {recursive: true});
+  const marker = `reclaim-${process.pid}-${Buffer.from(hostname()).toString('hex')}.json`;
+  writeFileSync(join(getDataLockPath(), marker), JSON.stringify({pid, host: hostname(), since: Date.now()}));
+  t.throws(() => withDataLock(() => "stolen", {timeoutMs: 150}), {message: /Gave up/});
+  t.true(existsSync(join(getDataLockPath(), marker)));
+});
+
+test.serial("a stale observation cannot delete a live owner acquired before the handoff", async (t) => {
+  const {pid} = spawnSync(process.execPath, ["-e", "0"]);
+  writeOwner({pid, host: hostname()});
+  const result = await execa(process.execPath, ["--import=tsx", "--input-type=module", "-e", `
+    import fs from 'node:fs';
+    import {hostname} from 'node:os';
+    import {syncBuiltinESMExports} from 'node:module';
+    process.chdir(${JSON.stringify(TEST_DIR)});
+    const {withDataLock, getDataLockPath} = await import(${JSON.stringify(LOCK_MODULE)});
+    const rename = fs.renameSync;
+    let changed = false;
+    fs.renameSync = (source, destination) => {
+      if (!changed && String(source).endsWith('owner.json')) {
+        changed = true;
+        fs.writeFileSync(source, JSON.stringify({pid: process.pid, host: hostname(), since: Date.now()}));
+      }
+      return rename(source, destination);
+    };
+    syncBuiltinESMExports();
+    try { withDataLock(() => {throw new Error('entered a live lock');}, {timeoutMs: 150}); }
+    catch (error) {
+      const owner = JSON.parse(fs.readFileSync(getDataLockPath() + '/owner.json', 'utf-8'));
+      console.log(JSON.stringify({waited: error.message.includes('Gave up'), preserved: owner.pid === process.pid}));
+    }
+  `], {cwd: ORIG_CWD, timeout: 10000});
+  t.deepEqual(JSON.parse(result.stdout), {waited: true, preserved: true});
+});
+
+
+test.serial("does not steal a lock while a live sibling process reclaims it", async t => {
+  const {pid} = spawnSync(process.execPath, ["-e", "0"]);
+  mkdirSync(getDataLockPath(), {recursive: true});
+  const holder = execa(process.execPath, ["--input-type=module", "-e", `
+    import {writeFileSync} from 'node:fs';
+    import {hostname} from 'node:os';
+    const marker = ${JSON.stringify(getDataLockPath())} + '/reclaim-' + process.pid + '-' + Buffer.from(hostname()).toString('hex') + '.json';
+    writeFileSync(marker, JSON.stringify({pid: ${pid}, host: hostname(), since: Date.now()}));
+    console.log(marker);
+    process.stdin.resume();
+  `], {stdin: 'pipe', reject: false});
+  try {
+    const deadline = Date.now() + 10000;
+    const marker = join(getDataLockPath(), `reclaim-${holder.pid}-${Buffer.from(hostname()).toString('hex')}.json`);
+    while (!existsSync(marker) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+    t.true(existsSync(marker), 'sibling published its reclaim marker');
+    t.throws(() => withDataLock(() => "stolen", {timeoutMs: 150}), {message: /Gave up/});
+    t.true(existsSync(marker));
+    t.is(JSON.parse(readFileSync(marker, 'utf-8')).pid, pid);
+  } finally {
+    holder.kill();
+    await holder;
+  }
+});

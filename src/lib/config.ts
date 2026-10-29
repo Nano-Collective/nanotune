@@ -422,18 +422,19 @@ export function sweepStaleAtomicWrites(dir: string): void {
  * where the rename never happened. A process killed mid-write (SIGKILL,
  * crash) skips that cleanup; a sweep of dead-pid leftovers for this target is
  * done up front so the next run heals the last one.
+ * Set flush for recovery metadata that must reach disk before publication.
  * With overwrite disabled, publish via a hard link instead: this atomically
  * refuses an existing destination, preserving files created by another writer.
  */
 export function writeFileAtomic(
 	path: string,
-	contents: string,
-	options: {overwrite?: boolean} = {},
+	contents: string | Uint8Array,
+	options: {flush?: boolean; overwrite?: boolean} = {},
 ): void {
 	removeStaleTemps(dirname(path), `${basename(path)}.tmp-`);
 	const tmp = `${path}.tmp-${process.pid}`;
 	try {
-		writeFileSync(tmp, contents);
+		writeFileSync(tmp, contents, {flush: options.flush ?? false});
 		if (options.overwrite === false) {
 			linkSync(tmp, path);
 		} else {
@@ -452,6 +453,8 @@ runs/
 chats/
 data.lock/
 judge.json*
+data/*.append-journal.json
+data/quarantine/
 `;
 
 /**
@@ -469,8 +472,12 @@ judge.json*
  * line because a gitignore pattern is a whole name, not a prefix - nothing
  * already listed would match it - so without it every command that writes
  * leaves an untracked directory in the user's `git status`.
+ *
+ * The append journal and quarantine are recovery state written beside the
+ * dataset. They are local scratch, not training data, so they stay out of git.
  */
-function writeProjectGitignore(): void {
+export function ensureProjectGitignore(): void {
+	mkdirSync(getProjectDir(), {recursive: true});
 	const gitignorePath = join(getProjectDir(), '.gitignore');
 	if (!existsSync(gitignorePath)) {
 		writeFileSync(gitignorePath, GITIGNORE_CONTENTS);
@@ -520,7 +527,7 @@ export function initializeProjectDirs(): void {
 		}
 	}
 
-	writeProjectGitignore();
+	ensureProjectGitignore();
 }
 
 /**
