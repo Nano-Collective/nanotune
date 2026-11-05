@@ -6,6 +6,7 @@ import {execa, type ResultPromise} from 'execa';
 import {
 	abortTraining,
 	buildLoraConfigYaml,
+	buildPipInstallArgs,
 	buildTrainingArgs,
 	ensureModelDownloaded,
 	needsLoraConfig,
@@ -176,4 +177,12 @@ exit 1
 		process.env.PATH = path;
 		rmSync(dir, {recursive: true, force: true});
 	}
+});
+
+test('buildPipInstallArgs installs into the user site outside a virtualenv', t => {
+	t.deepEqual(buildPipInstallArgs(['mlx-lm'], false), ['install', '--user', 'mlx-lm']);
+});
+
+test('buildPipInstallArgs omits --user inside a virtualenv, where pip rejects it', t => {
+	t.deepEqual(buildPipInstallArgs(['torch', 'numpy'], true), ['install', 'torch', 'numpy']);
 });

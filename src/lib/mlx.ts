@@ -148,12 +148,38 @@ export async function installMLX(): Promise<void> {
 	await installPythonPackages(['mlx-lm']);
 }
 
+/**
+ * `--user` is refused inside a virtualenv ("User site-packages are not visible
+ * in this virtualenv"), and a venv is the remedy offered for an externally
+ * managed system Python, so it has to install into the venv itself.
+ */
+export function buildPipInstallArgs(
+	packages: string[],
+	inVirtualEnv: boolean,
+): string[] {
+	return inVirtualEnv
+		? ['install', ...packages]
+		: ['install', '--user', ...packages];
+}
+
+async function isInVirtualEnv(): Promise<boolean> {
+	try {
+		const result = await execa('python3', [
+			'-c',
+			'import sys; print(sys.prefix != sys.base_prefix)',
+		]);
+		return result.stdout.trim() === 'True';
+	} catch {
+		return false;
+	}
+}
+
 export async function installPythonPackages(packages: string[]): Promise<void> {
 	const list = packages.join(' ');
 	try {
 		// Try the friendly user-site install first; on stock macOS Python 3.12+
 		// this avoids the externally-managed-environment lockout.
-		await execa('pip3', ['install', '--user', ...packages], {
+		await execa('pip3', buildPipInstallArgs(packages, await isInVirtualEnv()), {
 			stdout: 'inherit',
 			stderr: 'pipe',
 		});

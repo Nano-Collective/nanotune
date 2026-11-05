@@ -21,6 +21,7 @@ import {
 import {
 	ensureBenchmarksDir,
 	findLatestBenchmark,
+	isBaseBenchmark,
 	listBenchmarks,
 	loadBenchmark,
 	resolveBenchmarkPath,
@@ -54,7 +55,9 @@ export function orderByMtime(
  * - 2 args: explicit before/after, in the order given.
  * - 1 arg: that run vs. the latest run (falling back to the second-latest
  *   if the named run IS the latest).
- * - 0 args: the two most recent runs.
+ * - 0 args: the two most recent runs. When both are `--base` controls, that
+ *   would compare the base model with itself, so the newest control is paired
+ *   with the newest fine-tuned run instead.
  */
 export function resolveComparisonPair(
 	fileA?: string,
@@ -96,6 +99,12 @@ export function resolveComparisonPair(
 		throw new Error(
 			`Need at least two saved benchmark runs to compare (found ${all.length}). Run \`nanotune benchmark\` again, or pass explicit files.`,
 		);
+	}
+	if (isBaseBenchmark(all[0].path) && isBaseBenchmark(all[1].path)) {
+		const tuned = all.find(run => !isBaseBenchmark(run.path));
+		if (tuned) {
+			return {beforePath: all[0].path, afterPath: tuned.path};
+		}
 	}
 	return orderByMtime(all[0].path, all[1].path);
 }
@@ -150,7 +159,7 @@ export function BenchmarkCompareCommand({fileA, fileB}: Props) {
 				<Header title="Benchmark Compare" />
 				<StatusMessage variant="error">{error}</StatusMessage>
 				<Text> </Text>
-				<ExitHint>Press any key to exit</ExitHint>
+				<ExitHint>Press Enter or Esc to exit</ExitHint>
 			</Box>
 		);
 	}
@@ -271,7 +280,7 @@ export function BenchmarkCompareCommand({fileA, fileB}: Props) {
 			)}
 
 			<Text> </Text>
-			<ExitHint>Press any key to exit</ExitHint>
+			<ExitHint>Press Enter or Esc to exit</ExitHint>
 		</Box>
 	);
 }

@@ -99,18 +99,18 @@ The first run downloads the base model, converts it to GGUF and quantizes it to 
 Compares two saved runs and reports which tests changed outcome:
 
 ```bash
-nanotune benchmark compare                      # the two most recent runs
+nanotune benchmark compare                      # the two most recent runs (see below)
 nanotune benchmark compare before.json after.json
 ```
 
-With one argument it compares that run against the latest. Each category shows its before and after pass counts and a delta, and the report lists every test that flipped (regressed or fixed). A run that is missing a test or a category is noted rather than scored as zero. The comparison is also saved as `compare-<timestamp>.md` beside the runs.
+If the two most recent runs are both `--base` controls, they are not compared with each other: the newest control is compared with the newest run of your model instead. With one argument it compares that run against the latest. Each category shows its before and after pass counts and a delta, and the report lists every test that flipped (regressed or fixed). A run that is missing a test or a category is noted rather than scored as zero. The comparison is also saved as `compare-<timestamp>.md` beside the runs.
 
 ## nanotune benchmark review
 
 Turns failed tests into training data:
 
 ```bash
-nanotune benchmark review              # the latest run
+nanotune benchmark review              # the latest run of your model (not a --base control)
 nanotune benchmark review <report>     # a specific run
 ```
 

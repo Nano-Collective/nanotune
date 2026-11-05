@@ -9,7 +9,7 @@ import {
 } from '../../components/index.js';
 import {
 	configExists,
-	findLatestBenchmark,
+	findLatestTunedBenchmark,
 	loadBenchmark,
 	loadConfig,
 	resolveBenchmarkPath,
@@ -58,7 +58,7 @@ export function BenchmarkReviewCommand({report}: Props) {
 		try {
 			const path = report
 				? resolveBenchmarkPath(report)
-				: findLatestBenchmark();
+				: findLatestTunedBenchmark();
 			if (!path) {
 				setError(
 					'No saved benchmark runs found. Run `nanotune benchmark` first.',
@@ -173,7 +173,7 @@ export function BenchmarkReviewCommand({report}: Props) {
 				<Header title="Benchmark Review" />
 				<StatusMessage variant="error">{error}</StatusMessage>
 				<Text> </Text>
-				<ExitHint>Press any key to exit</ExitHint>
+				<ExitHint>Press Enter or Esc to exit</ExitHint>
 			</Box>
 		);
 	}
@@ -209,7 +209,7 @@ export function BenchmarkReviewCommand({report}: Props) {
 					</Box>
 				)}
 				<Text> </Text>
-				<ExitHint>Press any key to exit</ExitHint>
+				<ExitHint>Press Enter or Esc to exit</ExitHint>
 			</Box>
 		);
 	}

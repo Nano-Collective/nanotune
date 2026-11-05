@@ -578,6 +578,29 @@ export function findLatestBenchmark(): string | null {
 	return benchmarks.length > 0 ? benchmarks[0].path : null;
 }
 
+/** Whether a saved run is a `--base` control. An unreadable file counts as not. */
+export function isBaseBenchmark(path: string): boolean {
+	try {
+		const parsed = JSON.parse(readFileSync(path, 'utf-8')) as {
+			isBase?: unknown;
+		} | null;
+		return parsed?.isBase === true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * The newest run of a fine-tuned model, falling back to the newest run of any
+ * kind when only `--base` controls exist. A control is the baseline to beat,
+ * not something to review or to treat as "the latest result".
+ */
+export function findLatestTunedBenchmark(): string | null {
+	const benchmarks = listBenchmarks();
+	const tuned = benchmarks.find(b => !isBaseBenchmark(b.path));
+	return (tuned ?? benchmarks[0])?.path ?? null;
+}
+
 /**
  * Load and parse a saved benchmark run. Accepts a literal path or a value
  * resolved via {@link resolveBenchmarkPath}.

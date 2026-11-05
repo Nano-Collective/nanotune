@@ -410,7 +410,7 @@ export function ExportCommand({
 						Next: <Text color="cyan">nanotune benchmark</Text>
 					</Text>
 					<Text> </Text>
-					<ExitHint>Press any key to exit</ExitHint>
+					<ExitHint>Press Enter or Esc to exit</ExitHint>
 				</Box>
 			)}
 
@@ -418,7 +418,7 @@ export function ExportCommand({
 				<Box flexDirection="column">
 					<StatusMessage variant="error">{error}</StatusMessage>
 					<Text> </Text>
-					<ExitHint>Press any key to exit</ExitHint>
+					<ExitHint>Press Enter or Esc to exit</ExitHint>
 				</Box>
 			)}
 		</Box>
