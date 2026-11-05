@@ -55,10 +55,11 @@ export function orderByMtime(
  * - 2 args: explicit before/after, in the order given.
  * - 1 arg: that run vs. the latest run (falling back to the second-latest
  *   if the named run IS the latest).
- * - 0 args: the two most recent runs. When both are `--base` controls, that
- *   would compare the base model with itself, so the newest control is paired
- *   with the newest fine-tuned run instead. That pair is base-versus-tuned, not
- *   chronological: the control is always "before" even if it was run later.
+ * - 0 args: the two most recent runs. A `--base` control is always "before"
+ *   and the fine-tuned run "after", even if the control was run later, so the
+ *   delta reads as what fine-tuning changed. When both are controls, that would
+ *   compare the base model with itself, so the newest control is paired with
+ *   the newest fine-tuned run instead. Two fine-tuned runs stay chronological.
  */
 export function resolveComparisonPair(
 	fileA?: string,
@@ -101,11 +102,16 @@ export function resolveComparisonPair(
 			`Need at least two saved benchmark runs to compare (found ${all.length}). Run \`nanotune benchmark\` again, or pass explicit files.`,
 		);
 	}
-	if (isBaseBenchmark(all[0].path) && isBaseBenchmark(all[1].path)) {
+	const newestIsBase = isBaseBenchmark(all[0].path);
+	const previousIsBase = isBaseBenchmark(all[1].path);
+	if (newestIsBase && previousIsBase) {
 		const tuned = all.find(run => !isBaseBenchmark(run.path));
 		if (tuned) {
 			return {beforePath: all[0].path, afterPath: tuned.path};
 		}
+	} else if (newestIsBase !== previousIsBase) {
+		const [control, tuned] = newestIsBase ? [all[0], all[1]] : [all[1], all[0]];
+		return {beforePath: control.path, afterPath: tuned.path};
 	}
 	return orderByMtime(all[0].path, all[1].path);
 }

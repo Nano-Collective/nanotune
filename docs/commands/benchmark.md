@@ -103,7 +103,7 @@ nanotune benchmark compare                      # the two most recent runs (see 
 nanotune benchmark compare before.json after.json
 ```
 
-If the two most recent runs are both `--base` controls, they are not compared with each other: the newest control is compared with the newest run of your model instead. With one argument it compares that run against the latest. Each category shows its before and after pass counts and a delta, and the report lists every test that flipped (regressed or fixed). A run that is missing a test or a category is noted rather than scored as zero. The comparison is also saved as `compare-<timestamp>.md` beside the runs.
+A `--base` control is always the "before" side and your model's run the "after" side, whichever was run last, so the delta reads as what fine-tuning changed. If the two most recent runs are both controls, they are not compared with each other: the newest control is compared with the newest run of your model instead. With one argument it compares that run against the latest. Each category shows its before and after pass counts and a delta, and the report lists every test that flipped (regressed or fixed). A run that is missing a test or a category is noted rather than scored as zero. The comparison is also saved as `compare-<timestamp>.md` beside the runs.
 
 ## nanotune benchmark review
 

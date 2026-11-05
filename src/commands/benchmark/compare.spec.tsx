@@ -93,6 +93,34 @@ test.serial("resolveComparisonPair with 0 args picks the two most recent runs", 
   }
 });
 
+test.serial("resolveComparisonPair with 0 args keeps the control as before when it is the newer of the two", (t) => {
+  setup();
+  try {
+    const tuned = writeRun("benchmark-tuned.json", 60_000);
+    const base = writeRun("benchmark-base.json", 0, { isBase: true });
+
+    const { beforePath, afterPath } = resolveComparisonPair(undefined, undefined);
+    t.is(beforePath, base);
+    t.is(afterPath, tuned);
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("resolveComparisonPair with 0 args keeps the control as before when it is the older of the two", (t) => {
+  setup();
+  try {
+    const base = writeRun("benchmark-base.json", 60_000, { isBase: true });
+    const tuned = writeRun("benchmark-tuned.json", 0);
+
+    const { beforePath, afterPath } = resolveComparisonPair(undefined, undefined);
+    t.is(beforePath, base);
+    t.is(afterPath, tuned);
+  } finally {
+    teardown();
+  }
+});
+
 test.serial("resolveComparisonPair with 0 args does not compare two --base controls with each other", (t) => {
   setup();
   try {
