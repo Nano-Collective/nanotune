@@ -174,6 +174,34 @@ test.serial("resolveComparisonPair with 1 arg compares it against the latest run
   }
 });
 
+test.serial("resolveComparisonPair with 1 arg keeps a newer control as before", (t) => {
+  setup();
+  try {
+    const tuned = writeRun("benchmark-tuned.json", 60_000);
+    const base = writeRun("benchmark-base.json", 0, { isBase: true });
+
+    const { beforePath, afterPath } = resolveComparisonPair("benchmark-tuned.json", undefined);
+    t.is(beforePath, base);
+    t.is(afterPath, tuned);
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("resolveComparisonPair with 2 args keeps the order given, even with a control second", (t) => {
+  setup();
+  try {
+    const tuned = writeRun("benchmark-tuned.json", 60_000);
+    const base = writeRun("benchmark-base.json", 0, { isBase: true });
+
+    const { beforePath, afterPath } = resolveComparisonPair("benchmark-tuned.json", "benchmark-base.json");
+    t.is(beforePath, tuned);
+    t.is(afterPath, base);
+  } finally {
+    teardown();
+  }
+});
+
 test.serial("resolveComparisonPair with 1 arg falls back to the second-latest when the named run IS the latest", (t) => {
   setup();
   try {

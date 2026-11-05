@@ -199,9 +199,9 @@ export async function installPythonPackages(packages: string[]): Promise<void> {
 			throw new Error(
 				`pip refuses to install ${list} into the system Python (externally-managed-environment).\n` +
 					'Pick one of:\n' +
-					`  • Create a venv: python3 -m venv ~/.nanotune/venv && source ~/.nanotune/venv/bin/activate && pip install ${list}\n` +
+					`  • Create a venv: python3 -m venv ~/.nanotune/venv && source ~/.nanotune/venv/bin/activate && python3 -m pip install ${list}\n` +
 					`  • Install via pipx: pipx install ${packages[0]}\n` +
-					`  • Override (not recommended): pip3 install --user --break-system-packages ${list}\n` +
+					`  • Override (not recommended): python3 -m pip install --user --break-system-packages ${list}\n` +
 					'Then re-run your nanotune command.',
 			);
 		}

@@ -1974,7 +1974,10 @@ test.serial("InitCommand shows the cancel hint while prompting and drops it once
       await waitFor(instance, "Create project?");
       await write(instance, "y");
       await waitFor(instance, "Project initialized!");
-      const finalFrame = instance.lastFrame() ?? "";
+      // Ink writes a cleared frame when init unmounts itself, so take the last
+      // frame that still has content rather than lastFrame().
+      const finalFrame =
+        [...instance.frames].reverse().find((frame) => frame.includes("Project initialized!")) ?? "";
       instance.unmount();
       return { prompting, finalFrame };
     });
