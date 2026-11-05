@@ -110,7 +110,7 @@ If the two most recent runs are both `--base` controls, they are not compared wi
 Turns failed tests into training data:
 
 ```bash
-nanotune benchmark review              # the latest run of your model (not a --base control)
+nanotune benchmark review              # the latest run of your model (a --base control only if it is all you have)
 nanotune benchmark review <report>     # a specific run
 ```
 
