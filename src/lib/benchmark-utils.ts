@@ -15,7 +15,6 @@ export function getTestDisplayPrompt(test: BenchmarkTest): string {
 				return test.messages[i].content;
 			}
 		}
-		return test.messages[test.messages.length - 1].content;
 	}
 	return '';
 }
