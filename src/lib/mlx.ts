@@ -179,10 +179,16 @@ export async function installPythonPackages(packages: string[]): Promise<void> {
 	try {
 		// Try the friendly user-site install first; on stock macOS Python 3.12+
 		// this avoids the externally-managed-environment lockout.
-		await execa('pip3', buildPipInstallArgs(packages, await isInVirtualEnv()), {
-			stdout: 'inherit',
-			stderr: 'pipe',
-		});
+		// Run pip through the interpreter that was just probed, so the venv check
+		// and the install can never disagree about which Python they mean.
+		await execa(
+			'python3',
+			['-m', 'pip', ...buildPipInstallArgs(packages, await isInVirtualEnv())],
+			{
+				stdout: 'inherit',
+				stderr: 'pipe',
+			},
+		);
 	} catch (err) {
 		const stderr =
 			err && typeof err === 'object' && 'stderr' in err
@@ -202,7 +208,7 @@ export async function installPythonPackages(packages: string[]): Promise<void> {
 
 		const tail = stderr.trim().split('\n').slice(-10).join('\n');
 		throw new Error(
-			`Failed to install ${list} via pip3.${tail ? `\n\nDetails:\n${tail}` : ''}`,
+			`Failed to install ${list} via pip.${tail ? `\n\nDetails:\n${tail}` : ''}`,
 		);
 	}
 }

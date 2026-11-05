@@ -57,7 +57,8 @@ export function orderByMtime(
  *   if the named run IS the latest).
  * - 0 args: the two most recent runs. When both are `--base` controls, that
  *   would compare the base model with itself, so the newest control is paired
- *   with the newest fine-tuned run instead.
+ *   with the newest fine-tuned run instead. That pair is base-versus-tuned, not
+ *   chronological: the control is always "before" even if it was run later.
  */
 export function resolveComparisonPair(
 	fileA?: string,

@@ -19,6 +19,7 @@ import { PROVIDER_TEMPLATES } from "../lib/judge-templates.js";
 import { CleanCommand, validateCleanTarget } from "./clean.js";
 import { ChatCommand, streamPreview } from "./chat.js";
 import { BenchmarkCommand } from "./benchmark.js";
+import { InitCommand } from "./init.js";
 import { DataExportCommand } from "./data/export.js";
 import { DataImportCommand } from "./data/import.js";
 import { DataListCommand } from "./data/list.js";
@@ -1955,6 +1956,32 @@ test.serial("JudgeConfigureCommand reports a failed save as a save failure", asy
     } finally {
       judge.close();
     }
+  } finally {
+    teardown();
+  }
+});
+test.serial("InitCommand shows the cancel hint while prompting and drops it once the project is created", async (t) => {
+  try {
+    setupEmptyDir();
+    const { prompting, finalFrame } = await withTTY(async () => {
+      const instance = render(<InitCommand />);
+      await waitFor(instance, "Project name:");
+      const prompting = instance.lastFrame() ?? "";
+      await answer(instance, "Project name:");
+      await answer(instance, "Base model", "org/model");
+      await answer(instance, "Context message role:");
+      await answer(instance, "System message:", "Be brief.");
+      await waitFor(instance, "Create project?");
+      await write(instance, "y");
+      await waitFor(instance, "Project initialized!");
+      const finalFrame = instance.lastFrame() ?? "";
+      instance.unmount();
+      return { prompting, finalFrame };
+    });
+    t.true(prompting.includes("[Esc] Cancel"), prompting);
+    t.true(finalFrame.includes("Project initialized!"), finalFrame);
+    t.false(finalFrame.includes("[Esc] Cancel"), finalFrame);
+    t.true(existsSync(join(NANOTUNE_DIR, "config.json")));
   } finally {
     teardown();
   }
