@@ -205,8 +205,12 @@ export function InitCommand() {
 				</Box>
 			)}
 
-			<Text> </Text>
-			<Text dimColor>[Esc] Cancel</Text>
+			{step !== 'done' && (
+				<>
+					<Text> </Text>
+					<Text dimColor>[Esc] Cancel</Text>
+				</>
+			)}
 		</Box>
 	);
 }

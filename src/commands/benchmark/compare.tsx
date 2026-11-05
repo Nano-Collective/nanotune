@@ -21,6 +21,7 @@ import {
 import {
 	ensureBenchmarksDir,
 	findLatestBenchmark,
+	isBaseBenchmark,
 	listBenchmarks,
 	loadBenchmark,
 	resolveBenchmarkPath,
@@ -50,11 +51,35 @@ export function orderByMtime(
 }
 
 /**
+ * Order two runs so a `--base` control is always "before" and a fine-tuned run
+ * "after", whichever was run last, so the delta reads as what fine-tuning
+ * changed. Anything else (two controls, two fine-tuned runs) stays
+ * chronological.
+ */
+function orderControlFirst(
+	pathX: string,
+	pathY: string,
+): {beforePath: string; afterPath: string} {
+	const xIsBase = isBaseBenchmark(pathX);
+	if (xIsBase !== isBaseBenchmark(pathY)) {
+		return xIsBase
+			? {beforePath: pathX, afterPath: pathY}
+			: {beforePath: pathY, afterPath: pathX};
+	}
+	return orderByMtime(pathX, pathY);
+}
+
+/**
  * Resolve the pair of runs to compare from 0, 1, or 2 CLI arguments.
  * - 2 args: explicit before/after, in the order given.
  * - 1 arg: that run vs. the latest run (falling back to the second-latest
  *   if the named run IS the latest).
  * - 0 args: the two most recent runs.
+ * With 0 or 1 args a `--base` control is always "before" (see
+ * `orderControlFirst`). When the two most recent runs are both controls, that
+ * would compare the base model with itself, so the newest control is paired
+ * with the newest fine-tuned run instead; with no fine-tuned run they are
+ * compared chronologically.
  */
 export function resolveComparisonPair(
 	fileA?: string,
@@ -85,10 +110,10 @@ export function resolveComparisonPair(
 					'Need at least two saved benchmark runs to compare — only one exists.',
 				);
 			}
-			return orderByMtime(all[1].path, explicitPath);
+			return orderControlFirst(all[1].path, explicitPath);
 		}
 
-		return orderByMtime(latestPath, explicitPath);
+		return orderControlFirst(latestPath, explicitPath);
 	}
 
 	const all = listBenchmarks();
@@ -97,7 +122,13 @@ export function resolveComparisonPair(
 			`Need at least two saved benchmark runs to compare (found ${all.length}). Run \`nanotune benchmark\` again, or pass explicit files.`,
 		);
 	}
-	return orderByMtime(all[0].path, all[1].path);
+	if (isBaseBenchmark(all[0].path) && isBaseBenchmark(all[1].path)) {
+		const tuned = all.find(run => !isBaseBenchmark(run.path));
+		if (tuned) {
+			return {beforePath: all[0].path, afterPath: tuned.path};
+		}
+	}
+	return orderControlFirst(all[0].path, all[1].path);
 }
 
 export function BenchmarkCompareCommand({fileA, fileB}: Props) {
@@ -150,7 +181,7 @@ export function BenchmarkCompareCommand({fileA, fileB}: Props) {
 				<Header title="Benchmark Compare" />
 				<StatusMessage variant="error">{error}</StatusMessage>
 				<Text> </Text>
-				<ExitHint>Press any key to exit</ExitHint>
+				<ExitHint>Press Enter or Esc to exit</ExitHint>
 			</Box>
 		);
 	}
@@ -271,7 +302,7 @@ export function BenchmarkCompareCommand({fileA, fileB}: Props) {
 			)}
 
 			<Text> </Text>
-			<ExitHint>Press any key to exit</ExitHint>
+			<ExitHint>Press Enter or Esc to exit</ExitHint>
 		</Box>
 	);
 }

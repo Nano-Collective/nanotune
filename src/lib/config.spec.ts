@@ -21,6 +21,8 @@ import {
   hasUsableFusedModel,
   skipFuseValidationError,
   formatConfigIssues,
+  findLatestTunedBenchmark,
+  isBaseBenchmark,
   listBenchmarks,
   resolveBenchmarkPath,
   findUnknownConfigKeys,
@@ -505,6 +507,44 @@ test.serial("listBenchmarks sorts by mtime, not filename, and ignores compare-* 
     t.is(listed.length, 2);
     t.is(listed[0].filename, "benchmark-a-newer.json");
     t.is(listed[1].filename, "benchmark-z-older.json");
+  } finally {
+    teardownBenchTest();
+  }
+});
+
+test.serial("findLatestTunedBenchmark skips newer --base controls and falls back when only controls exist", (t) => {
+  setupBenchTest();
+  try {
+    mkdirSync(BENCH_DIR, { recursive: true });
+    const tuned = join(BENCH_DIR, "benchmark-tuned.json");
+    const base = join(BENCH_DIR, "benchmark-base.json");
+    writeFileSync(tuned, JSON.stringify({ isBase: false }));
+    writeFileSync(base, JSON.stringify({ isBase: true }));
+    const past = new Date(Date.now() - 60_000);
+    utimesSync(tuned, past, past);
+
+    t.true(isBaseBenchmark(base));
+    t.false(isBaseBenchmark(tuned));
+    t.is(findLatestTunedBenchmark(), tuned);
+
+    rmSync(tuned);
+    t.is(findLatestTunedBenchmark(), base);
+  } finally {
+    teardownBenchTest();
+  }
+});
+
+test.serial("isBaseBenchmark treats unreadable or non-object files as not a control", (t) => {
+  setupBenchTest();
+  try {
+    mkdirSync(BENCH_DIR, { recursive: true });
+    const broken = join(BENCH_DIR, "benchmark-broken.json");
+    const nul = join(BENCH_DIR, "benchmark-null.json");
+    writeFileSync(broken, "{not json");
+    writeFileSync(nul, "null");
+    t.false(isBaseBenchmark(broken));
+    t.false(isBaseBenchmark(nul));
+    t.false(isBaseBenchmark(join(BENCH_DIR, "missing.json")));
   } finally {
     teardownBenchTest();
   }

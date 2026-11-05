@@ -33,7 +33,7 @@ nanotune train
 | `--max-seq-length <n>` | Maximum sequence length |
 | `--grad-checkpoint` / `--no-grad-checkpoint` | Enable or disable gradient checkpointing |
 | `--val-batches <n>` | Number of validation batches |
-| `--resume` | Resume from last checkpoint |
+| `--resume` | Load the last checkpoint's weights and run `iterations` more (see below) |
 | `--dry-run` | Validate config without training |
 | `--seed <n>` | Integer seed for a reproducible train/validation split |
 | `--train-seed <n>` | Random seed for mlx_lm's training run |
@@ -99,7 +99,7 @@ Training runs LoRA (Low-Rank Adaptation) fine-tuning via MLX with a live progres
 - Validation loss (at evaluation intervals)
 - Elapsed time
 
-Training checkpoints are saved at regular intervals (configurable via `saveEvery` in your config, or overridden per-run with `--save-every`). If training is interrupted, use `--resume` to continue from the last checkpoint.
+Training checkpoints are saved at regular intervals (configurable via `saveEvery` in your config, or overridden per-run with `--save-every`). If training is interrupted, use `--resume` to continue from the last checkpoint. Resuming loads the saved adapter weights and then starts a fresh run: the iteration counter restarts at 1, `iterations` (or `-i`) is the number of iterations to run on top of the checkpoint rather than the number left in the original run, and the learning-rate schedule and optimizer state are not restored. A run stopped at iteration 40 of 400 and resumed with the same settings therefore trains 400 more iterations. Pass `-i` to resume for fewer.
 
 `earlyStoppingPatience` counts validation checks, not optimizer steps. `0` (the default) trains for the full iteration count. With early stopping or `loadBestModelAtEnd` enabled, Nanotune snapshots the exact weights inside MLX's validation callback whenever finite validation loss improves. Validation occurs before the next optimizer update, so its reported best iteration is the number of completed updates (the initial model is iteration `0`). Selection does not depend on `saveEvery` or numbered checkpoints from earlier runs.
 

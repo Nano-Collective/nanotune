@@ -403,7 +403,7 @@ export function JudgeTestCommand() {
 			)}
 
 			<Text> </Text>
-			<ExitHint>Press any key to exit</ExitHint>
+			<ExitHint>Press Enter or Esc to exit</ExitHint>
 		</Box>
 	);
 }

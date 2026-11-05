@@ -148,15 +148,47 @@ export async function installMLX(): Promise<void> {
 	await installPythonPackages(['mlx-lm']);
 }
 
+/**
+ * `--user` is refused inside a virtualenv ("User site-packages are not visible
+ * in this virtualenv"), and a venv is the remedy offered for an externally
+ * managed system Python, so it has to install into the venv itself.
+ */
+export function buildPipInstallArgs(
+	packages: string[],
+	inVirtualEnv: boolean,
+): string[] {
+	return inVirtualEnv
+		? ['install', ...packages]
+		: ['install', '--user', ...packages];
+}
+
+async function isInVirtualEnv(): Promise<boolean> {
+	try {
+		const result = await execa('python3', [
+			'-c',
+			'import sys; print(sys.prefix != sys.base_prefix)',
+		]);
+		return result.stdout.trim() === 'True';
+	} catch {
+		return false;
+	}
+}
+
 export async function installPythonPackages(packages: string[]): Promise<void> {
 	const list = packages.join(' ');
 	try {
 		// Try the friendly user-site install first; on stock macOS Python 3.12+
 		// this avoids the externally-managed-environment lockout.
-		await execa('pip3', ['install', '--user', ...packages], {
-			stdout: 'inherit',
-			stderr: 'pipe',
-		});
+		// Run pip through the interpreter that was just probed, so the venv check
+		// and the install can never disagree about which Python they mean.
+		await execa(
+			'python3',
+			['-m', 'pip', ...buildPipInstallArgs(packages, await isInVirtualEnv())],
+			{
+				stdout: 'inherit',
+				stderr: 'pipe',
+			},
+		);
 	} catch (err) {
 		const stderr =
 			err && typeof err === 'object' && 'stderr' in err
@@ -167,16 +199,16 @@ export async function installPythonPackages(packages: string[]): Promise<void> {
 			throw new Error(
 				`pip refuses to install ${list} into the system Python (externally-managed-environment).\n` +
 					'Pick one of:\n' +
-					`  • Create a venv: python3 -m venv ~/.nanotune/venv && source ~/.nanotune/venv/bin/activate && pip install ${list}\n` +
+					`  • Create a venv: python3 -m venv ~/.nanotune/venv && source ~/.nanotune/venv/bin/activate && python3 -m pip install ${list}\n` +
 					`  • Install via pipx: pipx install ${packages[0]}\n` +
-					`  • Override (not recommended): pip3 install --user --break-system-packages ${list}\n` +
+					`  • Override (not recommended): python3 -m pip install --user --break-system-packages ${list}\n` +
 					'Then re-run your nanotune command.',
 			);
 		}
 
 		const tail = stderr.trim().split('\n').slice(-10).join('\n');
 		throw new Error(
-			`Failed to install ${list} via pip3.${tail ? `\n\nDetails:\n${tail}` : ''}`,
+			`Failed to install ${list} via pip.${tail ? `\n\nDetails:\n${tail}` : ''}`,
 		);
 	}
 }

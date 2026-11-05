@@ -6,7 +6,9 @@ import {execa, type ResultPromise} from 'execa';
 import {
 	abortTraining,
 	buildLoraConfigYaml,
+	buildPipInstallArgs,
 	buildTrainingArgs,
+	installPythonPackages,
 	ensureModelDownloaded,
 	needsLoraConfig,
 	parseTrainingLogLine,
@@ -176,4 +178,56 @@ exit 1
 		process.env.PATH = path;
 		rmSync(dir, {recursive: true, force: true});
 	}
+});
+
+test('buildPipInstallArgs installs into the user site outside a virtualenv', t => {
+	t.deepEqual(buildPipInstallArgs(['mlx-lm'], false), ['install', '--user', 'mlx-lm']);
+});
+
+test('buildPipInstallArgs omits --user inside a virtualenv, where pip rejects it', t => {
+	t.deepEqual(buildPipInstallArgs(['torch', 'numpy'], true), ['install', 'torch', 'numpy']);
+});
+
+async function installWithFakePython(venvVerdict: 'True' | 'False'): Promise<string> {
+	const dir = mkdtempSync(join(tmpdir(), 'nanotune-pip-'));
+	const log = join(dir, 'pip.log');
+	const saved = {
+		path: process.env.PATH,
+		verdict: process.env.FAKE_VENV,
+		log: process.env.FAKE_PIP_LOG,
+	};
+	try {
+		// Answers the venv probe from FAKE_VENV and records anything else, which
+		// is the pip invocation. A bare `pip3` is deliberately absent from PATH
+		// ahead of this script, so an install that bypasses python3 cannot be
+		// recorded and fails the assertion below.
+		writeFileSync(
+			join(dir, 'python3'),
+			`#!/bin/sh
+if [ "$1" = "-c" ]; then echo "$FAKE_VENV"; exit 0; fi
+echo "$@" >> "$FAKE_PIP_LOG"
+`,
+			{mode: 0o755},
+		);
+		process.env.PATH = `${dir}:${saved.path}`;
+		process.env.FAKE_VENV = venvVerdict;
+		process.env.FAKE_PIP_LOG = log;
+		await installPythonPackages(['torch', 'numpy']);
+		return readFileSync(log, 'utf-8').trim();
+	} finally {
+		process.env.PATH = saved.path;
+		if (saved.verdict === undefined) delete process.env.FAKE_VENV;
+		else process.env.FAKE_VENV = saved.verdict;
+		if (saved.log === undefined) delete process.env.FAKE_PIP_LOG;
+		else process.env.FAKE_PIP_LOG = saved.log;
+		rmSync(dir, {recursive: true, force: true});
+	}
+}
+
+test.serial('installPythonPackages runs pip through python3 without --user inside a virtualenv', async t => {
+	t.is(await installWithFakePython('True'), '-m pip install torch numpy');
+});
+
+test.serial('installPythonPackages runs pip through python3 with --user outside a virtualenv', async t => {
+	t.is(await installWithFakePython('False'), '-m pip install --user torch numpy');
 });

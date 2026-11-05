@@ -202,7 +202,7 @@ export function StatusCommand() {
 			</Box>
 
 			<Text> </Text>
-			<ExitHint>Press any key to exit</ExitHint>
+			<ExitHint>Press Enter, Esc or q to exit</ExitHint>
 		</Box>
 	);
 }

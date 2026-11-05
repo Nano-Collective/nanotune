@@ -93,6 +93,63 @@ test.serial("resolveComparisonPair with 0 args picks the two most recent runs", 
   }
 });
 
+test.serial("resolveComparisonPair with 0 args keeps the control as before when it is the newer of the two", (t) => {
+  setup();
+  try {
+    const tuned = writeRun("benchmark-tuned.json", 60_000);
+    const base = writeRun("benchmark-base.json", 0, { isBase: true });
+
+    const { beforePath, afterPath } = resolveComparisonPair(undefined, undefined);
+    t.is(beforePath, base);
+    t.is(afterPath, tuned);
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("resolveComparisonPair with 0 args keeps the control as before when it is the older of the two", (t) => {
+  setup();
+  try {
+    const base = writeRun("benchmark-base.json", 60_000, { isBase: true });
+    const tuned = writeRun("benchmark-tuned.json", 0);
+
+    const { beforePath, afterPath } = resolveComparisonPair(undefined, undefined);
+    t.is(beforePath, base);
+    t.is(afterPath, tuned);
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("resolveComparisonPair with 0 args does not compare two --base controls with each other", (t) => {
+  setup();
+  try {
+    const tuned = writeRun("benchmark-tuned.json", 120_000);
+    writeRun("benchmark-base-old.json", 60_000, { isBase: true });
+    const base = writeRun("benchmark-base-new.json", 0, { isBase: true });
+
+    const { beforePath, afterPath } = resolveComparisonPair(undefined, undefined);
+    t.is(beforePath, base);
+    t.is(afterPath, tuned);
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("resolveComparisonPair with 0 args keeps the two newest runs when they are both controls and no tuned run exists", (t) => {
+  setup();
+  try {
+    const older = writeRun("benchmark-base-old.json", 60_000, { isBase: true });
+    const newer = writeRun("benchmark-base-new.json", 0, { isBase: true });
+
+    const { beforePath, afterPath } = resolveComparisonPair(undefined, undefined);
+    t.is(beforePath, older);
+    t.is(afterPath, newer);
+  } finally {
+    teardown();
+  }
+});
+
 test.serial("resolveComparisonPair with 0 args throws when fewer than two runs exist", (t) => {
   setup();
   try {
@@ -112,6 +169,34 @@ test.serial("resolveComparisonPair with 1 arg compares it against the latest run
     const { beforePath, afterPath } = resolveComparisonPair("benchmark-older.json", undefined);
     t.is(beforePath, older);
     t.is(afterPath, latest);
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("resolveComparisonPair with 1 arg keeps a newer control as before", (t) => {
+  setup();
+  try {
+    const tuned = writeRun("benchmark-tuned.json", 60_000);
+    const base = writeRun("benchmark-base.json", 0, { isBase: true });
+
+    const { beforePath, afterPath } = resolveComparisonPair("benchmark-tuned.json", undefined);
+    t.is(beforePath, base);
+    t.is(afterPath, tuned);
+  } finally {
+    teardown();
+  }
+});
+
+test.serial("resolveComparisonPair with 2 args keeps the order given, even with a control second", (t) => {
+  setup();
+  try {
+    const tuned = writeRun("benchmark-tuned.json", 60_000);
+    const base = writeRun("benchmark-base.json", 0, { isBase: true });
+
+    const { beforePath, afterPath } = resolveComparisonPair("benchmark-tuned.json", "benchmark-base.json");
+    t.is(beforePath, tuned);
+    t.is(afterPath, base);
   } finally {
     teardown();
   }
