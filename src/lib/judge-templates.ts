@@ -396,7 +396,7 @@ export const PROVIDER_TEMPLATES: ProviderTemplate[] = [
 			{
 				name: 'model',
 				prompt: 'Model name',
-				default: 'MiniMax-M2.5',
+				default: 'MiniMax-M3.1-Flash',
 				required: true,
 			},
 			{
