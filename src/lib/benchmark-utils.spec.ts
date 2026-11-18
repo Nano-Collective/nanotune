@@ -41,6 +41,35 @@ test("getTestDisplayPrompt returns empty string for test with neither", (t) => {
   t.is(getTestDisplayPrompt(empty), "");
 });
 
+test("getTestDisplayPrompt returns empty string when no user message exists", (t) => {
+  for (const messages of [
+    [],
+    [{ role: "assistant", content: "An answer, not a prompt" }],
+    [{ role: "system", content: "System instructions" }],
+    [
+      { role: "system", content: "System instructions" },
+      { role: "assistant", content: "An answer, not a prompt" },
+    ],
+  ]) {
+    const noUser: BenchmarkTest = { id: 4, category: "other", messages };
+    t.is(getTestDisplayPrompt(noUser), "");
+  }
+});
+
+test("getTestDisplayPrompt ignores assistant replies after the last user message", (t) => {
+  const conversation: BenchmarkTest = {
+    id: 5,
+    category: "memory",
+    messages: [
+      { role: "user", content: "My name is Alice" },
+      { role: "assistant", content: "Hello Alice!" },
+      { role: "user", content: "What's my name?" },
+      { role: "assistant", content: "Alice" },
+    ],
+  };
+  t.is(getTestDisplayPrompt(conversation), "What's my name?");
+});
+
 // ── buildMessages ───────────────────────────────────────────────────
 
 const ctx = { role: "system", content: "You are helpful." };
