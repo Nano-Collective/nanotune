@@ -86,8 +86,8 @@ export function parseTrainingLoss(line: string): TrainingLossPoint | null {
 //
 // Values reach here already validated as finite numbers by TrainingConfigSchema,
 // but `String(1e-7)` yields exponent notation that PyYAML's 1.1 resolver reads
-// as a string rather than a float, so anything below 1e-6 is written in fixed
-// notation instead.
+// as a string rather than a float, so that form is expanded into plain decimal
+// digits instead.
 function yamlNumber(value: number): string {
 	const text = String(value);
 	const match = /^(-?)(\d)(?:\.(\d+))?e-(\d+)$/.exec(text);

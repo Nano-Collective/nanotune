@@ -131,8 +131,7 @@ test('small values are written with no padding and no lost digits', t => {
 });
 
 test('zero is written plainly rather than padded', t => {
-	// 0 is below the 1e-6 threshold in magnitude but must stay a plain 0,
-	// not a zero padded with decimals.
+	// 0 must stay a plain 0, not a zero padded with decimals.
 	const yaml = buildLoraConfigYaml(8, 16, 0);
 	t.true(yaml.includes('dropout: 0\n'), yaml);
 });
