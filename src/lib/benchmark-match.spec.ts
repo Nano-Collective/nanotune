@@ -87,6 +87,10 @@ test("checkPass semantic accepts trailing content separated by colon", (t) => {
 
 test("checkPass semantic accepts trailing content separated by newline", (t) => {
   t.true(checkPass(["ls"], "ls\nfoo bar", "semantic").passed);
+  // Windows line endings, tabs and blank lines are delimiters too.
+  t.true(checkPass(["ls"], "ls\r\nfoo bar", "semantic").passed);
+  t.true(checkPass(["ls"], "ls\tfoo bar", "semantic").passed);
+  t.true(checkPass(["ls"], "ls\n\nfoo bar", "semantic").passed);
 });
 
 test(
