@@ -874,7 +874,7 @@ export async function* runBenchmark(
 						const judgePrompt =
 							test.messages && test.messages.length > 0
 								? formatConversationForJudge(test.messages, contextMsg)
-							: (test.prompt as string);
+								: (test.prompt as string);
 						// The judge decides pass/fail, so a provider that stalls hangs
 						// the run exactly as a stalled generation would — and the
 						// inference timer above has already been cleared by the time we
