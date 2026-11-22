@@ -234,6 +234,14 @@ export function validateTests(tests: BenchmarkTest[]): void {
 				`Test #${test.id} must have either "prompt" or "messages".`,
 			);
 		}
+		// A test is single-turn (prompt) or multi-turn (messages). With both,
+		// buildMessages sends the prompt and drops the conversation, so the
+		// test would run as something other than what was written.
+		if (test.prompt && test.messages && test.messages.length > 0) {
+			throw new Error(
+				`Test #${test.id} has both "prompt" and "messages"; use only one.`,
+			);
+		}
 		if (test.acceptable?.some(answer => answer.trim() === '')) {
 			throw new Error(
 				`Test #${test.id}: "acceptable" contains an empty string.`,

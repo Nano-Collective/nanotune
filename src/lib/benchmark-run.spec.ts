@@ -146,6 +146,33 @@ test("validateTests names the test that has neither prompt nor messages", (t) =>
   t.true(error?.message.includes("#7"));
 });
 
+test("validateTests rejects a test with both prompt and messages", (t) => {
+  const error = t.throws(() =>
+    validateTests([
+      { id: 1, prompt: "ok", category: "basic" },
+      {
+        id: 5,
+        prompt: "and now?",
+        messages: [
+          { role: "user", content: "hi" },
+          { role: "assistant", content: "hello" },
+          { role: "user", content: "and now?" },
+        ],
+        category: "basic",
+      },
+    ]),
+  );
+
+  t.true(error?.message.includes("#5"));
+  t.true(error?.message.includes('"prompt" and "messages"'));
+});
+
+test("validateTests accepts a prompt next to an empty messages array", (t) => {
+  t.notThrows(() =>
+    validateTests([{ id: 6, prompt: "ok", messages: [], category: "basic" }]),
+  );
+});
+
 test("validateTests rejects an empty messages array", (t) => {
   const error = t.throws(() =>
     validateTests([{ id: 2, messages: [], category: "basic" }]),
