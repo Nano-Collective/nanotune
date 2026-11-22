@@ -1018,6 +1018,47 @@ test.serial("runBenchmark scores an llm-judge test through the judge", async (t)
   t.is(result.summary.judgeModel, "fake/judge-1");
 });
 
+test.serial("runBenchmark sends the prompt to the judge when messages is empty", async (t) => {
+  writeFileSync(
+    join(NANOTUNE_DIR, "judge.json"),
+    JSON.stringify({
+      name: "Fake",
+      baseUrl: "https://example.invalid",
+      model: "fake/judge-1",
+    }),
+  );
+  const model = writeModel();
+  writeDataset([
+    {
+      id: 1,
+      prompt: "explain recursion",
+      messages: [],
+      category: "open",
+      match: "llm-judge",
+    },
+  ]);
+  const { deps } = makeDeps();
+  const judgePrompts: string[] = [];
+  const judged = {
+    ...deps,
+    callJudge: async (prompt: string) => {
+      judgePrompts.push(prompt);
+      return {
+        pass: true,
+        score: 8,
+        reasoning: "because",
+        criteriaScores: { helpful: 8 },
+      };
+    },
+  } as unknown as typeof deps;
+
+  await collect({ model }, judged);
+
+  // An empty messages array is not a conversation: the judge must still be
+  // shown the prompt the model answered.
+  t.deepEqual(judgePrompts, ["explain recursion"]);
+});
+
 test.serial("runBenchmark saves partial results when the server dies mid-run", async (t) => {
   const model = writeModel();
   writeDataset([
