@@ -124,9 +124,14 @@ test('very small values are written in fixed notation, not exponent', t => {
 	t.true(/dropout: 0\.0000001/.test(yaml), yaml);
 });
 
+test('small values are written with no padding and no lost digits', t => {
+	const yaml = buildLoraConfigYaml(8, 2.5e-21, 1e-7);
+	t.true(yaml.includes('scale: 0.0000000000000000000025\n'), yaml);
+	t.true(yaml.includes('dropout: 0.0000001\n'), yaml);
+});
+
 test('zero is written plainly rather than padded', t => {
-	// 0 is below the 1e-6 threshold in magnitude but must not go through
-	// toFixed(20), or the config gains a 20-decimal zero.
+	// 0 must stay a plain 0, not a zero padded with decimals.
 	const yaml = buildLoraConfigYaml(8, 16, 0);
 	t.true(yaml.includes('dropout: 0\n'), yaml);
 });
