@@ -245,6 +245,28 @@ test.serial('writeModelCard preserves an existing README on re-export', t => {
 	t.is(readFileSync(path, 'utf-8'), 'My custom model card\n');
 });
 
+test.serial('writeModelCard refreshes its own untouched card on re-export', t => {
+	// The card used to be written once, so after a second export it still named
+	// the first artifact and its quantization.
+	writeModelCard(config, output, 'q4_k_m');
+	const second = join(models, 'shell-helper-q8_0.gguf');
+	writeFileSync(second, 'GGUF');
+	const result = writeModelCard(config, second, 'q8_0');
+	t.true(result.created);
+	const card = readFileSync(result.path, 'utf-8');
+	t.true(card.includes('- Quantization: q8_0'));
+	t.false(card.includes('- Quantization: q4_k_m'));
+	t.false(card.includes('shell-helper-q4'));
+});
+
+test.serial('writeModelCard preserves a generated card once the user has edited it', t => {
+	const {path} = writeModelCard(config, output, 'q4_k_m');
+	const edited = readFileSync(path, 'utf-8').replace('## Evaluation', '## Evaluation\n\nMy notes.');
+	writeFileSync(path, edited);
+	t.deepEqual(writeModelCard(config, output, 'q8_0'), {path, created: false});
+	t.is(readFileSync(path, 'utf-8'), edited);
+});
+
 test.serial('writeModelCard follows nested output paths instead of the project root', t => {
 	const nested = join(models, 'release');
 	mkdirSync(nested);

@@ -936,6 +936,11 @@ export async function* runBenchmark(
 					// with the summary and `benchmark compare` would diff a denominator
 					// that never ran.
 					categoryResults[test.category].total--;
+					// A category whose only test never ran has no row to show: 0/0
+					// renders as NaN% and `compare` reads it as a drop to 0%.
+					if (categoryResults[test.category].total === 0) {
+						delete categoryResults[test.category];
+					}
 					abortReason = `llama-server exited unexpectedly after ${i} of ${tests.length} tests — saving partial results.`;
 					break testLoop;
 				}

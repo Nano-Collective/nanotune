@@ -1,3 +1,4 @@
+import {createHash} from 'node:crypto';
 import {existsSync, readFileSync, statSync} from 'node:fs';
 import {basename, dirname, join, resolve} from 'node:path';
 import {z} from 'zod';
@@ -174,36 +175,64 @@ export function renderModelCard({
 	return lines.join('\n');
 }
 
-function existingCard(path: string): boolean {
-	if (!existsSync(path)) return false;
+/**
+ * A generated card ends with this marker carrying a hash of everything above
+ * it. A card that still matches its hash is ours and untouched, so re-export
+ * refreshes it; once the user edits it, or for a README nanotune didn't write,
+ * the hash no longer matches and the file is left alone.
+ */
+const MARKER = /\n<!-- nanotune-generated sha256:([0-9a-f]{64}) -->\n$/;
+
+function digest(body: string): string {
+	return createHash('sha256').update(body).digest('hex');
+}
+
+function withMarker(body: string): string {
+	return `${body}\n<!-- nanotune-generated sha256:${digest(body)} -->\n`;
+}
+
+/** 'missing', a card nanotune generated and nobody has edited, or 'user'. */
+function existingCard(path: string): 'missing' | 'generated' | 'user' {
+	if (!existsSync(path)) return 'missing';
 	if (!statSync(path).isFile()) {
 		throw new Error(`Cannot write model card: ${path} is not a file.`);
 	}
-	return true;
+	const contents = readFileSync(path, 'utf-8');
+	const match = contents.match(MARKER);
+	if (match && digest(contents.slice(0, match.index)) === match[1]) {
+		return 'generated';
+	}
+	return 'user';
 }
 
-/** Create beside the GGUF, preserving a README the user has already edited. */
+/**
+ * Create beside the GGUF, or refresh a card an earlier export generated so it
+ * describes this one, preserving a README the user wrote or edited.
+ */
 export function writeModelCard(
 	config: Config,
 	outputPath: string,
 	quantization: QuantizationType,
 ): {path: string; created: boolean} {
 	const path = join(dirname(outputPath), 'README.md');
-	if (existingCard(path)) return {path, created: false};
-	const card = renderModelCard({
-		config,
-		outputPath,
-		quantization,
-		trainExamples: countExamples(),
-		validationExamples: countExamples(true),
-		benchmark: latestMatchingBenchmark(outputPath),
-	});
+	const existing = existingCard(path);
+	if (existing === 'user') return {path, created: false};
+	const card = withMarker(
+		renderModelCard({
+			config,
+			outputPath,
+			quantization,
+			trainExamples: countExamples(),
+			validationExamples: countExamples(true),
+			benchmark: latestMatchingBenchmark(outputPath),
+		}),
+	);
 	try {
-		writeFileAtomic(path, card, {overwrite: false});
+		writeFileAtomic(path, card, {overwrite: existing === 'generated'});
 	} catch (error) {
 		if (
 			(error as NodeJS.ErrnoException).code === 'EEXIST' &&
-			existingCard(path)
+			existingCard(path) !== 'missing'
 		) {
 			return {path, created: false};
 		}

@@ -1055,6 +1055,17 @@ function withImportedContext(
 	};
 }
 
+// Import has to hold rows to the same shape loadTrainingData demands, or a row
+// it lets in (an OpenAI tool-call turn with `content: null`, a numeric output)
+// makes every later rewrite of the dataset fail on load.
+const MALFORMED_MESSAGES =
+	'every message needs a text role and content (tool calls and non-text content are not supported)';
+const NON_TEXT_PAIR = 'input and output must both be text';
+
+function isTextPair(row: {input: unknown; output: unknown}): boolean {
+	return typeof row.input === 'string' && typeof row.output === 'string';
+}
+
 function runJSONLImport(
 	filePath: string,
 	contextMessage: ChatMessage,
@@ -1082,10 +1093,13 @@ function runJSONLImport(
 					);
 
 					if (userMsg?.content && assistantMsg?.content) {
-						appendTrainingExample(
-							withImportedContext(data.messages, contextMessage),
-							isEval,
-						);
+						const example = withImportedContext(data.messages, contextMessage);
+						if (!isWellFormedExample(example)) {
+							errors.push(`Line ${i + 1}: ${MALFORMED_MESSAGES}`);
+							skipped++;
+							continue;
+						}
+						appendTrainingExample(example, isEval);
 						imported++;
 						continue;
 					}
@@ -1098,6 +1112,11 @@ function runJSONLImport(
 
 			// Simple {input, output} format — wrap with the project context.
 			if (data.input && data.output) {
+				if (!isTextPair(data)) {
+					errors.push(`Line ${i + 1}: ${NON_TEXT_PAIR}`);
+					skipped++;
+					continue;
+				}
 				appendToTrainingData(
 					{
 						contextMessage,
@@ -1156,10 +1175,13 @@ function runJSONImport(
 			);
 
 			if (userMsg?.content && assistantMsg?.content) {
-				appendTrainingExample(
-					withImportedContext(item.messages, contextMessage),
-					isEval,
-				);
+				const example = withImportedContext(item.messages, contextMessage);
+				if (!isWellFormedExample(example)) {
+					errors.push(`Item ${i + 1}: ${MALFORMED_MESSAGES}`);
+					skipped++;
+					continue;
+				}
+				appendTrainingExample(example, isEval);
 				imported++;
 				continue;
 			}
@@ -1170,6 +1192,11 @@ function runJSONImport(
 		}
 
 		if (item.input && item.output) {
+			if (!isTextPair(item)) {
+				errors.push(`Item ${i + 1}: ${NON_TEXT_PAIR}`);
+				skipped++;
+				continue;
+			}
 			appendToTrainingData(
 				{
 					contextMessage,

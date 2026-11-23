@@ -66,6 +66,13 @@ test("checkPass partial accepts actual that is a truncation of expected", (t) =>
   t.is(result.matchType, "partial");
 });
 
+test("checkPass partial rejects an empty or whitespace-only reply", (t) => {
+  // '' is a prefix of every answer, so a model that emits nothing used to
+  // pass every partial test.
+  t.false(checkPass(["ls -la"], "", "partial").passed);
+  t.false(checkPass(["ls -la"], "  \n ", "partial").passed);
+});
+
 test("checkPass partial rejects unrelated strings", (t) => {
   t.false(checkPass(["ls"], "pwd", "partial").passed);
 });

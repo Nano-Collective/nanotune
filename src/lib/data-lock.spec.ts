@@ -106,6 +106,36 @@ test.serial("takes over a lock left behind by a process that is gone", async (t)
   t.false(existsSync(getDataLockPath()));
 });
 
+test.serial("does not remove a stale lock while another process is taking it over", (t) => {
+  // The other waiter may already have removed the stale lock and taken a fresh
+  // one; a second rm here would delete that live lock out from under it.
+  const { pid } = spawnSync(process.execPath, ["-e", "0"]);
+  writeOwner({ pid, host: hostname() });
+  mkdirSync(`${getDataLockPath()}.takeover`);
+
+  t.throws(() => withDataLock(() => "x", { timeoutMs: 150 }));
+  t.true(existsSync(getDataLockPath()));
+});
+
+test.serial("clears a takeover guard left by a process killed mid-takeover", (t) => {
+  const { pid } = spawnSync(process.execPath, ["-e", "0"]);
+  writeOwner({ pid, host: hostname() });
+  const guard = `${getDataLockPath()}.takeover`;
+  mkdirSync(guard);
+  const long_ago = new Date(Date.now() - 60_000);
+  utimesSync(guard, long_ago, long_ago);
+
+  t.is(withDataLock(() => "reclaimed", { timeoutMs: 10_000 }), "reclaimed");
+  t.false(existsSync(guard));
+});
+
+test.serial("release leaves the lock alone once it is no longer ours", (t) => {
+  withDataLock(() => {
+    writeOwner({ pid: process.pid + 1, host: hostname() });
+  });
+  t.true(existsSync(getDataLockPath()));
+});
+
 test.serial("leaves a lock held by another host alone", (t) => {
   writeOwner({ pid: process.pid, host: "some-other-machine" });
 

@@ -85,10 +85,12 @@ export function checkPass(
 
 			case 'partial': {
 				// Bidirectional prefix match. Opt-in because accepting a truncated
-				// answer ("ls" for "ls -la") will inflate pass rates.
+				// answer ("ls" for "ls -la") will inflate pass rates. An empty reply
+				// is a prefix of every answer, so it is never a truncated one.
 				if (
 					actualNormalized.startsWith(expectedNormalized) ||
-					expectedNormalized.startsWith(actualNormalized)
+					(actualNormalized !== '' &&
+						expectedNormalized.startsWith(actualNormalized))
 				) {
 					return {
 						passed: true,

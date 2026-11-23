@@ -184,8 +184,10 @@ export async function installPythonPackages(packages: string[]): Promise<void> {
 		await execa(
 			'python3',
 			['-m', 'pip', ...buildPipInstallArgs(packages, await isInVirtualEnv())],
+			// Not 'inherit': pip's progress on our stdout would land in the middle
+			// of `benchmark --json`'s document, which installs PyTorch on demand.
 			{
-				stdout: 'inherit',
+				stdout: 'pipe',
 				stderr: 'pipe',
 			},
 		);

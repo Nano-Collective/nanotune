@@ -586,6 +586,57 @@ test.serial("importFromJSONL skips invalid JSON", (t) => {
   t.true(result.errors[0].includes("Invalid JSON"));
 });
 
+test.serial("importFromJSONL skips a row the loader would reject, so the dataset stays loadable", (t) => {
+  // Import only looked at the first user and first assistant turn, so a later
+  // tool-call turn with `content: null` got in, and every later edit, dedupe
+  // and split then refused to load the dataset.
+  const jsonlPath = join(TEST_DIR, "toolcall.jsonl");
+  writeFileSync(
+    jsonlPath,
+    [
+      JSON.stringify({
+        messages: [
+          { role: "user", content: "weather?" },
+          { role: "assistant", content: "Let me check." },
+          { role: "assistant", content: null, tool_calls: [{ id: "1" }] },
+        ],
+      }),
+      JSON.stringify({ input: 5, output: "five" }),
+      JSON.stringify({ input: "q", output: "a" }),
+    ].join("\n"),
+  );
+
+  const result = importFromJSONL(jsonlPath, SYSTEM_CTX, false);
+  t.is(result.imported, 1);
+  t.is(result.skipped, 2);
+  t.true(result.errors[0].startsWith("Line 1: every message needs"));
+  t.true(result.errors[1].startsWith("Line 2: input and output must both be text"));
+  t.is(loadTrainingData().length, 1);
+});
+
+test.serial("importFromJSON skips a row the loader would reject", (t) => {
+  const jsonPath = join(TEST_DIR, "arr.json");
+  writeFileSync(
+    jsonPath,
+    JSON.stringify([
+      {
+        messages: [
+          { role: "user", content: "q" },
+          { role: "assistant", content: "a" },
+          { role: "tool", content: { temperature: 20 } },
+        ],
+      },
+      { input: "q", output: ["a"] },
+      { input: "q", output: "a" },
+    ]),
+  );
+
+  const result = importFromJSON(jsonPath, SYSTEM_CTX, false);
+  t.is(result.imported, 1);
+  t.is(result.skipped, 2);
+  t.is(loadTrainingData().length, 1);
+});
+
 // ── importFromJSON ────────────────────────────────────────────────────
 
 test.serial("importFromJSON imports array of messages format", (t) => {

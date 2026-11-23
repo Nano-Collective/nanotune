@@ -1,10 +1,12 @@
 import {
+	chmodSync,
 	type Dirent,
 	existsSync,
 	linkSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	realpathSync,
 	renameSync,
 	rmSync,
 	statSync,
@@ -426,14 +428,21 @@ export function sweepStaleAtomicWrites(dir: string): void {
  * refuses an existing destination, preserving files created by another writer.
  */
 export function writeFileAtomic(
-	path: string,
+	requestedPath: string,
 	contents: string,
 	options: {overwrite?: boolean} = {},
 ): void {
+	// Rename replaces whatever sits at the path. Through a symlink (a dataset
+	// linked in from elsewhere) that would swap the link for a plain file and
+	// leave the real file behind unchanged, so write next to the target instead,
+	// and keep its permissions, as an in-place write would have.
+	const path = resolveExisting(requestedPath);
+	const mode = existsSync(path) ? statSync(path).mode & 0o7777 : undefined;
 	removeStaleTemps(dirname(path), `${basename(path)}.tmp-`);
 	const tmp = `${path}.tmp-${process.pid}`;
 	try {
 		writeFileSync(tmp, contents);
+		if (mode !== undefined) chmodSync(tmp, mode);
 		if (options.overwrite === false) {
 			linkSync(tmp, path);
 		} else {
@@ -441,6 +450,14 @@ export function writeFileAtomic(
 		}
 	} finally {
 		rmSync(tmp, {force: true});
+	}
+}
+
+function resolveExisting(path: string): string {
+	try {
+		return realpathSync(path);
+	} catch {
+		return path;
 	}
 }
 
@@ -533,7 +550,11 @@ export function findLatestGGUF(): string | null {
 	if (!existsSync(modelsDir)) {
 		return null;
 	}
-	const ggufs = readdirSync(modelsDir).filter(f => f.endsWith('.gguf'));
+	// `.tmp-<pid>` files are exports in progress, or left by one that was
+	// killed: never a finished model.
+	const ggufs = readdirSync(modelsDir).filter(
+		f => f.endsWith('.gguf') && !/\.tmp-\d+/.test(f),
+	);
 	if (ggufs.length === 0) {
 		return null;
 	}
