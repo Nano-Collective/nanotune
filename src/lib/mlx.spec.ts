@@ -231,3 +231,29 @@ test.serial('installPythonPackages runs pip through python3 without --user insid
 test.serial('installPythonPackages runs pip through python3 with --user outside a virtualenv', async t => {
 	t.is(await installWithFakePython('False'), '-m pip install --user torch numpy');
 });
+
+test.serial('installPythonPackages keeps pip output off our stdout, so --json stays parseable', async t => {
+	// `inherit` hands pip the real fd 1, which no in-process stub can see, so this
+	// runs the install in a child process and checks what reached its stdout.
+	const dir = mkdtempSync(join(tmpdir(), 'nanotune-pip-'));
+	try {
+		writeFileSync(
+			join(dir, 'python3'),
+			`#!/bin/sh
+if [ "$1" = "-c" ]; then echo False; exit 0; fi
+echo "Collecting torch"
+echo "Successfully installed torch"
+`,
+			{mode: 0o755},
+		);
+		const mlx = new URL('./mlx.ts', import.meta.url).href;
+		const {stdout} = await execa(
+			process.execPath,
+			['--import=tsx', '--input-type=module', '-e', `await (await import(${JSON.stringify(mlx)})).installPythonPackages(['torch'])`],
+			{env: {PATH: `${dir}:${process.env.PATH}`}},
+		);
+		t.is(stdout, '');
+	} finally {
+		rmSync(dir, {recursive: true, force: true});
+	}
+});

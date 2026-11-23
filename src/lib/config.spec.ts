@@ -1,10 +1,13 @@
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -414,6 +417,28 @@ test.serial(
       mkdirSync(GGUF_MODELS_DIR, { recursive: true });
       writeFileSync(join(GGUF_MODELS_DIR, "readme.txt"), "not a gguf");
       t.is(findLatestGGUF(), null);
+    } finally {
+      teardownGGUFTest();
+    }
+  },
+);
+
+test.serial(
+  "findLatestGGUF skips an unfinished .tmp-<pid> export even when it is newest",
+  (t) => {
+    setupGGUFTest();
+    try {
+      mkdirSync(GGUF_MODELS_DIR, { recursive: true });
+      const finished = join(GGUF_MODELS_DIR, "model-q4_k_m.gguf");
+      writeFileSync(finished, "stub");
+      const past = new Date(Date.now() - 60_000);
+      utimesSync(finished, past, past);
+      // What a killed export leaves behind: the half-written output and its
+      // f16 intermediate, both newer than the real model.
+      writeFileSync(join(GGUF_MODELS_DIR, "model-q8_0.tmp-4242.gguf"), "partial");
+      writeFileSync(join(GGUF_MODELS_DIR, "model-q8_0.tmp-4242-f16.gguf"), "partial");
+
+      t.is(findLatestGGUF(), finished);
     } finally {
       teardownGGUFTest();
     }
@@ -1130,6 +1155,28 @@ test.serial("results saved into a cloned project are discoverable afterwards", (
 });
 
 // ── writeFileAtomic ───────────────────────────────────────────────────
+
+test.serial("writeFileAtomic writes through a symlink and keeps the target's permissions", (t) => {
+  setupBenchTest();
+  try {
+    // A dataset linked in from elsewhere: renaming over the link used to
+    // replace it with a plain file, so the real dataset stopped changing.
+    const dir = ensureBenchmarksDir();
+    const target = join(dir, "shared.jsonl");
+    const link = join(dir, "train.jsonl");
+    writeFileSync(target, "old\n");
+    chmodSync(target, 0o640);
+    symlinkSync(target, link);
+
+    writeFileAtomic(link, "new\n");
+
+    t.true(lstatSync(link).isSymbolicLink());
+    t.is(readFileSync(target, "utf-8"), "new\n");
+    t.is(statSync(target).mode & 0o777, 0o640);
+  } finally {
+    teardownBenchTest();
+  }
+});
 
 test.serial("writeFileAtomic writes the contents and leaves no temp file behind", (t) => {
   setupBenchTest();

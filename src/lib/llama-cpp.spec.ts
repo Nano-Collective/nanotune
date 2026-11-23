@@ -1,5 +1,8 @@
 import test from "ava";
 import { execa } from "execa";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
 	ChatCompletionResponse,
 	InferenceOptions,
@@ -723,4 +726,54 @@ test("chatCompletionStream throws when the server returns a non-OK status", asyn
 			);
 		},
 	);
+});
+
+// llama.cpp's paths come from homedir() at import, so these run exportModel in a
+// child process with HOME pointing at a fake install whose converter and
+// quantizer are shell scripts.
+async function exportWithFakeTools(quantizeExit: number): Promise<string[]> {
+	const home = mkdtempSync(join(tmpdir(), "nanotune-export-"));
+	try {
+		const llama = join(home, ".nanotune", "llama.cpp");
+		mkdirSync(join(llama, "bin"), { recursive: true });
+		const fakeBin = join(home, "fakebin");
+		mkdirSync(fakeBin);
+		// python3 <script> <in> --outfile <out> --outtype f16
+		writeFileSync(join(fakeBin, "python3"), '#!/bin/sh\necho converted > "$4"\n', { mode: 0o755 });
+		// llama-quantize <in> <out> <type>: writes part of its output, as the
+		// real one does, before exiting with the given code.
+		writeFileSync(
+			join(llama, "bin", "llama-quantize"),
+			`#!/bin/sh\necho partial > "$2"\nexit ${quantizeExit}\n`,
+			{ mode: 0o755 },
+		);
+		writeFileSync(join(llama, "convert_hf_to_gguf.py"), "");
+		const models = join(home, "models");
+		mkdirSync(models);
+		const lib = new URL("./llama-cpp.ts", import.meta.url).href;
+		await execa(
+			process.execPath,
+			[
+				"--import=tsx",
+				"--input-type=module",
+				"-e",
+				`const {exportModel} = await import(${JSON.stringify(lib)});
+				try { for await (const _ of exportModel("fused", ${JSON.stringify(join(models, "m-q4_k_m.gguf"))}, "q4_k_m")); } catch {}`,
+			],
+			{ env: { HOME: home, PATH: `${fakeBin}:${process.env.PATH}` } },
+		);
+		return readdirSync(models).sort();
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+	}
+}
+
+test.serial("exportModel publishes the GGUF only once quantization succeeds", async (t) => {
+	t.deepEqual(await exportWithFakeTools(0), ["m-q4_k_m.gguf"]);
+});
+
+test.serial("exportModel leaves no truncated GGUF behind when quantization fails", async (t) => {
+	// llama-quantize used to write straight to the final path, so a failed or
+	// interrupted export left a partial file `benchmark` would load as the newest.
+	t.deepEqual(await exportWithFakeTools(1), []);
 });

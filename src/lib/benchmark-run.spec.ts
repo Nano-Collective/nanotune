@@ -1009,6 +1009,21 @@ test.serial("runBenchmark saves partial results when the server dies mid-run", a
   t.true(result.warning?.includes("1 of 3 tests"));
 });
 
+test.serial("runBenchmark drops a category whose only test was cut short by a dying server", async (t) => {
+  const model = writeModel();
+  writeDataset([
+    { id: 1, prompt: "a", acceptable: ["ls"], category: "basic" },
+    { id: 2, prompt: "b", acceptable: ["ls"], category: "advanced" },
+  ]);
+  const { deps } = makeDeps({ connectionLostAt: 1 });
+
+  const { result } = await collect({ model }, deps);
+
+  t.is(result.summary.total, 1);
+  // A 0/0 row would render as NaN% and diff as -100% in `benchmark compare`.
+  t.deepEqual(Object.keys(result.categories), ["basic"]);
+});
+
 test.serial("runBenchmark leaves a test cut short by a dying server out of the score", async (t) => {
   const model = writeModel();
   writeDataset([

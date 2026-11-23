@@ -2,11 +2,12 @@ import {existsSync, mkdirSync, readFileSync} from 'node:fs';
 import {chmod, rm} from 'node:fs/promises';
 import {createServer} from 'node:net';
 import {homedir} from 'node:os';
-import {join} from 'node:path';
+import {dirname, join} from 'node:path';
 import {execa, type ResultPromise} from 'execa';
 import type {ChatMessage, QuantizationType} from '../types/index.js';
 import {downloadToFile, fetchJson} from './download.js';
 import {checkPythonModule, installPythonPackages} from './mlx.js';
+import {sweepStaleCacheArtifacts} from './model-cache.js';
 import {assertSupportedPlatform} from './platform.js';
 
 const LLAMA_CPP_DIR = join(homedir(), '.nanotune', 'llama.cpp');
@@ -337,8 +338,14 @@ export async function* exportModel(
 	outputPath: string,
 	quantization: QuantizationType,
 ): AsyncGenerator<ConvertProgress> {
+	// Everything is written under a `.tmp-<pid>` name and renamed into place only
+	// when complete. llama-quantize writes its output as it goes, so an export
+	// cut short by Ctrl+C or a failure would otherwise leave a truncated GGUF
+	// that `benchmark` picks up as the newest model.
+	sweepStaleCacheArtifacts(dirname(outputPath));
+	const tempPath = outputPath.replace(/\.gguf$/, `.tmp-${process.pid}.gguf`);
 	// Step 1: Convert to GGUF (f16)
-	const f16Path = outputPath.replace(/\.gguf$/, '-f16.gguf');
+	const f16Path = tempPath.replace(/\.gguf$/, '-f16.gguf');
 
 	yield {step: 'Step 1/2: Converting to GGUF...', progress: 0};
 
@@ -361,23 +368,29 @@ export async function* exportModel(
 
 		yield {step: `Step 2/2: Quantizing to ${quantization}...`, progress: 50};
 
-		for await (const update of quantize(f16Path, outputPath, quantization)) {
+		for await (const update of quantize(f16Path, tempPath, quantization)) {
 			yield {
 				step: update.step,
 				progress: scaleProgress(50, 100, update.progress),
 			};
 		}
 
+		const {rename} = await import('node:fs/promises');
+		await rename(tempPath, outputPath);
 		yield {step: 'Export complete!', progress: 100};
 	} finally {
-		// Clean up f16 intermediate whether or not quantize succeeded. If
-		// quantization was 'f16' we already renamed it away, so unlink is a no-op.
-		if (existsSync(f16Path)) {
-			const {unlink} = await import('node:fs/promises');
-			try {
-				await unlink(f16Path);
-			} catch {
-				// Ignore cleanup errors
+		// Clean up the f16 intermediate and any unfinished output whether or not
+		// the export succeeded. On success both were renamed away, so these are
+		// no-ops. A killed process skips this; the sweep above catches it next
+		// time.
+		const {unlink} = await import('node:fs/promises');
+		for (const path of [f16Path, tempPath]) {
+			if (existsSync(path)) {
+				try {
+					await unlink(path);
+				} catch {
+					// Ignore cleanup errors
+				}
 			}
 		}
 	}

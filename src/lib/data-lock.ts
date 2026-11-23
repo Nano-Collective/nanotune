@@ -144,11 +144,11 @@ function acquire(timeoutMs: number): void {
 			}
 		}
 
-		if (abandoned(path)) {
-			// SIGKILL and a hard crash skip the `finally` that removes this,
-			// so without taking it over every later command would refuse to run
-			// against the project for good.
-			rmSync(path, {recursive: true, force: true});
+		// SIGKILL and a hard crash skip the `finally` that removes this, so
+		// without taking it over every later command would refuse to run against
+		// the project for good. While another waiter's takeover is in progress,
+		// fall through and wait like any other holder.
+		if (abandoned(path) && takeOver(path)) {
 			continue;
 		}
 
@@ -165,6 +165,43 @@ function acquire(timeoutMs: number): void {
 		}
 		Atomics.wait(SLEEPER, 0, 0, POLL_MS);
 	}
+}
+
+/**
+ * How long a takeover can hold its own guard. Taking over is a read and an
+ * rm, so a guard older than this was left by a process killed mid-takeover.
+ */
+const TAKEOVER_GRACE_MS = 10_000;
+
+/**
+ * Remove an abandoned lock so the caller can retry at once; false when another
+ * waiter is mid-takeover and the caller should wait instead. Two waiters can both see
+ * the same lock as abandoned; if each simply removed it, the second rm could
+ * land after the first had already taken a fresh lock, and delete that live
+ * one. So takeovers are serialised through a second mkdir lock, and the lock
+ * is judged again inside it: by then the first waiter's fresh lock has a live
+ * owner (or no owner yet, and so is too young to count as abandoned).
+ */
+function takeOver(path: string): boolean {
+	const guard = `${path}.takeover`;
+	try {
+		mkdirSync(guard);
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+		if (ageMs(guard) > TAKEOVER_GRACE_MS) {
+			rmSync(guard, {recursive: true, force: true});
+			return true;
+		}
+		return false;
+	}
+	try {
+		if (abandoned(path)) {
+			rmSync(path, {recursive: true, force: true});
+		}
+	} finally {
+		rmSync(guard, {recursive: true, force: true});
+	}
+	return true;
 }
 
 function claimAsCurrentProcess(path: string): void {
@@ -235,6 +272,15 @@ function describeHolder(path: string): string {
 	return `${who}, holding for ${held}s`;
 }
 
+/**
+ * Remove the lock only while it is still ours. Should another process ever
+ * have taken it over, removing it here would hand the project to a third
+ * writer while that one is still inside its transaction.
+ */
 function release(): void {
-	rmSync(getDataLockPath(), {recursive: true, force: true});
+	const path = getDataLockPath();
+	const owner = readOwner(path);
+	if (owner?.pid === process.pid && owner.host === hostname()) {
+		rmSync(path, {recursive: true, force: true});
+	}
 }
