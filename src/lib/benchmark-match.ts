@@ -110,10 +110,12 @@ export function checkPass(
 
 				// 2. Actual starts with expected followed by a delimiter — allows
 				// trailing content but the expected answer must appear in full.
+				// normalizeText has already collapsed every run of whitespace,
+				// newlines and tabs included, to a single space, so the space
+				// check covers "expected\nmore" as well.
 				if (
 					actualNormalized.startsWith(`${expectedNormalized} `) ||
-					actualNormalized.startsWith(`${expectedNormalized}:`) ||
-					actualNormalized.startsWith(`${expectedNormalized}\n`)
+					actualNormalized.startsWith(`${expectedNormalized}:`)
 				) {
 					return {
 						passed: true,
