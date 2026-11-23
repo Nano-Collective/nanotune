@@ -234,6 +234,14 @@ export function validateTests(tests: BenchmarkTest[]): void {
 				`Test #${test.id} must have either "prompt" or "messages".`,
 			);
 		}
+		// A test is single-turn (prompt) or multi-turn (messages). With both,
+		// buildMessages sends the prompt and drops the conversation, so the
+		// test would run as something other than what was written.
+		if (test.prompt && test.messages && test.messages.length > 0) {
+			throw new Error(
+				`Test #${test.id} has both "prompt" and "messages"; use only one.`,
+			);
+		}
 		if (test.acceptable?.some(answer => answer.trim() === '')) {
 			throw new Error(
 				`Test #${test.id}: "acceptable" contains an empty string.`,
@@ -860,9 +868,13 @@ export async function* runBenchmark(
 						const threshold = test.passThreshold ?? 7;
 						// For multi-turn tests, include conversation context in the
 						// judge prompt
-						const judgePrompt = test.messages
-							? formatConversationForJudge(test.messages, contextMsg)
-							: (test.prompt as string);
+						// "Has messages" means a non-empty array, as in validateTests:
+						// an empty one beside a prompt must not hide the prompt
+						// from the judge.
+						const judgePrompt =
+							test.messages && test.messages.length > 0
+								? formatConversationForJudge(test.messages, contextMsg)
+								: (test.prompt as string);
 						// The judge decides pass/fail, so a provider that stalls hangs
 						// the run exactly as a stalled generation would — and the
 						// inference timer above has already been cleared by the time we
