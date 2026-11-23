@@ -1,5 +1,0 @@
----
-'@nanocollective/nanotune': patch
----
-
-Fixes from a pre-release review. `data import` skips a record whose messages aren't all text (an OpenAI tool-call turn with `content: null`, a numeric `output`) instead of importing a row that then stopped edit, dedupe, `validate --fix` and the first train split from loading the dataset. `benchmark --json --base` no longer lets pip's install output into its JSON. In `partial` match mode an empty reply no longer passes every test. A benchmark cut short on a category's first test no longer saves a 0/0 category, which showed as NaN% and as a −100% change in `benchmark compare`. An export that fails or is cancelled no longer leaves a truncated GGUF for `benchmark` to pick up as the newest model. The model card is refreshed on every export unless you've edited it, so it no longer describes an earlier artifact. Two processes can no longer both take over the same stale data lock, and a lock is only released by its owner. Rewriting a dataset that is a symlink writes through the link and keeps the file's permissions, instead of replacing the link with a plain file.
