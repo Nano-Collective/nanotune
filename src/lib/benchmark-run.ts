@@ -37,6 +37,7 @@ import {
 	chatCompletion,
 	checkConvertDependencies,
 	checkLlamaCppInstalled,
+	exitsWithin,
 	exportModel,
 	type GenerateOptions,
 	installConvertDependencies,
@@ -113,16 +114,9 @@ class ServerLostError extends Error {}
  * path, so the wait is never paid on a healthy run.
  */
 function hasExitedWithin(handle: ServerHandle, ms: number): Promise<boolean> {
-	if (!handle.exited) {
-		return Promise.resolve(false);
-	}
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	const timeout = new Promise<boolean>(resolve => {
-		timer = setTimeout(() => resolve(false), ms);
-	});
-	return Promise.race([handle.exited.then(() => true), timeout]).finally(() =>
-		clearTimeout(timer),
-	);
+	return handle.exited
+		? exitsWithin(handle.exited, ms)
+		: Promise.resolve(false);
 }
 
 export interface BenchmarkDeps {

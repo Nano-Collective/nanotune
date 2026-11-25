@@ -730,7 +730,14 @@ export async function stopLlamaServer(
 	await exitsWithin(handle.exited, killGraceMs);
 }
 
-function exitsWithin(exited: Promise<unknown>, ms: number): Promise<boolean> {
+/**
+ * Whether `exited` settles within `ms`. The timer is cleared as soon as it
+ * does, so a quick exit leaves nothing pending.
+ */
+export function exitsWithin(
+	exited: Promise<unknown>,
+	ms: number,
+): Promise<boolean> {
 	return new Promise(resolve => {
 		const timer = setTimeout(() => resolve(false), ms);
 		exited.then(() => {
