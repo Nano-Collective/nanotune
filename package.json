@@ -3,8 +3,16 @@
 	"version": "1.8.0",
 	"type": "module",
 	"description": "A simple, interactive CLI for fine-tuning small language models on Apple Silicon. No YAML configs, no complex flags - just an interactive CLI that guides you through the process. ⚒️",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/Nano-Collective/nanotune.git"
+	},
+	"homepage": "https://github.com/Nano-Collective/nanotune#readme",
+	"bugs": {
+		"url": "https://github.com/Nano-Collective/nanotune/issues"
+	},
 	"bin": {
-		"nanotune": "./dist/cli.js"
+		"nanotune": "dist/cli.js"
 	},
 	"files": [
 		"dist",
