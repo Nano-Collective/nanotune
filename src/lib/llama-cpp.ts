@@ -715,29 +715,29 @@ export async function startLlamaServer(
  * Stop a running llama-server started with `startLlamaServer`. Sends SIGTERM
  * first and escalates to SIGKILL after a short grace period if the process
  * hasn't exited — so a hung server can't block the caller's `finally` forever.
+ * The wait after SIGKILL is bounded too: a process stuck in the kernel can
+ * outlive SIGKILL, and shutdown should not hang on it.
  */
 export async function stopLlamaServer(
 	handle: ServerHandle,
 	graceMs = 2000,
+	killGraceMs = 2000,
 ): Promise<void> {
-	const exited = handle.exited;
 	handle.process.kill('SIGTERM');
+	if (await exitsWithin(handle.exited, graceMs)) return;
 
-	const escalation = new Promise<void>(resolve => {
-		const timer = setTimeout(() => {
-			// Process hasn't exited within grace window — force-kill.
-			handle.process.kill('SIGKILL');
-			resolve();
-		}, graceMs);
+	handle.process.kill('SIGKILL');
+	await exitsWithin(handle.exited, killGraceMs);
+}
+
+function exitsWithin(exited: Promise<unknown>, ms: number): Promise<boolean> {
+	return new Promise(resolve => {
+		const timer = setTimeout(() => resolve(false), ms);
 		exited.then(() => {
 			clearTimeout(timer);
-			resolve();
+			resolve(true);
 		});
 	});
-
-	await Promise.race([exited, escalation]);
-	// Wait for the actual exit so callers aren't holding a zombie handle.
-	await exited;
 }
 
 /**

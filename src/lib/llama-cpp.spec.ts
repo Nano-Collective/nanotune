@@ -412,6 +412,26 @@ test("stopLlamaServer escalates past a child that ignores SIGTERM", async (t) =>
 	t.true((await handle.exited) instanceof Error);
 });
 
+test("stopLlamaServer gives up on a child that outlives SIGKILL", async (t) => {
+	const signals: unknown[] = [];
+	const handle = {
+		port: 1234,
+		process: {
+			kill: (signal: unknown) => {
+				signals.push(signal);
+				return true;
+			},
+		},
+		exited: new Promise(() => {}),
+	} as unknown as ServerHandle;
+	const started = Date.now();
+
+	await stopLlamaServer(handle, 50, 50);
+
+	t.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+	t.true(Date.now() - started < 1000);
+});
+
 test("waitForServerOrExit reports the child's exit instead of waiting out the startup timeout", async (t) => {
 	// Nothing ever listens on port 1, so /health can only fail.
 	const handle = createServerHandle(1, spawnChild("process.exit(1)"));
