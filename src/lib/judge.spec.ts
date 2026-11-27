@@ -889,3 +889,35 @@ test.serial('saveJudgeConfig - back-fills judge.json* into an existing .gitignor
 		rmSync(dir, {recursive: true, force: true});
 	}
 });
+
+test.serial('callJudge - the google provider sends the request to the configured baseUrl', async t => {
+	const originalFetch = globalThis.fetch;
+	const urls: string[] = [];
+	globalThis.fetch = async input => {
+		urls.push(String(input));
+		return new Response(
+			JSON.stringify({
+				candidates: [
+					{content: {parts: [{text: '{}'}]}, finishReason: 'STOP'},
+				],
+			}),
+			{headers: {'content-type': 'application/json'}},
+		);
+	};
+
+	try {
+		await callJudge('prompt', 'response', resolveCriteria(['helpful']), {
+			name: 'Gemini',
+			sdkProvider: 'google',
+			baseUrl: 'https://gateway.example.com/v1beta',
+			apiKey: 'test-key',
+			model: 'gemini-3-flash-preview',
+		});
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+
+	t.deepEqual(urls, [
+		'https://gateway.example.com/v1beta/models/gemini-3-flash-preview:generateContent',
+	]);
+});

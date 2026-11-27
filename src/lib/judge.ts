@@ -147,6 +147,7 @@ function createJudgeProvider(config: JudgeProviderConfig) {
 
 	if (sdkProvider === 'google') {
 		return createGoogleGenerativeAI({
+			baseURL: config.baseUrl || undefined,
 			apiKey: config.apiKey ?? '',
 		});
 	}
