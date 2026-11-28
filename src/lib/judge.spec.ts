@@ -175,6 +175,24 @@ test('parseJudgeResponse - determines pass from threshold when pass field missin
 	t.false(resultFail.pass);
 });
 
+test('parseJudgeResponse - ignores text around the JSON object', t => {
+	const json =
+		'{"scores": {"helpful": 9}, "overall": 9, "reasoning": "ok", "pass": true}';
+	const wrapped = [
+		`Here is my evaluation:\n${json}`,
+		`${json}\n\nLet me know if you need anything else.`,
+		`<think>\nThe format is {"overall": <number>}.\n</think>\n\n${json}`,
+		`<think>\n\`\`\`json\n{"overall": 1}\n\`\`\`\n</think>\n${json}`,
+		`Okay, scoring this.\n</think>\n\n${json}`,
+	];
+
+	for (const response of wrapped) {
+		const result = parseJudgeResponse(response, [{name: 'helpful', description: ''}], 7);
+		t.is(result.score, 9, response);
+		t.true(result.pass, response);
+	}
+});
+
 test('parseJudgeResponse - throws on invalid JSON', t => {
 	const criteria: JudgeCriteria[] = [{name: 'helpful', description: 'h'}];
 	t.throws(() => parseJudgeResponse('not json at all', criteria, 7));
