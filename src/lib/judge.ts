@@ -206,20 +206,25 @@ You MUST respond with valid JSON only, no other text:
 {"scores": {${criteriaNames}}, "overall": <number>, "reasoning": "<brief explanation>", "pass": <boolean>}`;
 }
 
-/** Parse the judge's JSON response, handling code blocks */
+/** Parse the judge's JSON response, handling reasoning blocks, code blocks and surrounding text */
 export function parseJudgeResponse(
 	text: string,
 	criteria: JudgeCriteria[],
 	passThreshold: number,
 ): JudgeResult {
+	// Reasoning models can prefix their thinking, which may hold example JSON
+	let jsonStr = text.trim().replace(/^<think>[\s\S]*?<\/think>/, '');
+
 	// Strip markdown code blocks if present
-	let jsonStr = text.trim();
 	const codeBlockMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
 	if (codeBlockMatch) {
-		jsonStr = codeBlockMatch[1].trim();
+		jsonStr = codeBlockMatch[1];
 	}
 
-	const parsed = JSON.parse(jsonStr);
+	// Judges don't always obey "JSON only", so drop any text around the object
+	const parsed = JSON.parse(
+		jsonStr.slice(jsonStr.indexOf('{'), jsonStr.lastIndexOf('}') + 1),
+	);
 
 	// Extract and clamp scores
 	const criteriaScores: Record<string, number> = {};
